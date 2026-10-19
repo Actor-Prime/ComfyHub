@@ -108,6 +108,10 @@ class SetupWizard(QWizard):
         row.addWidget(b_pick)
         form.addRow("安装到:", row)
 
+        self.ed_name = QLineEdit("")
+        self.ed_name.setPlaceholderText("不填则使用安装目录名")
+        form.addRow("实例名称:", self.ed_name)
+
         self.cb_python = QComboBox()
         self.cb_python.addItem("自动安装便携 Python（推荐，不污染系统）", userData=None)
         # 探测已有解释器供选择
@@ -171,6 +175,7 @@ class SetupWizard(QWizard):
 
     def _on_done(self, ok: bool, res: dict, err: str):
         if ok:
+            res["name"] = self.p1.ed_name.text().strip()
             self.setup_result = res
             self.p2.lb_step.setText("✅ 安装完成！点击“完成”自动添加为实例。")
             self.button(QWizard.FinishButton).setEnabled(True)
