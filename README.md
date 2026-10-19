@@ -130,6 +130,16 @@ A: 看 `%APPDATA%\ComfyHub\crash.log`——内置黑匣子记录完整异常堆�
 - [ ] FluxGym LoRA 训练集成
 - [ ] AMD 显卡支持
 
+## ⚠️ 免责声明
+
+本软件按"现状"提供，不附带任何明示或默示保证：
+
+- 未签名程序可能触发 Windows SmartScreen 提示，点「仍运行」即可；介意可自行上传 virustotal.com 复核
+- 「彻底删除」「备份还原」「快照回滚」等操作具有破坏性，请自行做好重要文件备份，开发者不对数据丢失承担责任
+- 下载的 ComfyUI / 插件 / 模型版权归各自作者；使用模型生成内容请遵守当地法律法规
+
+完整声明见 [DISCLAIMER.txt](DISCLAIMER.txt)。继续使用即表示已阅读并同意全部内容。
+
 ## 📄 开源协议
 
 [MIT License](LICENSE)
