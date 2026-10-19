@@ -96,8 +96,17 @@ def _find_git() -> str | None:
     return which("git")
 
 
+# 模型文件扩展名白名单（txt 占位符等非模型文件不计入统计）
+MODEL_EXTS = {".safetensors", ".ckpt", ".pt", ".pth", ".gguf", ".sft",
+              ".bin", ".onnx", ".engine", ".trt", ".llamafile"}
+
+
+def is_model_file(fn: str) -> bool:
+    return os.path.splitext(fn)[1].lower() in MODEL_EXTS
+
+
 def model_stats(comfyui_path: str) -> list:
-    """统计 models 下各类模型数量与体积
+    """统计 models 下各类模型数量与体积（仅模型格式文件）
     返回 [(类别, 文件数, 体积GB), ...]
     """
     models_dir = os.path.join(comfyui_path, "models")
@@ -111,6 +120,8 @@ def model_stats(comfyui_path: str) -> list:
         count, total = 0, 0
         for root, _dirs, files in os.walk(p):
             for fn in files:
+                if not is_model_file(fn):
+                    continue
                 fp = os.path.join(root, fn)
                 try:
                     total += os.path.getsize(fp)
