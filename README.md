@@ -28,13 +28,13 @@ ComfyHub 是一个面向**普通用户**的 ComfyUI 启动管理器，目标是�
 
 | 工作台 | ComfyUI 管理 |
 |---|---|
-| ![工作台](docs/screenshots/workbench.png) | ![ComfyUI](docs/screenshots/comfyui.png) |
+| ![工作台](https://gitee.com/yzdydwdd/ComfyHub/raw/master/docs/screenshots/workbench.png) | ![ComfyUI](https://gitee.com/yzdydwdd/ComfyHub/raw/master/docs/screenshots/comfyui.png) |
 
 | 环境检测 | 模型库 |
 |---|---|
-| ![环境检测](docs/screenshots/env.png) | ![模型库](docs/screenshots/models.png) |
+| ![环境检测](https://gitee.com/yzdydwdd/ComfyHub/raw/master/docs/screenshots/env.png) | ![模型库](https://gitee.com/yzdydwdd/ComfyHub/raw/master/docs/screenshots/models.png) |
 
-> 更多截图见 [docs/screenshots/](docs/screenshots/)
+> 更多截图见 [docs/screenshots/](https://gitee.com/yzdydwdd/ComfyHub/raw/master/docs/screenshots/)
 
 ## 🚀 快速开始
 
