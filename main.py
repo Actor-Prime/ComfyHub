@@ -1,0 +1,77 @@
+# -*- coding: utf-8 -*-
+"""ComfyHub - ComfyUI 多实例启动管理器 入口"""
+import sys
+import os
+import time
+import traceback
+
+# 高 DPI 支持（PySide6 6.4+ 默认开启，这里兜底）
+os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
+
+from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtGui import QFont
+
+from app.ui.theme import DARK_QSS
+from app.ui.main_window import MainWindow
+
+CRASH_LOG = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")),
+                         "ComfyHub", "crash.log")
+
+
+def _write_crash(title: str, text: str):
+    """黑匣子：任何异常落盘 %APPDATA%\\ComfyHub\\crash.log"""
+    try:
+        os.makedirs(os.path.dirname(CRASH_LOG), exist_ok=True)
+        with open(CRASH_LOG, "a", encoding="utf-8") as f:
+            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {title}\n"
+                    f"{text}\n{'-' * 70}\n")
+    except OSError:
+        pass
+
+
+def _excepthook(tp, val, tb):
+    """Python 层全局异常钩子（windowed 打包下 stderr 不可见，落盘保命）"""
+    _write_crash("PYTHON EXCEPTION",
+                 "".join(traceback.format_exception(tp, val, tb)))
+    sys.__excepthook__(tp, val, tb)
+
+
+def _qt_message_handler(mode, ctx, message):
+    """Qt 层警告/错误收集（含 C++ 侧 critical）"""
+    if mode >= 1:   # Warning 及以上
+        _write_crash(f"QT MSG(level={mode}) {ctx.file}:{ctx.line}", message)
+
+
+def main():
+    sys.excepthook = _excepthook
+    try:
+        from PySide6.QtCore import qInstallMessageHandler
+        qInstallMessageHandler(_qt_message_handler)
+    except Exception:
+        pass
+
+    app = QApplication(sys.argv)
+    app.setApplicationName("ComfyHub")
+    app.setOrganizationName("ComfyHub")
+    # 中文界面统一字体
+    font = QFont("Microsoft YaHei UI", 9)
+    app.setFont(font)
+    app.setStyleSheet(DARK_QSS)
+
+    try:
+        win = MainWindow()
+        win.show()
+        code = app.exec()
+    except SystemExit:
+        raise
+    except Exception:
+        _write_crash("FATAL IN MAINLOOP", traceback.format_exc())
+        QMessageBox.critical(None, "ComfyHub 遇到错误",
+                             "程序遇到未处理的错误已退出。\n"
+                             f"详细日志：{CRASH_LOG}")
+        return 1
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

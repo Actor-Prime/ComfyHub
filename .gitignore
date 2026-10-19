@@ -1,0 +1,27 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# ---- 打包产物 ----
+build*/
+dist*/
+dist_*_backup/
+*.spec
+
+# ---- 虚拟环境 ----
+.venv*/
+venv*/
+
+# ---- 用户数据（每台机器各自生成，不入库） ----
+config.json
+
+# ---- 临时/测试 ----
+*.log
+v5_*.png
+test_*.py
+temp/
+
+# ---- IDE ----
+.idea/
+.vscode/
