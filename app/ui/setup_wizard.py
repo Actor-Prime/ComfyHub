@@ -170,6 +170,7 @@ class SetupWizard(QWizard):
             QMessageBox.warning(self, "ComfyHub", f"目录不存在：\n{root}")
             return
         # 1) 找 main.py：root 本身 + 一级/二级子目录（浅搜防全盘遍历）
+        candidates = []
         search_roots = [root]
         try:
             for d1 in os.listdir(root):
