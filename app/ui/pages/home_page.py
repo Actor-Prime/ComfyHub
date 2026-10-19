@@ -56,7 +56,7 @@ class HomePage(QWidget):
         b_add = QPushButton("＋ 添加我的 ComfyUI")
         b_add.setProperty("accent", True)
         b_add.setFixedHeight(40)
-        b_add.clicked.connect(self.mainwin._add_instance)
+        b_add.clicked.connect(self.mainwin._run_setup_wizard)
         hb.addWidget(b_add)
         lay.addLayout(hb)
         root.addWidget(banner)
