@@ -103,9 +103,14 @@ class SetupWizard(QWizard):
         self.ed_dir = QLineEdit(os.path.join("F:\\", "ComfyUI"))
         b_pick = QPushButton("浏览…")
         b_pick.clicked.connect(self._pick)
+        b_detect = QPushButton("🔍 检测已有环境")
+        b_detect.setToolTip("扫描该目录（含两层子目录）是否已有完整 ComfyUI，\n"
+                            "检测到可直接添加为实例，跳过下载安装")
+        b_detect.clicked.connect(self._detect_existing)
         row = QHBoxLayout()
         row.addWidget(self.ed_dir, 1)
         row.addWidget(b_pick)
+        row.addWidget(b_detect)
         form.addRow("安装到:", row)
 
         self.ed_name = QLineEdit("")
@@ -156,6 +161,98 @@ class SetupWizard(QWizard):
 
         self.currentIdChanged.connect(self._on_page_change)
         self._started = False
+
+    def _detect_existing(self):
+        """扫描指定目录（含两层子目录）找完整 ComfyUI 环境：
+        main.py + 可用 python.exe → 直接添加为实例，跳过安装"""
+        root = self.ed_dir.text().strip()
+        if not os.path.isdir(root):
+            QMessageBox.warning(self, "ComfyHub", f"目录不存在：\n{root}")
+            return
+        # 1) 找 main.py：root 本身 + 一级/二级子目录（浅搜防全盘遍历）
+        search_roots = [root]
+        try:
+            for d1 in os.listdir(root):
+                p1 = os.path.join(root, d1)
+                if os.path.isdir(p1):
+                    search_roots.append(p1)
+                    for d2 in os.listdir(p1):
+                        p2 = os.path.join(p1, d2)
+                        if os.path.isdir(p2):
+                            search_roots.append(p2)
+        except OSError:
+            pass
+        for sr in search_roots:
+            if os.path.isfile(os.path.join(sr, "main.py")):
+                candidates.append(sr)
+        candidates = list(dict.fromkeys(candidates))
+        if not candidates:
+            QMessageBox.information(
+                self, "ComfyHub",
+                f"在 {root}（含两层子目录）中未找到 ComfyUI（main.py）。\n\n"
+                "请确认目录，或走下方一键安装流程。")
+            return
+        comfy_path = candidates[0] if len(candidates) == 1 else self._choose(
+            "检测到多个 ComfyUI，选择一个：",
+            [os.path.relpath(c, root) or "(此目录)" for c in candidates])
+        if not comfy_path:
+            return
+        comfy_path = os.path.normpath(
+            comfy_path if os.path.isabs(comfy_path) else os.path.join(root, comfy_path))
+
+        # 2) 找 python.exe：常见布局
+        py_cands = [
+            os.path.join(comfy_path, "python.exe"),
+            os.path.join(comfy_path, "python", "python.exe"),
+            os.path.join(comfy_path, "venv", "Scripts", "python.exe"),
+            os.path.join(comfy_path, ".venv", "Scripts", "python.exe"),
+            os.path.join(comfy_path, "python_embeded", "python.exe"),
+            os.path.join(comfy_path, "..", "python.exe"),
+            os.path.join(comfy_path, "..", "python", "python.exe"),
+        ]
+        py_cands = [os.path.normpath(p) for p in py_cands if os.path.isfile(p)]
+        if not py_cands:
+            # 同级目录里找 python 环境（如 F:\python、F:\ComfyUI_env）
+            for d1 in os.listdir(os.path.dirname(comfy_path)):
+                base = os.path.join(os.path.dirname(comfy_path), d1)
+                for sub in ("", "Scripts", "python"):
+                    p = os.path.join(base, sub, "python.exe")
+                    if os.path.isfile(p):
+                        py_cands.append(os.path.normpath(p))
+        py_cands = list(dict.fromkeys(py_cands))
+        if not py_cands:
+            QMessageBox.warning(
+                self, "ComfyHub",
+                f"找到了 ComfyUI：{comfy_path}\n\n"
+                "但没找到配套的 Python 解释器（venv / 内嵌 python）。\n"
+                "建议走一键安装，或在安装后手动指定解释器。")
+            return
+        python_exe = py_cands[0] if len(py_cands) == 1 else self._choose(
+            "检测到多个 Python，选择一个：", py_cands)
+        if not python_exe:
+            return
+
+        # 3) 确认并直接完成（跳过安装）
+        name = self.ed_name.text().strip() or os.path.basename(comfy_path)
+        r = QMessageBox.question(
+            self, "检测到完整环境",
+            f"ComfyUI：{comfy_path}\nPython：{python_exe}\n\n"
+            f"直接添加为实例「{name}」？（跳过下载安装）")
+        if r != QMessageBox.Yes:
+            return
+        self.setup_result = {
+            "comfyui_path": comfy_path,
+            "python_path": python_exe,
+            "name": name,
+            "skipped_install": True,
+        }
+        self.accept()
+
+    def _choose(self, title, items):
+        """简单单选对话框，返回所选项（绝对/原样文本），取消返回 None"""
+        from PySide6.QtWidgets import QInputDialog
+        item, ok = QInputDialog.getItem(self, title, "选择：", items, 0, False)
+        return item if ok else None
 
     def _pick(self):
         d = QFileDialog.getExistingDirectory(self, "选择安装位置", self.ed_dir.text())
