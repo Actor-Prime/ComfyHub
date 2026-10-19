@@ -129,7 +129,9 @@ class ModelsPage(QWidget):
         if os.path.isdir(d):
             for name in os.listdir(d):
                 p = os.path.join(d, name)
-                if os.path.isfile(p) and kw.lower() in name.lower():
+                # 只显示模型格式文件（txt 占位符等排除）
+                if (os.path.isfile(p) and kw.lower() in name.lower()
+                        and inst_lib.is_model_file(name)):
                     st = os.stat(p)
                     out.append((name, st.st_size, st.st_mtime))
         out.sort(key=lambda x: -x[1])
