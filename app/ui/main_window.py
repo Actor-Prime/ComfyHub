@@ -207,7 +207,7 @@ class MainWindow(QMainWindow):
         res = wiz.setup_result
         data = {
             "id": "inst_" + uuid.uuid4().hex[:8],
-            "name": os.path.basename(res["comfyui_path"]) or "新装 ComfyUI",
+            "name": res.get("name") or os.path.basename(res["comfyui_path"]) or "新装 ComfyUI",
             "comfyui_path": res["comfyui_path"],
             "python_path": res["python_path"],
             "port": self._next_free_port(),
