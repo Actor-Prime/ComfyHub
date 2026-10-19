@@ -165,7 +165,7 @@ class SetupWizard(QWizard):
     def _detect_existing(self):
         """扫描指定目录（含两层子目录）找完整 ComfyUI 环境：
         main.py + 可用 python.exe → 直接添加为实例，跳过安装"""
-        root = self.ed_dir.text().strip()
+        root = os.path.normpath(self.ed_dir.text().strip())
         if not os.path.isdir(root):
             QMessageBox.warning(self, "ComfyHub", f"目录不存在：\n{root}")
             return
@@ -193,13 +193,15 @@ class SetupWizard(QWizard):
                 f"在 {root}（含两层子目录）中未找到 ComfyUI（main.py）。\n\n"
                 "请确认目录，或走下方一键安装流程。")
             return
-        comfy_path = candidates[0] if len(candidates) == 1 else self._choose(
-            "检测到多个 ComfyUI，选择一个：",
-            [os.path.relpath(c, root) or "(此目录)" for c in candidates])
-        if not comfy_path:
-            return
-        comfy_path = os.path.normpath(
-            comfy_path if os.path.isabs(comfy_path) else os.path.join(root, comfy_path))
+        if len(candidates) == 1:
+            idx = 0
+        else:
+            labels = [os.path.relpath(c, root) if os.path.relpath(c, root) != "."
+                      else "(此目录)" for c in candidates]
+            idx = self._choose("检测到多个 ComfyUI，选择一个：", labels)
+            if idx is None:
+                return
+        comfy_path = os.path.normpath(candidates[idx])
 
         # 2) 找 python.exe：常见布局
         py_cands = [
@@ -228,8 +230,13 @@ class SetupWizard(QWizard):
                 "但没找到配套的 Python 解释器（venv / 内嵌 python）。\n"
                 "建议走一键安装，或在安装后手动指定解释器。")
             return
-        python_exe = py_cands[0] if len(py_cands) == 1 else self._choose(
-            "检测到多个 Python，选择一个：", py_cands)
+        if len(py_cands) == 1:
+            python_exe = py_cands[0]
+        else:
+            pi = self._choose("检测到多个 Python，选择一个：", py_cands)
+            if pi is None:
+                return
+            python_exe = py_cands[pi]
         if not python_exe:
             return
 
@@ -250,10 +257,10 @@ class SetupWizard(QWizard):
         self.accept()
 
     def _choose(self, title, items):
-        """简单单选对话框，返回所选项（绝对/原样文本），取消返回 None"""
+        """简单单选对话框，返回选中索引（int），取消返回 None"""
         from PySide6.QtWidgets import QInputDialog
         item, ok = QInputDialog.getItem(self, title, "选择：", items, 0, False)
-        return item if ok else None
+        return items.index(item) if ok else None
 
     def _pick(self):
         d = QFileDialog.getExistingDirectory(self, "选择安装位置", self.ed_dir.text())
