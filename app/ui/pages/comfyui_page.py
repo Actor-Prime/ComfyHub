@@ -233,10 +233,10 @@ class ComfyuiPage(QWidget):
         b_save.clicked.connect(self._save)
         root.addWidget(b_save)
 
-        b_del = QPushButton("🗑 删除此实例（可选仅移出管理 / 彻底删除文件）")
-        b_del.setObjectName("DeleteBtn")
-        b_del.clicked.connect(self._delete)
-        root.addWidget(b_del)
+        self.b_del = QPushButton("🗑 删除此实例（可选仅移出管理 / 彻底删除文件）")
+        self.b_del.setObjectName("DeleteBtn")
+        self.b_del.clicked.connect(self._delete)
+        root.addWidget(self.b_del)
 
     # ---------- 数据 ----------
     def load_current(self):
