@@ -348,11 +348,23 @@ class ComfyuiPage(QWidget):
         elif clicked is b_del:
             self._delete_files(inst)
 
-    def _swap_worker(self, attr, worker, timeout=600000):
+    def _swap_worker(self, attr, worker, timeout=60000):
+        """替换 worker：旧线程断开信号后放入墓碑（持引用防 GC，后台自然结束）。
+        绝不 wait 阻塞 UI——上一版用 wait 导致界面卡死在检测中"""
         old_w = getattr(self, attr, None)
         if old_w is not None and old_w.isRunning():
-            old_w.wait(timeout)
+            for sig_name in ("sig_done", "sig_log", "sig_progress", "sig_prog"):
+                sig = getattr(old_w, sig_name, None)
+                if sig is not None:
+                    try:
+                        sig.disconnect()
+                    except Exception:
+                        pass
+            self._graveyard = [w for w in getattr(self, "_graveyard", [])
+                               if w.isRunning()]
+            self._graveyard.append(old_w)
         setattr(self, attr, worker)
+
 
     def _delete_files(self, inst):
         """彻底删除（全异步，不卡 UI）：
