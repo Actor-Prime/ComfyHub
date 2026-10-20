@@ -1,40 +1,31 @@
-ComfyHub 自定义许可协议（非商业使用）
-Custom Non-Commercial License
+MIT License
+
 Copyright (c) 2026 LeiMengStudio
 
-一、授予的权利
-在遵守本协议全部条款的前提下，任何人可免费获得本软件的副本，
-并无限制地使用、复制、修改和分发本软件，用于个人学习、研究及
-非商业用途。
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-二、附加限制条款（优先适用）
-1. 禁止商业使用：不得将本软件或其修改版本直接或间接用于任何
-   商业活动，包括但不限于出售、租赁、捆绑销售、收费服务、
-   商业化分发等。
-2. 禁止二次销售：不得对本软件或其衍生版本进行任何形式的
-   二次销售、转授权收费或以盈利为目的的再分发。
-3. AI 辅助生成声明：本软件由 AI（人工智能）辅助生成。
-   开发者不对代码的版权归属作出解释与承诺，不对代码可能
-   存在的权利瑕疵、专利或第三方权利主张负责。
-4. 本条附加限制条款与下方 MIT 许可文本冲突时，以本条为准。
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-三、MIT 许可文本（受第二条限制）
-Permission is hereby granted, free of charge, to any person obtaining
-a copy of this software and associated documentation files (the
-"Software"), to deal in the Software without restriction, including
-without limitation the rights to use, copy, modify, merge, publish,
-distribute, sublicense, and/or sell copies of the Software, and to
-permit persons to whom the Software is furnished to do so, subject to
-the following conditions:
-
-The above copyright notice and this permission notice shall be
-included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
-NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
-BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
-ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+--------------------------------------------------------------------
+附加声明（详见 DISCLAIMER.txt，具有同等效力）：
+
+· 本软件为实验性半成品项目（Work-in-Progress），功能未经充分测试，
+  不应作为成熟成品进行评估，亦不建议用于生产环境。
+· 本软件由 AI 辅助生成，开发者不对代码的版权归属作出解释与承诺，
+  不对代码可能存在的权利瑕疵、专利或第三方权利主张负责。
+· 任何个人或组织将本软件用于商业用途所产生的一切后果与责任，
+  均由使用者自行承担，与开发者无关。
