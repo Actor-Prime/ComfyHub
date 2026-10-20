@@ -49,7 +49,7 @@ def main():
         import app.ui.dialogs              # noqa: F401
         import app.ui.main_window          # noqa: F401
         import app.ui.setup_wizard         # noqa: F401
-        # import app.workers  # 步骤② 创建后启用
+        import app.workers                 # noqa: F401
         import app.ui.pages.home_page      # noqa: F401
         import app.ui.pages.comfyui_page   # noqa: F401
         import app.ui.pages.console_page   # noqa: F401

@@ -2,7 +2,7 @@
 """ComfyUI 编辑页：分区表单（基础/高级设置）+ 启停 + 保存/删除（对标截图2/3）"""
 import os
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
     QComboBox, QSpinBox, QCheckBox, QFileDialog, QMessageBox, QFrame,
@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.config import VRAM_MODES, save_config
+from app.workers import BgWorker, RmWorker, swap_worker, wait_all
 from app.process import build_command, port_in_use
 
 
@@ -36,62 +37,6 @@ class _Row(QFrame):
             h.addWidget(widget, 3, Qt.AlignVCenter)
 
 
-
-
-class _BgWorker(QThread):
-    """通用后台执行器（删除体积计算 / rmtree 等耗时操作）"""
-    sig_done = Signal(object)
-
-    def __init__(self, fn):
-        super().__init__()
-        self.fn = fn
-
-    def run(self):
-        try:
-            self.sig_done.emit(self.fn())
-        except Exception:
-            self.sig_done.emit(None)
-
-
-
-
-class _RmWorker(QThread):
-    """后台逐文件删除：实时上报进度（当前文件 / 已删 / 总数）"""
-    sig_prog = Signal(str, int, int)   # 当前文件, 已删数, 总数
-    sig_done = Signal(bool, str)       # ok, err
-
-    def __init__(self, root, files):
-        super().__init__()
-        self.root = root
-        self.files = files
-
-    def run(self):
-        import shutil as _sh
-        total = len(self.files)
-        done = 0
-        try:
-            for fp in self.files:
-                try:
-                    os.remove(fp)
-                except OSError:
-                    pass
-                done += 1
-                if done % 100 == 0 or done == total:
-                    self.sig_prog.emit(fp, done, total)
-            # 自底向上清理空目录
-            for root, dirs, _f in os.walk(self.root, topdown=False):
-                for d in dirs:
-                    try:
-                        os.rmdir(os.path.join(root, d))
-                    except OSError:
-                        pass
-            try:
-                _sh.rmtree(self.root, ignore_errors=True)
-            except OSError:
-                pass
-            self.sig_done.emit(True, "")
-        except Exception as e:
-            self.sig_done.emit(False, str(e))
 
 
 class ComfyuiPage(QWidget):
@@ -366,6 +311,10 @@ class ComfyuiPage(QWidget):
         setattr(self, attr, worker)
 
 
+    def closeEvent(self, event):
+        wait_all(self, ("_del_worker", "_rm_worker"), 30000)
+        event.accept()
+
     def _delete_files(self, inst):
         """彻底删除（全异步，不卡 UI）：
         停进程 → 后台算体积 → 确认框 → 后台删除 → 移出管理"""
@@ -390,7 +339,7 @@ class ComfyuiPage(QWidget):
         self._del_inst = inst
         self._del_path = path
         self.b_del.setText("⏳ 正在计算目录体积…")
-        self._swap_worker("_del_worker", _BgWorker(_size))
+        swap_worker(self, "_del_worker", BgWorker(_size))
         self._del_worker.sig_done.connect(self._on_size_done)
         self._del_worker.start()
 
@@ -421,7 +370,7 @@ class ComfyuiPage(QWidget):
                     out.append(os.path.join(root, f))
             return out
 
-        self._swap_worker("_del_worker", _BgWorker(_collect))
+        swap_worker(self, "_del_worker", BgWorker(_collect))
         try:
             self._del_worker.sig_done.disconnect()
         except Exception:
@@ -439,7 +388,7 @@ class ComfyuiPage(QWidget):
         self._rm_prog.setWindowModality(Qt.WindowModal)
         self._rm_prog.setMinimumDuration(0)
         self._rm_prog.setValue(0)
-        self._swap_worker("_rm_worker", _RmWorker(self._del_path, files))
+        swap_worker(self, "_rm_worker", RmWorker(self._del_path, files))
         self._rm_worker.sig_prog.connect(self._on_rm_prog)
         self._rm_worker.sig_done.connect(self._on_rm_done)
         self._rm_worker.start()
