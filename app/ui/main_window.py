@@ -5,6 +5,7 @@ import uuid
 
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QPixmap
+from app.ui.nav import NAV
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QListWidget,
     QListWidgetItem, QStackedWidget, QLabel, QMessageBox, QComboBox,
