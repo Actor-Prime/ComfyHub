@@ -562,15 +562,28 @@ class SetupWizard(QWizard):
         self.button(QWizard.FinishButton).setEnabled(False)
 
     def _begin_verify(self):
-        """后台验证选中候选的 ComfyUI 能否运行；通过才解锁「完成」"""
+        """后台验证选中候选的 ComfyUI 能否运行；通过才解锁「完成」。
+        多个 Python 候选时逐个试，选第一个真正能 import torch 的"""
         from app import bootstrap
         self.button(QWizard.FinishButton).setEnabled(False)
         self.button(QWizard.NextButton).setEnabled(False)
         idx = max(0, self.cb_found.currentIndex())
         comfy = self._scan_candidates[min(idx, len(self._scan_candidates) - 1)]
-        py = self._py_map.get(comfy) or ""
-        self._verify_worker = _StepWorker(
-            lambda: bootstrap.verify_comfyui_runnable(py, comfy))
+        cands = self._py_map.get(comfy) or []
+        self._verify_comfy = comfy
+
+        def _try_all():
+            last = ""
+            for py in cands:
+                ok, info = bootstrap.verify_comfyui_runnable(py, comfy)
+                if ok:
+                    return (True, info, py)
+                last = f"{py}: {info}"
+            if not cands:
+                return (False, "未找到任何可用的 Python 解释器", "")
+            return (False, last, "")
+
+        self._verify_worker = _StepWorker(_try_all)
         self._verify_worker.sig_done.connect(self._on_verify2_done)
         self._verify_worker.start()
 
@@ -579,10 +592,15 @@ class SetupWizard(QWizard):
         if not ok:
             self._verify_fail(f"验证执行失败: {err}")
             return
-        v_ok, info = res
+        v_ok, info, py = res
         if v_ok:
+            if self._verify_comfy in self._py_map:
+                pass
+            else:
+                self._py_map[self._verify_comfy] = py
+            self._py_map[self._verify_comfy] = py   # 记住验证通过的解验器
             self.lb_scan.setStyleSheet("color:#4cd47c;")
-            self.lb_scan.setText(f"✅ {info}——选好候选后点「完成」直接添加为实例（免下载）。")
+            self.lb_scan.setText(f"✅ {info}\n使用解释器: {py}\n选好候选后点「完成」直接添加为实例（免下载）。")
             p1.setFinalPage(True)
             self.button(QWizard.FinishButton).setEnabled(True)
             self.button(QWizard.NextButton).setEnabled(False)
@@ -630,7 +648,7 @@ class SetupWizard(QWizard):
             for p in cands:
                 total.add(p)
             if cands:
-                py_map[cp] = cands[0]
+                py_map[cp] = cands   # 存全部候选，验证时逐个试
         self._py_map = py_map
         return len(total)
 
@@ -639,7 +657,8 @@ class SetupWizard(QWizard):
         if getattr(self, "_scan_candidates", None) and self.cb_found.isVisible():
             idx = max(0, self.cb_found.currentIndex())
             comfy = self._scan_candidates[min(idx, len(self._scan_candidates) - 1)]
-            python_exe = self._py_map.get(comfy) or ""
+            pyv = self._py_map.get(comfy) or ""
+            python_exe = pyv[0] if isinstance(pyv, list) else pyv
             if not python_exe:
                 QMessageBox.warning(self, "ComfyHub",
                                     "该 ComfyUI 未找到配套 Python，无法直接添加。\n"
