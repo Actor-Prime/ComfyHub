@@ -448,7 +448,9 @@ class SetupWizard(QWizard):
         form.addRow("", self.lb_scan)
         self.cb_found = QComboBox()
         self.cb_found.hide()
-        form.addRow("检测到:", self.cb_found)
+        self.lb_found_title = QLabel("检测到:")
+        self.lb_found_title.hide()
+        form.addRow(self.lb_found_title, self.cb_found)
 
         # ---- 安装选项容器（未检测到已有环境时才展开） ----
         self.install_opts = QWidget()
@@ -548,7 +550,15 @@ class SetupWizard(QWizard):
         """后台扫描目录（含两层子目录）：找到 ComfyUI 直接注册；没找到自动补全并展开安装选项"""
         root = os.path.normpath(self.ed_dir.text().strip())
         if not os.path.isdir(root):
-            QMessageBox.warning(self, "ComfyHub", f"目录不存在：\n{root}")
+            self.lb_scan.setStyleSheet("color:#e8635a;")
+            self.lb_scan.setText(f"❌ 目录不存在：{root}\n请检查路径，或直接点「下一步」在此位置全新安装。")
+            self.lb_scan.show()
+            self.cb_found.hide()
+            self.lb_found_title.hide()
+            self.install_opts.show()
+            QMessageBox.warning(self, "ComfyHub",
+                                f"目录不存在：\n{root}\n\n已按全新安装处理："
+                                "请确认下方安装选项后点「下一步」。")
             return
         # 记录用户选择的原始根目录（实例名默认取它的名字）
         self._orig_root = root
@@ -582,6 +592,7 @@ class SetupWizard(QWizard):
                 self.cb_found.addItem(rel if rel != "." else "(此目录)")
             self.cb_found.setEnabled(len(candidates) > 1)
             self.cb_found.show()
+            self.lb_found_title.show()
             self.cb_found.currentIndexChanged.connect(
                 lambda _i: self._begin_verify() if self._scan_candidates else None)
             n_py = self._match_pythons(candidates)
@@ -594,7 +605,12 @@ class SetupWizard(QWizard):
             self._begin_verify()
             return
         self.cb_found.hide()
-        target = os.path.join(root, "ComfyUI")
+        self.lb_found_title.hide()
+        base = os.path.basename(root).casefold()
+        if "comfyui" in base:
+            target = root
+        else:
+            target = os.path.join(root, "ComfyUI")
         if not os.path.isfile(os.path.join(target, "main.py")):
             self.ed_dir.setText(target)
         self.install_opts.show()
@@ -659,6 +675,7 @@ class SetupWizard(QWizard):
             f"⚠️ 验证未通过：{why}\n"
             "已切换到安装模式：在下方「Python 环境」选择自动安装便携 Python 即可修齐，确认选项后点「下一步」。")
         self.cb_found.hide()
+        self.lb_found_title.hide()
         self._scan_candidates = None
         self.install_opts.show()
         p1 = self.page(0)
