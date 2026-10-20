@@ -3,6 +3,7 @@
 import os
 
 from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QWizard, QWizardPage, QLabel, QVBoxLayout, QLineEdit, QHBoxLayout,
     QPushButton, QFileDialog, QComboBox, QCheckBox, QProgressBar,
@@ -499,6 +500,28 @@ class SetupWizard(QWizard):
         form.addRow("", self.install_opts)
 
         self.addPage(p1)
+
+        # 打开向导即自动探测默认路径（用户点添加 = 先看有没有现成的）
+        QTimer.singleShot(150, self._auto_probe)
+
+    def _auto_probe(self):
+        """自动探测 _PROBE_ROOTS：找到现成 ComfyUI → 填入并触发扫描验证；
+        都没有 → 提示用户选择安装位置"""
+        from app.config import _PROBE_ROOTS
+        for root in _PROBE_ROOTS:
+            if os.path.isfile(os.path.join(root, "main.py")):
+                self.ed_dir.setText(os.path.normpath(root))
+                self._detect_existing()
+                return
+        # 默认路径全空：预填用户主盘符的 ComfyUI 作为安装位置，但不扫描
+        drive = os.path.expanduser("~")
+        drive = os.path.splitdrive(drive)[0] + "\\"
+        self.ed_dir.setText(os.path.join(drive, "ComfyUI"))
+        self.lb_scan.setStyleSheet("color:#9aa4b2;")
+        self.lb_scan.setText(
+            "未在常见位置检测到 ComfyUI——请选择安装位置（将自动扫描），"
+            "或直接点「下一步」全新安装。")
+        self.lb_scan.show()
 
         # ---------- 页2：安装进度 ----------
         self.p2 = _LogPage()
