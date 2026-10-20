@@ -370,8 +370,11 @@ class ComfyuiPage(QWidget):
         if inst in self.cfg["instances"]:
             self.cfg["instances"].remove(inst)
             save_config(self.cfg)
+        try:
             self.mainwin._sync_instances()
             self.load_current()
+        except Exception:
+            pass   # 刷新失败不阻断删除完成提示
         QMessageBox.information(self, "ComfyHub",
                                 f"实例「{inst.get('name')}」已彻底删除。")
 
