@@ -173,7 +173,11 @@ class _LogPage(QWizardPage):
 
         plan = [
             {"title": self.STEP_TITLES[0],
-             "detect": lambda: bootstrap.detect_python_step(python_exe, bootstrap.tools_root()),
+             "detect": lambda: (
+                 # 用户明确选了"重新安装"→ 强制走安装（覆盖共享版本）
+                 ("missing", "已选择重新安装便携 Python（覆盖共享版本）", {})
+                 if python_exe == "__reinstall__"
+                 else bootstrap.detect_python_step(python_exe, bootstrap.tools_root())),
              "install": lambda: bootstrap.install_portable_python(
                  bootstrap.tools_root(), log=log, proxy=self.state["proxy"])},
             {"title": self.STEP_TITLES[1],
@@ -633,11 +637,16 @@ class SetupWizard(QWizard):
         self.button(QWizard.FinishButton).setEnabled(False)
 
     def _match_pythons(self, candidates):
-        """为每个候选 ComfyUI 找配套 Python，构建 {comfy_path: python_exe}"""
+        """为每个候选 ComfyUI 找配套 Python，构建 {comfy_path: [候选列表]}
+        共享便携 Python（tools）永远排第一位——它就是为所有实例准备的"""
         py_map = {}
         total = set()
+        tools_py = os.path.join(bootstrap.tools_root(), "python", "python.exe")
         for cp in candidates:
-            cands = [os.path.join(cp, "python.exe"),
+            cands = []
+            if os.path.isfile(tools_py):
+                cands.append(os.path.normpath(tools_py))   # 共享便携优先
+            cands += [os.path.join(cp, "python.exe"),
                      os.path.join(cp, "python", "python.exe"),
                      os.path.join(cp, "venv", "Scripts", "python.exe"),
                      os.path.join(cp, ".venv", "Scripts", "python.exe"),
