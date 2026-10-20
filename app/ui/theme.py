@@ -76,6 +76,7 @@ QPushButton[accent="true"] {
     font-weight: bold;
 }
 QPushButton[accent="true"]:hover { background: #3d7ee2; }
+QPushButton[accent="true"]:disabled { color: #5a636f; background: #242932; }
 QPushButton[accent="true"]:checked { background: #1d5bb8; }
 
 /* 生成设备切换（GPU/CPU 二选一） */
