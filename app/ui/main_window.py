@@ -14,6 +14,8 @@ from app.config import load_config, save_config
 from app.proc_manager import ProcManager
 
 # (emoji, 文字) —— 窄条导航：图标上、文字下
+ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
+
 NAV_ITEMS = [
     ("🏠", "工作台"),
     ("🎛️", "ComfyUI"),
@@ -47,10 +49,23 @@ class MainWindow(QMainWindow):
         sv = QVBoxLayout(side)
         sv.setContentsMargins(0, 0, 0, 10)
         sv.setSpacing(4)
+        logo_box = QWidget()
+        lv = QVBoxLayout(logo_box)
+        lv.setContentsMargins(0, 8, 0, 4)
+        lv.setSpacing(2)
+        icon_label = QLabel()
+        icon_pixmap = QPixmap(os.path.join(ASSETS_DIR, "logo.png"))
+        if not icon_pixmap.isNull():
+            icon_label.setPixmap(icon_pixmap.scaled(40, 40, Qt.KeepAspectRatio,
+                                                    Qt.SmoothTransformation))
+        icon_label.setAlignment(Qt.AlignCenter)
+        lv.addWidget(icon_label)
         logo = QLabel("ComfyHub")
         logo.setObjectName("NavLogo")
         logo.setAlignment(Qt.AlignCenter)
-        sv.addWidget(logo)
+        lv.addWidget(logo)
+        logo_box.setStyleSheet("background: transparent;")
+        sv.addWidget(logo_box)
 
         self.nav = QListWidget()
         self.nav.setViewMode(QListWidget.IconMode)
