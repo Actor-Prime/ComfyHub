@@ -79,10 +79,8 @@ class _LogPage(QWizardPage):
             for btn in (QWizard.CommitButton,
                         QWizard.NextButton, QWizard.FinishButton):
                 wiz.button(btn).setEnabled(False)
-        if has_existing:
-            self._start_stepwise(torch_flag)
-        else:
-            self._start_auto(target_dir, python_exe, mirror, proxy, torch_flag)
+        self._auto = not has_existing   # 空目录=全新安装：步进但自动连跑（无需点确认）
+        self._start_stepwise(torch_flag)
 
     def _start_auto(self, target_dir, python_exe, mirror, proxy, torch_flag):
         """空目录全新安装：全自动连跑"""
@@ -94,8 +92,10 @@ class _LogPage(QWizardPage):
         self.worker.start()
 
     def _start_stepwise(self, torch_flag):
-        """已有实例：步进制（检测 → 询问 → 执行 → 复验）"""
+        """步进制（检测 → 询问 → 执行 → 复验）；_auto=True 时自动连跑不等待点击"""
         from app import bootstrap
+        if self._auto:
+            self.lb_step.setText("全新安装（空目录）：自动执行全部步骤…")
         total = 4 if torch_flag else 3
         self.bar.setRange(0, total)
         target_dir = self.state["target_dir"]
@@ -191,6 +191,13 @@ class _LogPage(QWizardPage):
             self._show_decision("update", info)
 
     def _show_decision(self, kind, info):
+        # 自动模式（全新安装）：不等待点击，直接执行默认动作
+        if getattr(self, "_auto", False) and kind in ("ok", "missing", "update"):
+            from PySide6.QtCore import QTimer as _QT
+            if kind == "ok":
+                _QT.singleShot(200, self._on_skip)
+            else:
+                _QT.singleShot(200, self._on_act)
         """kind: ok=建议跳过 / missing=需安装 / update=建议更新 / retry=检测失败重试"""
         wiz = self.wizard()
         if wiz:
