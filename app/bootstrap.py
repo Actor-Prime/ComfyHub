@@ -464,6 +464,27 @@ def detect_torch_step(python_exe):
         return "missing", f"torch 检测失败: {e}", {}
 
 
+
+
+def verify_comfyui_runnable(python_exe, comfyui_path=None):
+    """最终验证：ComfyUI 是否真的能运行。
+    返回 (ok: bool, info: str)。检查：解释器存在 + torch/核心依赖可 import + main.py 存在"""
+    if not python_exe or not os.path.isfile(python_exe):
+        return False, "未找到 Python 解释器"
+    try:
+        r = run([python_exe, "-c", "import torch, rich, aiohttp"],
+                capture_output=True, text=True, timeout=300)
+        if r.returncode != 0:
+            tail = ((r.stderr or "") or "").strip().splitlines()
+            why = tail[-1][:120] if tail else "import 校验未通过"
+            return False, f"核心依赖缺失（{why}）"
+    except Exception as e:
+        return False, f"验证执行失败: {e}"
+    if comfyui_path and not os.path.isfile(os.path.join(comfyui_path, "main.py")):
+        return False, "ComfyUI 源码（main.py）不存在"
+    return True, "验证通过：Python + 核心依赖齐备，ComfyUI 可运行"
+
+
 def full_setup(target_dir: str, python_exe: str | None, mirror_name: str,
                proxy: str, log=print, install_torch_flag: bool = True,
                progress=None) -> dict:
