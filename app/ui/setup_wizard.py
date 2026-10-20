@@ -515,10 +515,20 @@ class SetupWizard(QWizard):
         self._started = False
 
     def _swap_worker(self, attr, worker, timeout=60000):
-        """替换 worker 前等待旧的收尾——防止 QThread 运行中被 GC 导致 C++ 层崩溃"""
+        """替换 worker：旧线程断开信号后放入墓碑（持引用防 GC，后台自然结束）。
+        绝不 wait 阻塞 UI——上一版用 wait 导致界面卡死在检测中"""
         old_w = getattr(self, attr, None)
         if old_w is not None and old_w.isRunning():
-            old_w.wait(timeout)
+            for sig_name in ("sig_done", "sig_log", "sig_progress", "sig_prog"):
+                sig = getattr(old_w, sig_name, None)
+                if sig is not None:
+                    try:
+                        sig.disconnect()
+                    except Exception:
+                        pass
+            self._graveyard = [w for w in getattr(self, "_graveyard", [])
+                               if w.isRunning()]
+            self._graveyard.append(old_w)
         setattr(self, attr, worker)
 
     def closeEvent(self, event):
@@ -527,7 +537,11 @@ class SetupWizard(QWizard):
                      "_del_worker", "_rm_worker"):
             w = getattr(self, attr, None)
             if w is not None and hasattr(w, "isRunning") and w.isRunning():
-                w.wait(60000)
+                try:
+                    w.sig_done.disconnect()
+                except Exception:
+                    pass
+                w.wait(10000)   # 最多等 10 秒，不长时间冻结退出
         event.accept()
 
     def _detect_existing(self):
