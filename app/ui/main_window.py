@@ -199,6 +199,14 @@ class MainWindow(QMainWindow):
         save_config(self.cfg)
         self._sync_instances()
         self.comfyui_page.load_current()
+        # 广播刷新所有页（工作台/模型库/工作流等同步新实例）
+        for i in range(self.stack.count()):
+            w = self.stack.widget(i)
+            if w and hasattr(w, "on_instance_changed"):
+                try:
+                    w.on_instance_changed()
+                except Exception:
+                    pass
 
     def _run_setup_wizard(self):
         from app.ui.setup_wizard import SetupWizard
