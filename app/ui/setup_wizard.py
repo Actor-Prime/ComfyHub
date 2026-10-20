@@ -282,7 +282,11 @@ class _LogPage(QWizardPage):
         self.b_skip.setEnabled(not locked)
 
     def _on_act(self):
-        """执行安装/更新/重装（锁按钮 → 跑 → 复验）"""
+        """执行安装/更新/重装（锁按钮 → 跑 → 复验）；最终验证阶段=重新验证"""
+        if getattr(self, "_phase", "") == "final_verify":
+            self._lock(True)
+            self._finish_all()
+            return
         self._lock(True)
         step = self.plan[self.cur]
         self.lb_state.setText("执行中…（详见日志）")
@@ -339,9 +343,39 @@ class _LogPage(QWizardPage):
     def _finish_all(self):
         total = self.state["total"]
         self.bar.setValue(total)
-        self.lb_step.setText("全部步骤完成 ✅")
+        self.lb_step.setText("全部步骤完成 —— 正在进行最终验证…")
+        self._decision_visible(False)
+        self._phase = "final_verify"
+        from app import bootstrap
+        py = self.state.get("python_path") or ""
+        cp = self.state.get("comfyui_path") or self.state.get("target_dir")
+        self._verify_worker = _StepWorker(
+            lambda: bootstrap.verify_comfyui_runnable(py, cp))
+        self._verify_worker.sig_done.connect(self._on_final_verify)
+        self._verify_worker.start()
+
+    def _on_final_verify(self, ok, res, err):
+        if not ok:
+            self.lb_step.setText("最终验证执行失败")
+            self.lb_state.setText(f"❌ {err}")
+            self.b_skip.hide()
+            self.b_act.setText("🔄 重新验证")
+            self.b_act.show()
+            self._lock(False)
+            return
+        v_ok, info = res
+        if not v_ok:
+            self.lb_step.setText("最终验证未通过")
+            self.lb_state.setStyleSheet("color:#e8635a;")
+            self.lb_state.setText(f"❌ {info}——请查看日志排查后点「重新验证」。")
+            self.b_skip.hide()
+            self.b_act.setText("🔄 重新验证")
+            self.b_act.show()
+            self._lock(False)
+            return
+        self.lb_step.setText("全部步骤完成，最终验证通过 ✅")
         self.lb_state.setStyleSheet("color:#4cd47c;")
-        self.lb_state.setText("环境就绪！点「完成」自动添加为实例。")
+        self.lb_state.setText(f"{info}——点「完成」自动添加为实例。")
         self._decision_visible(False)
         self.result_data = {
             "comfyui_path": self.state.get("comfyui_path") or self.state.get("target_dir"),
@@ -474,16 +508,16 @@ class SetupWizard(QWizard):
                 self.cb_found.addItem(rel if rel != "." else "(此目录)")
             self.cb_found.setEnabled(len(candidates) > 1)
             self.cb_found.show()
+            self.cb_found.currentIndexChanged.connect(
+                lambda _i: self._begin_verify() if self._scan_candidates else None)
             n_py = self._match_pythons(candidates)
-            self.lb_scan.setStyleSheet("color:#4cd47c;")
-            self.lb_scan.setText(
-                f"✅ 检测到 {len(candidates)} 个 ComfyUI 环境和 {n_py} 个 Python 解释器："
-                "选好候选后点「完成」直接添加为实例（免下载）。")
             self._scan_candidates = candidates
             self._scan_pys = self._py_map
-            p1.setFinalPage(True)
-            self.button(QWizard.FinishButton).setEnabled(True)
-            self.button(QWizard.NextButton).setEnabled(False)
+            # 验证选中候选能否运行——通过才解锁「完成」
+            self._phase = "scan_verify"
+            self.lb_scan.setStyleSheet("color:#9aa4b2;")
+            self.lb_scan.setText(f"检测到 {len(candidates)} 个 ComfyUI 环境和 {n_py} 个 Python 解释器，正在验证能否运行…")
+            self._begin_verify()
             return
         self.cb_found.hide()
         target = os.path.join(root, "ComfyUI")
@@ -494,6 +528,48 @@ class SetupWizard(QWizard):
         self.lb_scan.setText(
             "未检测到已有 ComfyUI，已切换到安装模式：\n"
             "安装目录已自动指向子目录 ComfyUI，请确认下方安装选项后点「下一步」。")
+        p1.setFinalPage(False)
+        self.button(QWizard.NextButton).setEnabled(True)
+        self.button(QWizard.FinishButton).setEnabled(False)
+
+    def _begin_verify(self):
+        """后台验证选中候选的 ComfyUI 能否运行；通过才解锁「完成」"""
+        from app import bootstrap
+        self.button(QWizard.FinishButton).setEnabled(False)
+        self.button(QWizard.NextButton).setEnabled(False)
+        idx = max(0, self.cb_found.currentIndex())
+        comfy = self._scan_candidates[min(idx, len(self._scan_candidates) - 1)]
+        py = self._py_map.get(comfy) or ""
+        self._verify_worker = _StepWorker(
+            lambda: bootstrap.verify_comfyui_runnable(py, comfy))
+        self._verify_worker.sig_done.connect(self._on_verify2_done)
+        self._verify_worker.start()
+
+    def _on_verify2_done(self, ok, res, err):
+        p1 = self.page(0)
+        if not ok:
+            self._verify_fail(f"验证执行失败: {err}")
+            return
+        v_ok, info = res
+        if v_ok:
+            self.lb_scan.setStyleSheet("color:#4cd47c;")
+            self.lb_scan.setText(f"✅ {info}——选好候选后点「完成」直接添加为实例（免下载）。")
+            p1.setFinalPage(True)
+            self.button(QWizard.FinishButton).setEnabled(True)
+            self.button(QWizard.NextButton).setEnabled(False)
+        else:
+            self._verify_fail(info)
+
+    def _verify_fail(self, why):
+        """验证失败：切回安装模式（展开选项，走安装修齐）"""
+        self.lb_scan.setStyleSheet("color:#e8a33d;")
+        self.lb_scan.setText(
+            f"⚠️ 验证未通过：{why}\n"
+            "已切换到安装模式：安装目录保持不变，请确认下方安装选项后点「下一步」。")
+        self.cb_found.hide()
+        self._scan_candidates = None
+        self.install_opts.show()
+        p1 = self.page(0)
         p1.setFinalPage(False)
         self.button(QWizard.NextButton).setEnabled(True)
         self.button(QWizard.FinishButton).setEnabled(False)
