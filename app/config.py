@@ -91,8 +91,7 @@ def load_config() -> dict:
                 cfg.update(data)
         except Exception:
             pass  # 配置损坏时回退默认，不崩溃
-    if not cfg.get("instances"):
-        cfg["instances"] = [default_instance()]
+    # 用户删光实例后保持为空（显示"（无实例）"占位），不再自动生成
     return cfg
 
 
