@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.config import VRAM_MODES, save_config
+from app.ui.nav import NAV
 from app.workers import BgWorker, RmWorker, swap_worker, wait_all
 from app.process import build_command, port_in_use
 
@@ -477,7 +478,7 @@ class ComfyuiPage(QWidget):
         # device 字段由 build_command 统一处理（--cpu 等）
         self.mainwin.procs.get(inst).start(inst)
         self._update_state()
-        self.mainwin.goto(6)   # 启动后自动切到「控制台」看实时日志
+        self.mainwin.goto(NAV.CONSOLE)   # 启动后自动切到「控制台」看实时日志
 
     def stop(self):
         inst = self._current_inst()
