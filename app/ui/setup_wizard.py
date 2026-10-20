@@ -68,38 +68,265 @@ class SetupWorker(QThread):
             self.sig_done.emit(False, {}, str(e))
 
 
+class _StepWorker(QThread):
+    """通用后台执行器：跑 fn(*args)，返回 (ok, result, err)"""
+    sig_done = Signal(bool, object, str)
+
+    def __init__(self, fn, args=()):
+        super().__init__()
+        self.fn, self.args = fn, args
+
+    def run(self):
+        try:
+            r = self.fn(*self.args)
+            self.sig_done.emit(True, r, "")
+        except Exception as e:
+            self.sig_done.emit(False, None, str(e))
+
+
 class _LogPage(QWizardPage):
-    """安装进度页（步骤3）"""
+    """安装进度页（步进制：每步 检测 → 询问 → 执行 → 复验 → 下一步）"""
+
+    STEP_TITLES = ["准备 Python 环境", "下载 ComfyUI 源码",
+                   "安装 ComfyUI 依赖", "安装 PyTorch（按显卡匹配）"]
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setTitle("正在安装环境")
         self.setCommitPage(True)
+        self.plan = []            # [{"title", "detect": fn, "install": fn}]
+        self.cur = 0
+        self.state = {}           # 跨步骤共享（python_path / comfyui_path）
+        self.on_done = None
+        self.done_ok = False
+
         v = QVBoxLayout(self)
-        self.bar = QProgressBar()
         self.lb_step = QLabel("准备中…")
+        self.bar = QProgressBar()
+        self.lb_state = QLabel("")
+        self.lb_state.setWordWrap(True)
+        self.lb_state.setStyleSheet("color:#e8a33d;")
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         v.addWidget(self.lb_step)
         v.addWidget(self.bar)
+        v.addWidget(self.lb_state)
         v.addWidget(self.log, 1)
+
+        # 决策按钮行
+        hb = QHBoxLayout()
+        hb.addStretch()
+        self.b_skip = QPushButton("跳过此步 ▶")
+        self.b_act = QPushButton("安装")
+        self.b_act.setProperty("accent", True)
+        self.b_skip.clicked.connect(self._on_skip)
+        self.b_act.clicked.connect(self._on_act)
+        hb.addWidget(self.b_skip)
+        hb.addWidget(self.b_act)
+        v.addLayout(hb)
+        self._decision_visible(False)
         self.worker = None
         self.result_data = {}
 
+    # ---------- 入口 ----------
     def start(self, target_dir, python_exe, mirror, proxy, torch_flag, on_done):
+        from app import bootstrap
         self.log.clear()
-        self.bar.setRange(0, 4 if torch_flag else 3)
-        # 运行期间锁住向导按钮，防误点（QWizardPage 需经 wizard() 取按钮）
+        total = 4 if torch_flag else 3
+        self.bar.setRange(0, total)
+        self.on_done = on_done
+        self.done_ok = False
+        self.state = {"target_dir": target_dir, "python_exe": python_exe,
+                      "mirror_name": mirror, "proxy": proxy, "total": total}
+        mirror = bootstrap.PYPI_MIRRORS.get(mirror, bootstrap.PYPI_MIRRORS["阿里云"])
+        wheels = os.path.join(bootstrap.tools_root(), "wheels")
+        log = self._on_log
+
+        plan = [
+            {"title": self.STEP_TITLES[0],
+             "detect": lambda: bootstrap.detect_python_step(python_exe, bootstrap.tools_root()),
+             "install": lambda payload: bootstrap.install_portable_python(
+                 bootstrap.tools_root(), log=log, proxy=proxy)},
+            {"title": self.STEP_TITLES[1],
+             "detect": lambda: bootstrap.detect_source_step(target_dir),
+             "install": lambda payload: bootstrap.install_comfyui_source(
+                 target_dir, log=log, proxy=proxy)},
+            {"title": self.STEP_TITLES[2],
+             "detect": lambda: bootstrap.detect_requirements_step(
+                 self.state.get("python_path"), self.state.get("comfyui_path")),
+             "install": lambda payload: bootstrap.install_comfyui_requirements(
+                 self.state.get("python_path"), self.state.get("comfyui_path"),
+                 log=log, mirror=mirror)},
+        ]
+        if torch_flag:
+            plan.append({"title": self.STEP_TITLES[3],
+                         "detect": lambda: bootstrap.detect_torch_step(
+                             self.state.get("python_path")),
+                         "install": lambda payload: self._install_torch_step(mirror, wheels, log)})
+        self.plan = plan[:total]
+        self.cur = 0
+        # 锁住向导按钮
         wiz = self.wizard()
         if wiz:
             for btn in (QWizard.BackButton, QWizard.CommitButton,
                         QWizard.NextButton, QWizard.FinishButton):
                 wiz.button(btn).setEnabled(False)
-        self.worker = SetupWorker(target_dir, python_exe, mirror, proxy, torch_flag)
-        self.worker.sig_log.connect(self._on_log)
-        self.worker.sig_progress.connect(self._on_progress)
-        self.worker.sig_done.connect(lambda ok, res, err: on_done(ok, res, err))
+        self._begin_detect()
+
+    def _install_torch_step(self, mirror, wheels, log):
+        from app import bootstrap
+        gpu = bootstrap.detect_gpu()
+        log(f"显卡: {gpu.label}")
+        ok = bootstrap.install_torch(self.state.get("python_path"),
+                                     gpu.torch_variant, log=log, mirror=mirror,
+                                     wheels_dir=wheels)
+        if not ok:
+            log("CUDA 版安装失败，回退 CPU 版")
+            bootstrap.install_torch(self.state.get("python_path"), "cpu",
+                                    log=log, mirror=mirror)
+        # GPU 加速验证
+        try:
+            r = bootstrap.run([self.state["python_path"], "-c",
+                "import torch;print('CUDA_OK' if torch.cuda.is_available() else 'CUDA_NO')"],
+                capture_output=True, text=True, timeout=120)
+            out = (r.stdout or "").strip()
+            log(f"torch 安装完成，GPU 加速: {'✅ 可用' if 'CUDA_OK' in out else '❌ 不可用'}")
+        except Exception:
+            log("torch 验证跳过")
+
+    # ---------- 步进状态机 ----------
+    def _begin_detect(self):
+        if self.cur >= len(self.plan):
+            self._finish_all()
+            return
+        step = self.plan[self.cur]
+        total = self.state["total"]
+        self.bar.setValue(self.cur)
+        self.lb_step.setText(f"步骤 {self.cur + 1}/{total}：{step['title']} —— 正在检测本地环境…")
+        self._decision_visible(False)
+        self.lb_state.setText("检测中…")
+        self.worker = _StepWorker(step["detect"])
+        self.worker.sig_done.connect(self._on_detect_done)
         self.worker.start()
+
+    def _on_detect_done(self, ok, res, err):
+        step = self.plan[self.cur]
+        if not ok:
+            self.lb_state.setText(f"❌ 检测失败：{err}")
+            self._show_decision("retry", f"检测出错：{err}")
+            return
+        status, info, payload = res
+        color = {"ok": "#4cd47c", "missing": "#e8635a", "cpu": "#e8a33d",
+                 "outdated": "#e8a33d"}.get(status, "#9aa4b2")
+        self.lb_state.setStyleSheet(f"color:{color};")
+        self.state.update(payload)
+        icon = {"ok": "✅", "missing": "❌", "cpu": "⚠️", "outdated": "⚠️"}.get(status, "")
+        self.lb_state.setText(f"{icon} {info}")
+        if status == "ok":
+            self._show_decision("ok", info)
+        elif status == "missing":
+            self._show_decision("missing", info)
+        else:  # cpu / outdated
+            self._show_decision("update", info)
+
+    def _show_decision(self, kind, info):
+        """kind: ok=建议跳过 / missing=需安装 / update=建议更新 / retry=检测失败重试"""
+        self.b_act.show()
+        self.b_skip.show()
+        if kind == "ok":
+            self.b_act.setText("重新安装")
+            self.b_skip.setText("跳过此步 ▶")
+            self.b_skip.setDefault(True)
+        elif kind == "missing":
+            self.b_act.setText("📦 安装")
+            self.b_skip.setText("跳过此步 ▶")
+            self.b_act.setDefault(True)
+        elif kind == "update":
+            self.b_act.setText("⬆ 更新")
+            self.b_skip.setText("跳过（保留现状）▶")
+            self.b_act.setDefault(True)
+        else:
+            self.b_act.setText("🔄 重试")
+            self.b_skip.setText("跳过此步 ▶")
+        self._decision_visible(True)
+
+    def _decision_visible(self, vis):
+        self.b_act.setVisible(vis)
+        self.b_skip.setVisible(vis)
+
+    def _lock(self, locked):
+        self.b_act.setEnabled(not locked)
+        self.b_skip.setEnabled(not locked)
+
+    def _on_act(self):
+        """执行安装/更新/重装（锁按钮 → 跑 → 复验）"""
+        self._lock(True)
+        step = self.plan[self.cur]
+        self.lb_state.setText("执行中…（详见日志）")
+        self.worker = _StepWorker(step["install"])
+        self.worker.sig_done.connect(self._on_install_done)
+        self.worker.start()
+
+    def _on_install_done(self, ok, res, err):
+        if not ok:
+            self.lb_state.setText(f"❌ 执行失败：{err}")
+            self._show_decision("retry", err)
+            self._lock(False)
+            return
+        # 复验：重新检测，确认最新
+        self.lb_state.setText("执行完成，正在复验…")
+        step = self.plan[self.cur]
+        self.worker = _StepWorker(step["detect"])
+        try:
+            self.worker.sig_done.disconnect()
+        except Exception:
+            pass
+        self.worker.sig_done.connect(self._on_verify_done)
+        self.worker.start()
+
+    def _on_verify_done(self, ok, res, err):
+        if not ok:
+            self.lb_state.setText(f"❌ 复验失败：{err}")
+            self._show_decision("retry", err)
+            self._lock(False)
+            return
+        status, info, payload = res
+        self.state.update(payload)
+        if status != "ok":
+            self.lb_state.setText(f"⚠️ 复验未通过：{info}")
+            self._show_decision("retry", info)
+            self._lock(False)
+            return
+        self.lb_state.setStyleSheet("color:#4cd47c;")
+        self.lb_state.setText(f"✅ {info}")
+        self._lock(False)
+        self._advance()
+
+    def _on_skip(self):
+        self._advance()
+
+    def _advance(self):
+        self.cur += 1
+        self.bar.setValue(self.cur)
+        if self.cur >= len(self.plan):
+            self._finish_all()
+        else:
+            self._begin_detect()
+
+    def _finish_all(self):
+        total = self.state["total"]
+        self.bar.setValue(total)
+        self.lb_step.setText("全部步骤完成 ✅")
+        self.lb_state.setStyleSheet("color:#4cd47c;")
+        self.lb_state.setText("环境就绪！点「完成」自动添加为实例。")
+        self._decision_visible(False)
+        self.result_data = {
+            "comfyui_path": self.state.get("comfyui_path") or self.state.get("target_dir"),
+            "python_path": self.state.get("python_path") or "",
+        }
+        self.done_ok = True
+        if self.on_done:
+            self.on_done(True, dict(self.result_data), "")
 
     def _on_log(self, msg):
         self.log.appendPlainText(msg)
@@ -107,11 +334,7 @@ class _LogPage(QWizardPage):
         self.log.moveCursor(QTextCursor.End)
 
     def _on_progress(self, step, total):
-        self.bar.setMaximum(total)
-        self.bar.setValue(step)
-        names = {1: "准备 Python", 2: "下载 ComfyUI 源码",
-                 3: "安装依赖库", 4: "安装 PyTorch（按显卡匹配）"}
-        self.lb_step.setText(f"步骤 {step}/{total}：{names.get(step, '')}")
+        pass
 
 
 class SetupWizard(QWizard):
