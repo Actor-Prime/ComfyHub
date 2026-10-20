@@ -505,6 +505,10 @@ class SetupWizard(QWizard):
             self.cb_found.hide()
             self.lb_found_title.hide()
             self.install_opts.show()
+            # 关键：从"验证通过的 FinalPage"切回安装模式时，必须还原按钮布局
+            p1.setFinalPage(False)
+            self.button(QWizard.NextButton).setEnabled(True)
+            self.button(QWizard.FinishButton).setEnabled(False)
             QMessageBox.warning(self, "ComfyHub",
                                 f"目录不存在：\n{root}\n\n已按全新安装处理："
                                 "请确认下方安装选项后点「下一步」。")
