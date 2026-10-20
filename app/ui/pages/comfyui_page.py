@@ -241,7 +241,10 @@ class ComfyuiPage(QWidget):
     # ---------- 数据 ----------
     def load_current(self):
         inst = self.mainwin.current_inst()
+        self.b_del.setEnabled(inst is not None)
         if not inst:
+            for w in (self.ed_name, self.ed_path, self.ed_models, self.ed_python):
+                w.clear()
             return
         self.ed_name.setText(inst.get("name", ""))
         self.ed_path.setText(inst.get("comfyui_path", ""))
@@ -323,6 +326,9 @@ class ComfyuiPage(QWidget):
     def _delete(self):
         inst = self._current_inst()
         if not inst:
+            QMessageBox.information(self, "ComfyHub",
+                                    "当前没有可删除的实例。\n"
+                                    "点右上角「＋ 添加 ComfyUI」先添加一个。")
             return
         path = inst.get("comfyui_path", "")
         box = QMessageBox(self)
