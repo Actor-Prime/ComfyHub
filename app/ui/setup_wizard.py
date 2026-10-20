@@ -6,6 +6,7 @@ from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtCore import QTimer
 from app.workers import (ScanWorker, SetupWorker, StepWorker,
                          swap_worker, wait_all)
+from app.log import log_exc
 from PySide6.QtWidgets import (
     QWizard, QWizardPage, QLabel, QVBoxLayout, QLineEdit, QHBoxLayout,
     QPushButton, QFileDialog, QComboBox, QCheckBox, QProgressBar,

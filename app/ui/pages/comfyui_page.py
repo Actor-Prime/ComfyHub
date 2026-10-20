@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.config import VRAM_MODES, save_config
+from app.log import log_exc
 from app.ui.nav import NAV
 from app.workers import BgWorker, RmWorker, swap_worker, wait_all
 from app.process import build_command, port_in_use
