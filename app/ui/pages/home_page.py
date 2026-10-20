@@ -182,6 +182,7 @@ class HomePage(QWidget):
 
     def on_instance_changed(self):
         self._refresh_dir_names()
+        self._refresh_state()   # 同步启停按钮可用态与实例名
 
     def _refresh_dir_names(self):
         inst = self.mainwin.current_inst()
