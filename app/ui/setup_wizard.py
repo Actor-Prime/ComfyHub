@@ -439,10 +439,19 @@ class SetupWizard(QWizard):
 
         self.cb_python = QComboBox()
         self.cb_python.addItem("自动安装便携 Python（推荐，不污染系统）", userData=None)
-        # 探测已有解释器供选择
-        for cand in (r"F:\ComfyUI_env\Scripts\python.exe",):
-            if os.path.isfile(cand):
+        # 动态探测已有解释器：共享便携 Python + 已注册实例用过的解释器（去重）
+        seen = set()
+        tools_py = os.path.join(bootstrap.tools_root(), "python", "python.exe")
+        if os.path.isfile(tools_py):
+            self.cb_python.addItem("使用 ComfyHub 共享便携 Python（已安装，实例共用）",
+                                   userData=tools_py)
+            seen.add(tools_py)
+        parent_cfg = getattr(self.parent(), "cfg", {}) if self.parent() else {}
+        for inst in parent_cfg.get("instances", []):
+            cand = inst.get("python_path") or ""
+            if cand and os.path.isfile(cand) and cand not in seen:
                 self.cb_python.addItem(f"使用已有: {cand}", userData=cand)
+                seen.add(cand)
         form_opts.addRow("Python 环境:", self.cb_python)
 
         self.cb_mirror = QComboBox()
@@ -565,7 +574,7 @@ class SetupWizard(QWizard):
         self.lb_scan.setStyleSheet("color:#e8a33d;")
         self.lb_scan.setText(
             f"⚠️ 验证未通过：{why}\n"
-            "已切换到安装模式：安装目录保持不变，请确认下方安装选项后点「下一步」。")
+            "已切换到安装模式：在下方「Python 环境」选择自动安装便携 Python 即可修齐，确认选项后点「下一步」。")
         self.cb_found.hide()
         self._scan_candidates = None
         self.install_opts.show()
