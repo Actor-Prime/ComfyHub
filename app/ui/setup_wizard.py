@@ -765,13 +765,25 @@ class SetupWizard(QWizard):
 
     def done(self, r):
         """QWizard「完成」按钮触发 done(Accepted)——组装 setup_result 后关闭。
-        注意：accept() 内部会调 done()，所以组装只在这里做，形成单向：
-        Finish 点击 → done() → 组装 → super().done()"""
+        组装失败时区分两种情况：
+        · 后台检测/验证还在跑 → 提示稍候，向导保持打开（绝不静默关闭）
+        · 确认无候选 → 拒绝关闭"""
         if r == QWizard.Accepted:
             self._prepare_result()
             if self.setup_result and self.setup_result.get("comfyui_path"):
                 super().done(r)
                 return
+            busy = any(
+                getattr(self, a, None) is not None
+                and hasattr(getattr(self, a), "isRunning")
+                and getattr(self, a).isRunning()
+                for a in ("_scan_worker", "_verify_worker"))
+            if busy:
+                QMessageBox.information(
+                    self, "ComfyHub",
+                    "⏳ 正在检测/验证环境，请稍候……\n"
+                    "验证完成后「完成」即可正常使用（通常只需几秒）。")
+                return   # 向导保持打开，不静默关闭
             super().reject()
             return
         super().done(r)
