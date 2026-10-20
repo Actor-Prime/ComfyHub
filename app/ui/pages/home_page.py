@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
 )
 
 from app import sysinfo
+from app.ui.nav import NAV
 
 ASSETS = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))), "assets")
@@ -105,7 +106,7 @@ class HomePage(QWidget):
         self.b_web.clicked.connect(lambda: self._act("web"))
         self.b_edit = QPushButton("⚙  管理此实例")
         self.b_edit.setFixedSize(130, 42)
-        self.b_edit.clicked.connect(lambda: self.mainwin.goto(1))
+        self.b_edit.clicked.connect(lambda: self.mainwin.goto(NAV.COMFYUI))
         bar.addWidget(self.b_start)
         bar.addWidget(self.b_stop)
         bar.addWidget(self.b_web)
