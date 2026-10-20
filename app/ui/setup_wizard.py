@@ -289,7 +289,7 @@ class _LogPage(QWizardPage):
             return
         self._lock(True)
         step = self.plan[self.cur]
-        self.lb_state.setText("执行中…（详见日志）")
+        self.lb_state.setText("⏳ 执行中…（按钮已锁定，完成后自动进入下一步）")
         self.worker = _StepWorker(step["install"])
         self.worker.sig_done.connect(self._on_install_done)
         self.worker.start()
