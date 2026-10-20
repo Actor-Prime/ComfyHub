@@ -4,6 +4,9 @@ import os
 
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtCore import QTimer
+from app.workers import (ScanWorker, SetupWorker, StepWorker,
+                         swap_worker, wait_all)
+from app.log import log_exc
 from PySide6.QtWidgets import (
     QWizard, QWizardPage, QLabel, QVBoxLayout, QLineEdit, QHBoxLayout,
     QPushButton, QFileDialog, QComboBox, QCheckBox, QProgressBar,
@@ -15,76 +18,6 @@ from app.bootstrap import PYPI_MIRRORS
 
 
 # ---------------- 后台安装线程 ----------------
-class _ScanWorker(QThread):
-    """目录扫描线程：找 main.py（含两层子目录）"""
-    sig_done = Signal(str, list)
-
-    def __init__(self, root):
-        super().__init__()
-        self.root = root
-
-    def run(self):
-        root = self.root
-        candidates = []
-        search_roots = [root]
-        try:
-            for d1 in os.listdir(root):
-                p1 = os.path.join(root, d1)
-                if os.path.isdir(p1):
-                    search_roots.append(p1)
-                    for d2 in os.listdir(p1):
-                        p2 = os.path.join(p1, d2)
-                        if os.path.isdir(p2):
-                            search_roots.append(p2)
-        except OSError:
-            pass
-        for sr in search_roots:
-            if os.path.isfile(os.path.join(sr, "main.py")):
-                candidates.append(sr)
-        self.sig_done.emit(root, candidates)
-
-
-class SetupWorker(QThread):
-    sig_log = Signal(str)
-    sig_progress = Signal(int, int)     # step, total
-    sig_done = Signal(bool, dict, str)  # ok, result, errmsg
-
-    def __init__(self, target_dir, python_exe, mirror, proxy, install_torch_flag):
-        super().__init__()
-        self.target_dir = target_dir
-        self.python_exe = python_exe
-        self.mirror = mirror
-        self.proxy = proxy
-        self.install_torch_flag = install_torch_flag
-
-    def run(self):
-        try:
-            res = bootstrap.full_setup(
-                self.target_dir, self.python_exe, self.mirror, self.proxy,
-                log=lambda m: self.sig_log.emit(str(m)),
-                install_torch_flag=self.install_torch_flag,
-                progress=lambda s, t: self.sig_progress.emit(s, t))
-            self.sig_done.emit(True, res, "")
-        except Exception as e:
-            self.sig_done.emit(False, {}, str(e))
-
-
-class _StepWorker(QThread):
-    """通用后台执行器：跑 fn(*args)，返回 (ok, result, err)"""
-    sig_done = Signal(bool, object, str)
-
-    def __init__(self, fn, args=()):
-        super().__init__()
-        self.fn, self.args = fn, args
-
-    def run(self):
-        try:
-            r = self.fn(*self.args)
-            self.sig_done.emit(True, r, "")
-        except Exception as e:
-            self.sig_done.emit(False, None, str(e))
-
-
 class _LogPage(QWizardPage):
     """安装进度页（步进制：每步 检测 → 询问 → 执行 → 复验 → 下一步）"""
 
@@ -233,7 +166,7 @@ class _LogPage(QWizardPage):
         self.lb_step.setText(f"步骤 {self.cur + 1}/{total}：{step['title']} —— 正在检测本地环境…")
         self._decision_visible(False)
         self.lb_state.setText("检测中…")
-        self._swap_worker("worker", _StepWorker(step["detect"]))
+        swap_worker(self, "worker", StepWorker(step["detect"]))
         self.worker.sig_done.connect(self._on_detect_done)
         self.worker.start()
 
@@ -301,7 +234,7 @@ class _LogPage(QWizardPage):
             wiz.button(QWizard.BackButton).setEnabled(False)   # 执行中禁止返回改配置
         step = self.plan[self.cur]
         self.lb_state.setText("⏳ 执行中…（按钮已锁定，完成后自动进入下一步）")
-        self._swap_worker("worker", _StepWorker(step["install"]))
+        swap_worker(self, "worker", StepWorker(step["install"]))
         self.worker.sig_done.connect(self._on_install_done)
         self.worker.start()
 
@@ -314,7 +247,7 @@ class _LogPage(QWizardPage):
         # 复验：重新检测，确认最新
         self.lb_state.setText("执行完成，正在复验…")
         step = self.plan[self.cur]
-        self.worker = _StepWorker(step["detect"])
+        self.worker = StepWorker(step["detect"])
         try:
             self.worker.sig_done.disconnect()
         except Exception:
@@ -360,7 +293,7 @@ class _LogPage(QWizardPage):
         from app import bootstrap
         py = self.state.get("python_path") or ""
         cp = self.state.get("comfyui_path") or self.state.get("target_dir")
-        self._verify_worker = _StepWorker(
+        self._verify_worker = StepWorker(
             lambda: bootstrap.verify_comfyui_runnable(py, cp))
         self._verify_worker.sig_done.connect(self._on_final_verify)
         self._verify_worker.start()
@@ -558,16 +491,8 @@ class SetupWizard(QWizard):
         setattr(self, attr, worker)
 
     def closeEvent(self, event):
-        # 向导关闭时等待所有后台线程收尾（防 QThread destroyed while running）
-        for attr in ("_scan_worker", "_verify_worker", "worker",
-                     "_del_worker", "_rm_worker"):
-            w = getattr(self, attr, None)
-            if w is not None and hasattr(w, "isRunning") and w.isRunning():
-                try:
-                    w.sig_done.disconnect()
-                except Exception:
-                    pass
-                w.wait(10000)   # 最多等 10 秒，不长时间冻结退出
+        wait_all(self, ("_scan_worker", "_verify_worker", "worker",
+                        "_del_worker", "_rm_worker"), 10000)
         event.accept()
 
     def _detect_existing(self):
@@ -602,7 +527,7 @@ class SetupWizard(QWizard):
         self.lb_scan.setText("正在扫描，请稍候…")
         self.lb_scan.setStyleSheet("color:#9aa4b2;")
         self.lb_scan.show()
-        self._swap_worker("_scan_worker", _ScanWorker(root))
+        swap_worker(self, "_scan_worker", ScanWorker(root))
         self._scan_worker.sig_done.connect(self._on_scan_done)
         self._scan_worker.start()
 
@@ -668,7 +593,7 @@ class SetupWizard(QWizard):
                 return (False, "未找到任何可用的 Python 解释器", "")
             return (False, last, "")
 
-        self._swap_worker("_verify_worker", _StepWorker(_try_all))
+        swap_worker(self, "_verify_worker", StepWorker(_try_all))
         self._verify_worker.sig_done.connect(self._on_verify2_done)
         self._verify_worker.start()
 
