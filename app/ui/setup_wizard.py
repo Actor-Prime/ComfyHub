@@ -405,7 +405,7 @@ class SetupWizard(QWizard):
         self.setup_result = {}
 
         # ---------- 页1：位置与选项 ----------
-        p1 = QWizardPage()
+        self.p1 = p1 = QWizardPage()
         p1.setTitle("选择安装位置")
         form = QFormLayout(p1)
 
@@ -648,7 +648,7 @@ class SetupWizard(QWizard):
 
     def _on_done(self, ok: bool, res: dict, err: str):
         if ok:
-            res["name"] = self.p1.ed_name.text().strip()
+            res["name"] = self.ed_name.text().strip()
             self.setup_result = res
             self.p2.lb_step.setText("✅ 安装完成！点击“完成”自动添加为实例。")
             self.button(QWizard.FinishButton).setEnabled(True)
