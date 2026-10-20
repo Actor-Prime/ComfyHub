@@ -207,6 +207,11 @@ class MainWindow(QMainWindow):
                     w.on_instance_changed()
                 except Exception:
                     pass
+        # 工作台全量强刷（实例名/目录卡/启停按钮状态）
+        try:
+            self.home_page.on_show()
+        except Exception:
+            pass
 
     def _run_setup_wizard(self):
         from app.ui.setup_wizard import SetupWizard
