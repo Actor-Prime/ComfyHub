@@ -446,10 +446,14 @@ class SetupWizard(QWizard):
                 self.ed_dir.setText(os.path.normpath(root))
                 self._detect_existing()
                 return
-        # 默认路径全空：预填用户主盘符的 ComfyUI 作为安装位置，但不扫描
-        drive = os.path.expanduser("~")
-        drive = os.path.splitdrive(drive)[0] + "\\"
-        self.ed_dir.setText(os.path.join(drive, "ComfyUI"))
+        # 默认路径全空：预填「程序所在目录/ComfyUI」作为安装位置（不用系统盘 C:）
+        import sys as _sys
+        if getattr(_sys, "frozen", False):
+            base = os.path.dirname(_sys.executable)          # 打包后 = exe 所在目录
+        else:
+            base = os.path.dirname(os.path.dirname(os.path.dirname(
+                os.path.abspath(__file__))))                 # 源码运行 = 项目根
+        self.ed_dir.setText(os.path.join(base, "ComfyUI"))
         self.lb_scan.setStyleSheet("color:#9aa4b2;")
         self.lb_scan.setText(
             "未在常见位置检测到 ComfyUI——请选择安装位置（将自动扫描），"
