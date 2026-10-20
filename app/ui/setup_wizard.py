@@ -423,6 +423,11 @@ class SetupWizard(QWizard):
         form.addRow("实例名称:", self.ed_name)
 
         # 扫描结果提示 + 候选下拉（扫描到已有环境时显示）
+        self.lb_warn = QLabel("")
+        self.lb_warn.setWordWrap(True)
+        self.lb_warn.setStyleSheet("color:#e8635a; font-weight:500;")
+        self.lb_warn.hide()
+        form.addRow("", self.lb_warn)
         self.lb_scan = QLabel("")
         self.lb_scan.setWordWrap(True)
         self.lb_scan.setStyleSheet("color:#4cd47c;")
@@ -500,6 +505,21 @@ class SetupWizard(QWizard):
         if not os.path.isdir(root):
             QMessageBox.warning(self, "ComfyHub", f"目录不存在：\n{root}")
             return
+        # 记录用户选择的原始根目录（实例名默认取它的名字）
+        self._orig_root = root
+        # 中文/非 ASCII 路径检测：ComfyUI/pip/torch 对中文路径极易出玄学问题
+        try:
+            root.encode("ascii")
+            self.lb_warn.hide()
+        except UnicodeEncodeError:
+            self.lb_warn.setText(
+                "⚠️ 安装路径包含中文或非 ASCII 字符！ComfyUI / pip / PyTorch 在中文路径下"
+                "极易出现依赖安装失败、启动报错等玄学问题，强烈建议改用纯英文路径"
+                "（例如 F:////ComfyUI）。")
+            self.lb_warn.show()
+        # 实例名默认 = 用户选择的根目录名（可手动改）
+        if not self.ed_name.text().strip():
+            self.ed_name.setText(os.path.basename(root) or "")
         self.lb_scan.setText("正在扫描，请稍候…")
         self.lb_scan.setStyleSheet("color:#9aa4b2;")
         self.lb_scan.show()
