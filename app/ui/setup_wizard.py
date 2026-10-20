@@ -644,8 +644,8 @@ class SetupWizard(QWizard):
         self.install_opts.show()
         self.lb_scan.setStyleSheet("color:#e8a33d;")
         self.lb_scan.setText(
-            "未检测到已有 ComfyUI，已切换到安装模式：\n"
-            "安装目录已自动指向子目录 ComfyUI，请确认下方安装选项后点「下一步」。")
+            "📁 空文件夹：未检测到 ComfyUI 实例，点「下一步」开始安装\n"
+            "安装目录已自动指向 ComfyUI 子目录，请确认下方安装选项。")
         p1.setFinalPage(False)
         self.button(QWizard.NextButton).setEnabled(True)
         self.button(QWizard.FinishButton).setEnabled(False)
