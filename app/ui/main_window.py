@@ -264,5 +264,19 @@ class MainWindow(QMainWindow):
 
     # ---------- 关闭 ----------
     def closeEvent(self, event):
+        # 有实例运行中 → 明确提示"关闭会一并停止实例"，确认后才退
+        running = [i.get("name") or "实例" for i in self.cfg.get("instances", [])
+                   if self.procs.is_running(i)]
+        if running:
+            names = "、".join(running)
+            r = QMessageBox.question(
+                self, "⚠️ 实例正在运行",
+                f"当前有 {len(running)} 个实例正在运行：\n{names}\n\n"
+                "关闭 ComfyHub 会一并停止这些实例（未保存的生成任务将中断），"
+                "确定要关闭吗？",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if r != QMessageBox.Yes:
+                event.ignore()
+                return
         self.procs.stop_all()
         event.accept()
