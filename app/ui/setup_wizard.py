@@ -132,13 +132,42 @@ class _LogPage(QWizardPage):
     def start(self, target_dir, python_exe, mirror, proxy, torch_flag, on_done):
         from app import bootstrap
         self.log.clear()
-        total = 4 if torch_flag else 3
-        self.bar.setRange(0, total)
         self.on_done = on_done
         self.done_ok = False
         self.state = {"target_dir": target_dir, "python_exe": python_exe,
-                      "mirror_name": mirror, "proxy": proxy, "total": total}
-        mirror = bootstrap.PYPI_MIRRORS.get(mirror, bootstrap.PYPI_MIRRORS["阿里云"])
+                      "mirror_name": mirror, "proxy": proxy, "total": 4 if torch_flag else 3}
+        # 分流：目录里已有 ComfyUI 实例 → 步进制（逐步检测询问）；
+        #       空目录（全新安装）→ 全自动连跑（无需逐步确认）
+        has_existing = os.path.isfile(os.path.join(target_dir, "main.py"))
+        # 锁住向导按钮
+        wiz = self.wizard()
+        if wiz:
+            for btn in (QWizard.BackButton, QWizard.CommitButton,
+                        QWizard.NextButton, QWizard.FinishButton):
+                wiz.button(btn).setEnabled(False)
+        if has_existing:
+            self._start_stepwise(torch_flag)
+        else:
+            self._start_auto(target_dir, python_exe, mirror, proxy, torch_flag)
+
+    def _start_auto(self, target_dir, python_exe, mirror, proxy, torch_flag):
+        """空目录全新安装：全自动连跑"""
+        self.lb_step.setText("全新安装（空目录）：自动执行全部步骤…")
+        self.worker = SetupWorker(target_dir, python_exe, mirror, proxy, torch_flag)
+        self.worker.sig_log.connect(self._on_log)
+        self.worker.sig_progress.connect(self._on_progress)
+        self.worker.sig_done.connect(lambda ok, res, err: self.on_done(ok, res, err))
+        self.worker.start()
+
+    def _start_stepwise(self, torch_flag):
+        """已有实例：步进制（检测 → 询问 → 执行 → 复验）"""
+        from app import bootstrap
+        total = 4 if torch_flag else 3
+        self.bar.setRange(0, total)
+        target_dir = self.state["target_dir"]
+        python_exe = self.state["python_exe"]
+        mirror = bootstrap.PYPI_MIRRORS.get(self.state["mirror_name"],
+                                            bootstrap.PYPI_MIRRORS["阿里云"])
         wheels = os.path.join(bootstrap.tools_root(), "wheels")
         log = self._on_log
 
@@ -146,11 +175,11 @@ class _LogPage(QWizardPage):
             {"title": self.STEP_TITLES[0],
              "detect": lambda: bootstrap.detect_python_step(python_exe, bootstrap.tools_root()),
              "install": lambda payload: bootstrap.install_portable_python(
-                 bootstrap.tools_root(), log=log, proxy=proxy)},
+                 bootstrap.tools_root(), log=log, proxy=self.state["proxy"])},
             {"title": self.STEP_TITLES[1],
              "detect": lambda: bootstrap.detect_source_step(target_dir),
              "install": lambda payload: bootstrap.install_comfyui_source(
-                 target_dir, log=log, proxy=proxy)},
+                 target_dir, log=log, proxy=self.state["proxy"])},
             {"title": self.STEP_TITLES[2],
              "detect": lambda: bootstrap.detect_requirements_step(
                  self.state.get("python_path"), self.state.get("comfyui_path")),
@@ -165,12 +194,6 @@ class _LogPage(QWizardPage):
                          "install": lambda payload: self._install_torch_step(mirror, wheels, log)})
         self.plan = plan[:total]
         self.cur = 0
-        # 锁住向导按钮
-        wiz = self.wizard()
-        if wiz:
-            for btn in (QWizard.BackButton, QWizard.CommitButton,
-                        QWizard.NextButton, QWizard.FinishButton):
-                wiz.button(btn).setEnabled(False)
         self._begin_detect()
 
     def _install_torch_step(self, mirror, wheels, log):
