@@ -378,18 +378,12 @@ class SetupWizard(QWizard):
         self.ed_dir = QLineEdit(os.path.join("F:\\", "ComfyUI"))
         b_pick = QPushButton("浏览…")
         b_pick.clicked.connect(self._pick)
-        b_detect = QPushButton("🔍 扫描")
-        b_detect.setToolTip("扫描该目录（含两层子目录）是否已有完整 ComfyUI：\n"
-                            "有 → 直接添加为实例（免下载）；\n"
-                            "无 → 自动补全子目录并展开安装选项")
-        self.b_detect = b_detect
-        b_detect.clicked.connect(self._detect_existing)
         row = QHBoxLayout()
         row.addWidget(self.ed_dir, 1)
         row.addWidget(b_pick)
-        row.addWidget(b_detect)
         form.addRow("安装到:", row)
 
+        self.ed_dir.editingFinished.connect(self._detect_existing)
         self.ed_name = QLineEdit("")
         self.ed_name.setPlaceholderText("不填则使用安装目录名")
         form.addRow("实例名称:", self.ed_name)
@@ -463,8 +457,6 @@ class SetupWizard(QWizard):
         if not os.path.isdir(root):
             QMessageBox.warning(self, "ComfyHub", f"目录不存在：\n{root}")
             return
-        self.b_detect.setEnabled(False)
-        self.b_detect.setText("扫描中…")
         self.lb_scan.setText("正在扫描，请稍候…")
         self.lb_scan.setStyleSheet("color:#9aa4b2;")
         self.lb_scan.show()
@@ -473,8 +465,6 @@ class SetupWizard(QWizard):
         self._scan_worker.start()
 
     def _on_scan_done(self, root, candidates):
-        self.b_detect.setEnabled(True)
-        self.b_detect.setText("🔍 扫描")
         candidates = list(dict.fromkeys(candidates))
         p1 = self.page(0)
         if candidates:
@@ -567,6 +557,7 @@ class SetupWizard(QWizard):
         d = QFileDialog.getExistingDirectory(self, "选择安装位置", self.ed_dir.text())
         if d:
             self.ed_dir.setText(os.path.join(d, "ComfyUI"))
+            self._detect_existing()   # 每次选择文件夹自动扫描
 
     def _on_page_change(self, page_id: int):
         # 进入进度页时自动开跑（page_id 是 int，必须换算成页对象再比）
