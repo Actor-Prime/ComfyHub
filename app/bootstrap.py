@@ -45,6 +45,11 @@ COMFYUI_ZIP_URLS = [
     "{proxy}https://codeload.github.com/comfyanonymous/ComfyUI/zip/refs/heads/master",
     "https://codeload.github.com/comfyanonymous/ComfyUI/zip/refs/heads/master",
 ]
+COMFYUI_MANAGER_URLS = [
+    "{proxy}https://codeload.github.com/Comfy-Org/ComfyUI-Manager/zip/refs/heads/main",
+    "https://codeload.github.com/Comfy-Org/ComfyUI-Manager/zip/refs/heads/main",
+    "https://gitee.com/mirrors/ComfyUI-Manager/repository/archive/main.zip",
+]
 MINGIT_VERSION = "2.47.1"
 MINGIT_URLS = [
     f"https://registry.npmmirror.com/-/binary/git-for-windows/v{MINGIT_VERSION}.windows.1/MinGit-{MINGIT_VERSION}-64-bit.zip",
@@ -285,6 +290,28 @@ def install_comfyui_source(dest: str, log=print, proxy: str = "") -> str:
     os.remove(zpath)
     log(f"ComfyUI 源码就绪: {dest}")
     return dest
+
+
+def install_comfyui_manager(comfyui_path: str, log=print, proxy: str = "") -> str:
+    """全新安装后附带装 ComfyUI-Manager（官方插件商店，custom_nodes/ComfyUI-Manager）"""
+    dest = os.path.join(comfyui_path, "custom_nodes", "ComfyUI-Manager")
+    if os.path.isdir(dest) and os.listdir(dest):
+        log("ComfyUI-Manager 已存在，跳过")
+        return dest
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    zpath = os.path.join(comfyui_path, "custom_nodes", "_manager.zip")
+    ok = download_multi(COMFYUI_MANAGER_URLS, zpath, log=log, proxy=proxy)
+    if not ok:
+        log("⚠️ ComfyUI-Manager 下载失败（不影响 ComfyUI 使用，可在插件管理页手动安装）")
+        return ""
+    try:
+        _unzip(zpath, dest, strip_root=True)
+        os.remove(zpath)
+        log("ComfyUI-Manager 已安装（重启 ComfyUI 后在网页里出现 Manager 按钮）")
+        return dest
+    except Exception as e:
+        log(f"⚠️ ComfyUI-Manager 解压失败: {e}")
+        return ""
 
 
 # ---------------- pip / torch / 依赖 ----------------
