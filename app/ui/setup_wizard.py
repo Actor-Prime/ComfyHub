@@ -139,10 +139,10 @@ class _LogPage(QWizardPage):
         # 分流：目录里已有 ComfyUI 实例 → 步进制（逐步检测询问）；
         #       空目录（全新安装）→ 全自动连跑（无需逐步确认）
         has_existing = os.path.isfile(os.path.join(target_dir, "main.py"))
-        # 锁住向导按钮
+        # 锁住前进类按钮（Back 保留：检测/决策阶段允许返回上页改配置）
         wiz = self.wizard()
         if wiz:
-            for btn in (QWizard.BackButton, QWizard.CommitButton,
+            for btn in (QWizard.CommitButton,
                         QWizard.NextButton, QWizard.FinishButton):
                 wiz.button(btn).setEnabled(False)
         if has_existing:
@@ -254,6 +254,9 @@ class _LogPage(QWizardPage):
 
     def _show_decision(self, kind, info):
         """kind: ok=建议跳过 / missing=需安装 / update=建议更新 / retry=检测失败重试"""
+        wiz = self.wizard()
+        if wiz:
+            wiz.button(QWizard.BackButton).setEnabled(True)   # 决策阶段允许返回
         self.b_act.show()
         self.b_skip.show()
         if kind == "ok":
@@ -288,6 +291,9 @@ class _LogPage(QWizardPage):
             self._finish_all()
             return
         self._lock(True)
+        wiz = self.wizard()
+        if wiz:
+            wiz.button(QWizard.BackButton).setEnabled(False)   # 执行中禁止返回改配置
         step = self.plan[self.cur]
         self.lb_state.setText("⏳ 执行中…（按钮已锁定，完成后自动进入下一步）")
         self.worker = _StepWorker(step["install"])
@@ -382,6 +388,9 @@ class _LogPage(QWizardPage):
             "python_path": self.state.get("python_path") or "",
         }
         self.done_ok = True
+        wiz = self.wizard()
+        if wiz:
+            wiz.button(QWizard.BackButton).setEnabled(False)
         if self.on_done:
             self.on_done(True, dict(self.result_data), "")
 
