@@ -232,7 +232,7 @@ class _LogPage(QWizardPage):
         self.lb_step.setText(f"步骤 {self.cur + 1}/{total}：{step['title']} —— 正在检测本地环境…")
         self._decision_visible(False)
         self.lb_state.setText("检测中…")
-        self.worker = _StepWorker(step["detect"])
+        self._swap_worker("worker", _StepWorker(step["detect"]))
         self.worker.sig_done.connect(self._on_detect_done)
         self.worker.start()
 
@@ -300,7 +300,7 @@ class _LogPage(QWizardPage):
             wiz.button(QWizard.BackButton).setEnabled(False)   # 执行中禁止返回改配置
         step = self.plan[self.cur]
         self.lb_state.setText("⏳ 执行中…（按钮已锁定，完成后自动进入下一步）")
-        self.worker = _StepWorker(step["install"])
+        self._swap_worker("worker", _StepWorker(step["install"]))
         self.worker.sig_done.connect(self._on_install_done)
         self.worker.start()
 
@@ -514,6 +514,22 @@ class SetupWizard(QWizard):
         self.currentIdChanged.connect(self._on_page_change)
         self._started = False
 
+    def _swap_worker(self, attr, worker, timeout=60000):
+        """替换 worker 前等待旧的收尾——防止 QThread 运行中被 GC 导致 C++ 层崩溃"""
+        old_w = getattr(self, attr, None)
+        if old_w is not None and old_w.isRunning():
+            old_w.wait(timeout)
+        setattr(self, attr, worker)
+
+    def closeEvent(self, event):
+        # 向导关闭时等待所有后台线程收尾（防 QThread destroyed while running）
+        for attr in ("_scan_worker", "_verify_worker", "worker",
+                     "_del_worker", "_rm_worker"):
+            w = getattr(self, attr, None)
+            if w is not None and hasattr(w, "isRunning") and w.isRunning():
+                w.wait(60000)
+        event.accept()
+
     def _detect_existing(self):
         """后台扫描目录（含两层子目录）：找到 ComfyUI 直接注册；没找到自动补全并展开安装选项"""
         root = os.path.normpath(self.ed_dir.text().strip())
@@ -538,7 +554,7 @@ class SetupWizard(QWizard):
         self.lb_scan.setText("正在扫描，请稍候…")
         self.lb_scan.setStyleSheet("color:#9aa4b2;")
         self.lb_scan.show()
-        self._scan_worker = _ScanWorker(root)
+        self._swap_worker("_scan_worker", _ScanWorker(root))
         self._scan_worker.sig_done.connect(self._on_scan_done)
         self._scan_worker.start()
 
@@ -598,7 +614,7 @@ class SetupWizard(QWizard):
                 return (False, "未找到任何可用的 Python 解释器", "")
             return (False, last, "")
 
-        self._verify_worker = _StepWorker(_try_all)
+        self._swap_worker("_verify_worker", _StepWorker(_try_all))
         self._verify_worker.sig_done.connect(self._on_verify2_done)
         self._verify_worker.start()
 
