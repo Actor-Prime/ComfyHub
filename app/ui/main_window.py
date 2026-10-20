@@ -150,12 +150,17 @@ class MainWindow(QMainWindow):
         self.cb_inst.clear()
         for inst in self.cfg["instances"]:
             self.cb_inst.addItem(inst.get("name", "?"), userData=inst.get("id"))
+        if not self.cfg["instances"]:
+            # 空态占位：删除全部实例后下拉不应残留旧名称
+            self.cb_inst.addItem("（无实例，点右上角添加）", userData=None)
         self.cb_inst.blockSignals(False)
         last = self.cfg.get("last_instance_id")
         ids = [i.get("id") for i in self.cfg["instances"]]
         if last in ids:
             self.cb_inst.setCurrentIndex(ids.index(last))
         elif self.cfg["instances"]:
+            self.cb_inst.setCurrentIndex(0)
+        else:
             self.cb_inst.setCurrentIndex(0)
 
     def _on_inst_changed(self, i):
