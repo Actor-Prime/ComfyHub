@@ -105,6 +105,17 @@ class _LogPage(QWizardPage):
         wheels = os.path.join(bootstrap.tools_root(), "wheels")
         log = self._on_log
 
+        def _install_source_with_manager():
+            """源码安装 + 附带 ComfyUI-Manager（全新安装的标配插件商店）"""
+            res = bootstrap.install_comfyui_source(
+                target_dir, log=log, proxy=self.state["proxy"])
+            try:
+                bootstrap.install_comfyui_manager(
+                    res, log=log, proxy=self.state["proxy"])
+            except Exception:
+                pass   # Manager 失败不影响主流程
+            return res
+
         plan = [
             {"title": self.STEP_TITLES[0],
              "detect": lambda: (
@@ -116,8 +127,7 @@ class _LogPage(QWizardPage):
                  bootstrap.tools_root(), log=log, proxy=self.state["proxy"])},
             {"title": self.STEP_TITLES[1],
              "detect": lambda: bootstrap.detect_source_step(target_dir),
-             "install": lambda: bootstrap.install_comfyui_source(
-                 target_dir, log=log, proxy=self.state["proxy"])},
+             "install": lambda: _install_source_with_manager()},
             {"title": self.STEP_TITLES[2],
              "detect": lambda: bootstrap.detect_requirements_step(
                  self.state.get("python_path"), self.state.get("comfyui_path")),
