@@ -510,6 +510,7 @@ class ComfyuiPage(QWidget):
         # device 字段由 build_command 统一处理（--cpu 等）
         self.mainwin.procs.get(inst).start(inst)
         self._update_state()
+        self.mainwin.goto(6)   # 启动后自动切到「控制台」看实时日志
 
     def stop(self):
         inst = self._current_inst()
