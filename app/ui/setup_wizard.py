@@ -503,20 +503,22 @@ class SetupWizard(QWizard):
         """后台扫描目录（含两层子目录）：找到 ComfyUI 直接注册；没找到自动补全并展开安装选项"""
         root = os.path.normpath(self.ed_dir.text().strip())
         if not os.path.isdir(root):
-            self.lb_scan.setStyleSheet("color:#e8635a;")
-            self.lb_scan.setText(f"❌ 目录不存在：{root}\n请检查路径，或直接点「下一步」在此位置全新安装。")
-            self.lb_scan.show()
-            self.cb_found.hide()
-            self.lb_found_title.hide()
-            self.install_opts.show()
-            # 关键：从"验证通过的 FinalPage"切回安装模式时，必须还原按钮布局
-            p1.setFinalPage(False)
-            self.button(QWizard.NextButton).setEnabled(True)
-            self.button(QWizard.FinishButton).setEnabled(False)
-            QMessageBox.warning(self, "ComfyHub",
-                                f"目录不存在：\n{root}\n\n已按全新安装处理："
-                                "请确认下方安装选项后点「下一步」。")
-            return
+            # 全新安装目标目录通常不存在——自动创建，创建失败才报错
+            try:
+                os.makedirs(root, exist_ok=True)
+            except OSError as e:
+                self.lb_scan.setStyleSheet("color:#e8635a;")
+                self.lb_scan.setText(
+                    f"❌ 无法创建目录：{root}\n{e}\n"
+                    "请换一个位置（避免系统盘根目录/无权限目录）。")
+                self.lb_scan.show()
+                self.cb_found.hide()
+                self.lb_found_title.hide()
+                self.install_opts.show()
+                p1.setFinalPage(False)
+                self.button(QWizard.NextButton).setEnabled(True)
+                self.button(QWizard.FinishButton).setEnabled(False)
+                return
         # 记录用户选择的原始根目录（实例名默认取它的名字）
         self._orig_root = root
         # 中文/非 ASCII 路径检测：ComfyUI/pip/torch 对中文路径极易出玄学问题
