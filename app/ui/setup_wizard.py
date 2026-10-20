@@ -452,15 +452,17 @@ class SetupWizard(QWizard):
         form_opts.setContentsMargins(0, 0, 0, 0)
 
         self.cb_python = QComboBox()
-        self.cb_python.addItem("自动安装便携 Python（推荐，不污染系统）", userData=None)
-        # 动态探测已有解释器：共享便携 Python + 已注册实例用过的解释器（去重）
-        seen = set()
         tools_py = os.path.join(bootstrap.tools_root(), "python", "python.exe")
         if os.path.isfile(tools_py):
+            # 共享便携 Python 已存在：默认使用它（免重装），重装降级为可选项
             self.cb_python.addItem("使用 ComfyHub 共享便携 Python（已安装，实例共用）",
                                    userData=tools_py)
-            seen.add(tools_py)
+            self.cb_python.addItem("重新安装便携 Python（覆盖共享版本）", userData=None)
+        else:
+            self.cb_python.addItem("自动安装便携 Python（推荐，不污染系统）", userData=None)
+        # 已注册实例用过的解释器也列为可选
         parent_cfg = getattr(self.parent(), "cfg", {}) if self.parent() else {}
+        seen = {tools_py}
         for inst in parent_cfg.get("instances", []):
             cand = inst.get("python_path") or ""
             if cand and os.path.isfile(cand) and cand not in seen:
