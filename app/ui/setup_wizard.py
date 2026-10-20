@@ -497,6 +497,34 @@ class SetupWizard(QWizard):
 
         self.install_opts.hide()   # 默认隐藏：扫描无结果后才展开
         form.addRow("", self.install_opts)
+
+        # ---- 使用说明面板（填充空间 + 新手引导） ----
+        from PySide6.QtWidgets import QFrame
+        panel = QFrame()
+        panel.setStyleSheet(
+            "QFrame { background: rgba(120,150,200,0.08);"
+            " border: 1px solid rgba(120,150,200,0.25); border-radius: 8px; }"
+            " QLabel { border: none; background: transparent; }")
+        pv = QVBoxLayout(panel)
+        pv.setContentsMargins(14, 10, 14, 10)
+        pv.setSpacing(6)
+        t = QLabel("📘 使用说明")
+        t.setStyleSheet("font-weight: 500; color: #9ec3f0; background: transparent; border: none;")
+        pv.addWidget(t)
+        guide = QLabel(
+            "①  选择安装位置后自动扫描本机已有环境：\n"
+            "     检测到 → 直接添加为实例（免下载，几秒完成）\n"
+            "     未检测到 → 自动下载安装全套环境（源码+依赖+显卡版 PyTorch）\n"
+            "②  安装位置建议：纯英文路径，磁盘预留 10GB 以上空间\n"
+            "③  全程国内镜像加速，无需科学上网；下载支持断点续传\n"
+            "④  便携 Python 与插件装在 %APPDATA%\\ComfyHub\\tools，不污染系统，"
+            "删除目录即卸载")
+        guide.setWordWrap(True)
+        guide.setStyleSheet("color:#b8c4d4; background: transparent; border: none;")
+        pv.addWidget(guide)
+        pv.addStretch(1)
+        form.addRow("", panel)
+
         self.addPage(p1)
 
         # ---------- 页2：安装进度 ----------
