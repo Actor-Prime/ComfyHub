@@ -348,6 +348,12 @@ class ComfyuiPage(QWidget):
         elif clicked is b_del:
             self._delete_files(inst)
 
+    def _swap_worker(self, attr, worker, timeout=600000):
+        old_w = getattr(self, attr, None)
+        if old_w is not None and old_w.isRunning():
+            old_w.wait(timeout)
+        setattr(self, attr, worker)
+
     def _delete_files(self, inst):
         """彻底删除（全异步，不卡 UI）：
         停进程 → 后台算体积 → 确认框 → 后台删除 → 移出管理"""
@@ -372,7 +378,7 @@ class ComfyuiPage(QWidget):
         self._del_inst = inst
         self._del_path = path
         self.b_del.setText("⏳ 正在计算目录体积…")
-        self._del_worker = _BgWorker(_size)
+        self._swap_worker("_del_worker", _BgWorker(_size))
         self._del_worker.sig_done.connect(self._on_size_done)
         self._del_worker.start()
 
@@ -403,7 +409,7 @@ class ComfyuiPage(QWidget):
                     out.append(os.path.join(root, f))
             return out
 
-        self._del_worker = _BgWorker(_collect)
+        self._swap_worker("_del_worker", _BgWorker(_collect))
         try:
             self._del_worker.sig_done.disconnect()
         except Exception:
@@ -421,7 +427,7 @@ class ComfyuiPage(QWidget):
         self._rm_prog.setWindowModality(Qt.WindowModal)
         self._rm_prog.setMinimumDuration(0)
         self._rm_prog.setValue(0)
-        self._rm_worker = _RmWorker(self._del_path, files)
+        self._swap_worker("_rm_worker", _RmWorker(self._del_path, files))
         self._rm_worker.sig_prog.connect(self._on_rm_prog)
         self._rm_worker.sig_done.connect(self._on_rm_done)
         self._rm_worker.start()
