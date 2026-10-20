@@ -410,7 +410,8 @@ def detect_python_step(python_exe, tools_dir):
         return "ok", f"使用指定解释器: {python_exe}", {"python_path": python_exe}
     std = os.path.join(tools_dir, "python", "python.exe")
     if os.path.isfile(std):
-        return "ok", f"便携 Python 已存在: {std}", {"python_path": std}
+        return ("ok", f"ComfyHub 共享便携 Python（所有实例共用，装一次全用）: {std}",
+                {"python_path": std})
     return "missing", "未检测到可用的 Python 解释器", {}
 
 
@@ -433,8 +434,8 @@ def detect_requirements_step(python_exe, comfyui_path):
     try:
         r = run([python_exe, "-c", code], capture_output=True, text=True, timeout=120)
         if r.returncode == 0:
-            return "ok", f"核心依赖已齐备（{_len_marks(r)}）", {}
-        return "missing", "检测到依赖缺失（import 校验未通过）", {}
+            return "ok", f"核心依赖已齐备（{_len_marks(r)}）——依据解释器: {python_exe}", {}
+        return "missing", f"检测到依赖缺失（依据解释器: {python_exe}）", {}
     except Exception as e:
         return "missing", f"依赖检测失败: {e}", {}
 
