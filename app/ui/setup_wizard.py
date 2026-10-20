@@ -174,16 +174,16 @@ class _LogPage(QWizardPage):
         plan = [
             {"title": self.STEP_TITLES[0],
              "detect": lambda: bootstrap.detect_python_step(python_exe, bootstrap.tools_root()),
-             "install": lambda payload: bootstrap.install_portable_python(
+             "install": lambda: bootstrap.install_portable_python(
                  bootstrap.tools_root(), log=log, proxy=self.state["proxy"])},
             {"title": self.STEP_TITLES[1],
              "detect": lambda: bootstrap.detect_source_step(target_dir),
-             "install": lambda payload: bootstrap.install_comfyui_source(
+             "install": lambda: bootstrap.install_comfyui_source(
                  target_dir, log=log, proxy=self.state["proxy"])},
             {"title": self.STEP_TITLES[2],
              "detect": lambda: bootstrap.detect_requirements_step(
                  self.state.get("python_path"), self.state.get("comfyui_path")),
-             "install": lambda payload: bootstrap.install_comfyui_requirements(
+             "install": lambda: bootstrap.install_comfyui_requirements(
                  self.state.get("python_path"), self.state.get("comfyui_path"),
                  log=log, mirror=mirror)},
         ]
@@ -191,7 +191,7 @@ class _LogPage(QWizardPage):
             plan.append({"title": self.STEP_TITLES[3],
                          "detect": lambda: bootstrap.detect_torch_step(
                              self.state.get("python_path")),
-                         "install": lambda payload: self._install_torch_step(mirror, wheels, log)})
+                         "install": lambda: self._install_torch_step(mirror, wheels, log)})
         self.plan = plan[:total]
         self.cur = 0
         self._begin_detect()
