@@ -53,6 +53,47 @@ class _BgWorker(QThread):
             self.sig_done.emit(None)
 
 
+
+
+class _RmWorker(QThread):
+    """后台逐文件删除：实时上报进度（当前文件 / 已删 / 总数）"""
+    sig_prog = Signal(str, int, int)   # 当前文件, 已删数, 总数
+    sig_done = Signal(bool, str)       # ok, err
+
+    def __init__(self, root, files):
+        super().__init__()
+        self.root = root
+        self.files = files
+
+    def run(self):
+        import shutil as _sh
+        total = len(self.files)
+        done = 0
+        try:
+            for fp in self.files:
+                try:
+                    os.remove(fp)
+                except OSError:
+                    pass
+                done += 1
+                if done % 100 == 0 or done == total:
+                    self.sig_prog.emit(fp, done, total)
+            # 自底向上清理空目录
+            for root, dirs, _f in os.walk(self.root, topdown=False):
+                for d in dirs:
+                    try:
+                        os.rmdir(os.path.join(root, d))
+                    except OSError:
+                        pass
+            try:
+                _sh.rmtree(self.root, ignore_errors=True)
+            except OSError:
+                pass
+            self.sig_done.emit(True, "")
+        except Exception as e:
+            self.sig_done.emit(False, str(e))
+
+
 class ComfyuiPage(QWidget):
     def __init__(self, cfg, mainwin):
         super().__init__()
@@ -349,16 +390,48 @@ class ComfyuiPage(QWidget):
         self.b_del.setEnabled(False)
         self.b_del.setText("🗑 正在后台删除，请勿关闭软件…")
 
-        def _rm():
-            import shutil
-            shutil.rmtree(path)
-            return True
+        def _collect():
+            out = []
+            for root, _d, files in os.walk(path):
+                for f in files:
+                    out.append(os.path.join(root, f))
+            return out
 
-        self._del_worker = _BgWorker(_rm)
-        self._del_worker.sig_done.connect(self._on_rm_done)
+        self._del_worker = _BgWorker(_collect)
+        try:
+            self._del_worker.sig_done.disconnect()
+        except Exception:
+            pass
+        self._del_worker.sig_done.connect(self._on_collect_done)
         self._del_worker.start()
 
-    def _on_rm_done(self, ok):
+    def _on_collect_done(self, files):
+        from PySide6.QtWidgets import QProgressDialog
+        files = files or []
+        self._rm_prog = QProgressDialog(
+            f"正在删除 0/{len(files)} 个文件…", None, 0, max(len(files), 1), self)
+        self._rm_prog.setWindowTitle("彻底删除实例")
+        self._rm_prog.setCancelButton(None)
+        self._rm_prog.setWindowModality(Qt.WindowModal)
+        self._rm_prog.setMinimumDuration(0)
+        self._rm_prog.setValue(0)
+        self._rm_worker = _RmWorker(self._del_path, files)
+        self._rm_worker.sig_prog.connect(self._on_rm_prog)
+        self._rm_worker.sig_done.connect(self._on_rm_done)
+        self._rm_worker.start()
+
+    def _on_rm_prog(self, cur_file, done, total):
+        self._rm_prog.setMaximum(max(total, 1))
+        self._rm_prog.setValue(done)
+        self._rm_prog.setLabelText(
+            f"正在删除 {done}/{total} 个文件（{done * 100 // max(total, 1)}%）\n"
+            f"当前：{cur_file}")
+
+    def _on_rm_done(self, ok, err=""):
+        try:
+            self._rm_prog.close()
+        except Exception:
+            pass
         inst, path = self._del_inst, self._del_path
         self.b_del.setEnabled(True)
         self.b_del.setText("🗑 删除此实例（可选仅移出管理 / 彻底删除文件）")
