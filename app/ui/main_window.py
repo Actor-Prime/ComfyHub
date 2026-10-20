@@ -4,7 +4,7 @@ import os
 import uuid
 
 from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QIcon, QPixmap
 from app.ui.nav import NAV
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QListWidget,
@@ -154,8 +154,48 @@ class MainWindow(QMainWindow):
                   self.console_page, self.settings_page):
             self.stack.addWidget(w)
 
+        self._init_tray()
+
         self._sync_instances()
         self.nav.setCurrentRow(0)
+
+    # ---------- 系统托盘 ----------
+    def _init_tray(self):
+        """最小化到任务栏托盘：托盘图标 + 显示/退出菜单"""
+        from PySide6.QtWidgets import QSystemTrayIcon, QMenu
+        icon = QIcon(os.path.join(ASSETS_DIR, "logo.png"))
+        self.tray = QSystemTrayIcon(icon, self)
+        self.tray.setToolTip("ComfyHub — ComfyUI 多实例管理器")
+        menu = QMenu(self)
+        act_show = menu.addAction("显示主窗口")
+        act_show.triggered.connect(self._restore_from_tray)
+        menu.addSeparator()
+        act_quit = menu.addAction("退出 ComfyHub")
+        act_quit.triggered.connect(self.close)   # 走 closeEvent（含实例运行确认）
+        self.tray.setContextMenu(menu)
+        self.tray.activated.connect(self._on_tray_activated)
+        self.tray.show()
+
+    def _on_tray_activated(self, reason):
+        from PySide6.QtWidgets import QSystemTrayIcon
+        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
+            self._restore_from_tray()
+
+    def _restore_from_tray(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def changeEvent(self, event):
+        """点最小化 → 收进任务栏托盘（不再占任务栏按钮）"""
+        from PySide6.QtCore import QEvent
+        if event.type() == QEvent.WindowStateChange and self.isMinimized():
+            self.hide()
+            if getattr(self, "tray", None):
+                self.tray.showMessage(
+                    "ComfyHub", "已最小化到托盘，点击图标恢复窗口",
+                    self.tray.MessageIcon.Information, 3000)
+        super().changeEvent(event)
 
     # ---------- 实例（全局） ----------
     def current_inst(self):
