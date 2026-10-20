@@ -652,8 +652,9 @@ class SetupWizard(QWizard):
         self._py_map = py_map
         return len(total)
 
-    def accept(self):
-        """完成前拦截：检测模式下组装 setup_result 直接注册"""
+    def _prepare_result(self):
+        """组装 setup_result：扫描分支（检测直接注册）在此组装；
+        安装分支的 setup_result 已由 _on_done 设置，这里不动它"""
         if getattr(self, "_scan_candidates", None) and self.cb_found.isVisible():
             idx = max(0, self.cb_found.currentIndex())
             comfy = self._scan_candidates[min(idx, len(self._scan_candidates) - 1)]
@@ -670,12 +671,23 @@ class SetupWizard(QWizard):
                 "name": self.ed_name.text().strip() or os.path.basename(comfy),
                 "skipped_install": True,
             }
-            super().accept()
+
+    def done(self, r):
+        """QWizard「完成」按钮触发 done(Accepted)——组装 setup_result 后关闭。
+        注意：accept() 内部会调 done()，所以组装只在这里做，形成单向：
+        Finish 点击 → done() → 组装 → super().done()"""
+        if r == QWizard.Accepted:
+            self._prepare_result()
+            if self.setup_result and self.setup_result.get("comfyui_path"):
+                super().done(r)
+                return
+            super().reject()
             return
-        if self.setup_result and self.setup_result.get("comfyui_path"):
-            super().accept()
-            return
-        super().reject()
+        super().done(r)
+
+    def accept(self):
+        """代码路径 accept：转交 done() 统一处理（done 不再回头调 accept）"""
+        self.done(QWizard.Accepted)
 
     def _pick(self):
         d = QFileDialog.getExistingDirectory(self, "选择安装位置", self.ed_dir.text())
