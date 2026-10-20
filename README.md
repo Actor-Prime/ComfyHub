@@ -27,18 +27,6 @@ ComfyHub 是一个面向**普通用户**的 ComfyUI 启动管理器，目标是�
 - 🧠 **模型库**：分类标签页浏览模型文件，支持从网盘导入（复制/剪切）、直链下载（断点续传）
 - 🇨🇳 **国内裸连友好**：npmmirror / 阿里云 / 华为云 / gh-proxy 多源轮换，全程无需科学上网
 
-## 🖼️ 界面预览
-
-| 工作台 | ComfyUI 管理 |
-|---|---|
-| ![工作台](https://gitee.com/yzdydwdd/ComfyHub/raw/master/docs/screenshots/workbench.png) | ![ComfyUI](https://gitee.com/yzdydwdd/ComfyHub/raw/master/docs/screenshots/comfyui.png) |
-
-| 环境检测 | 模型库 |
-|---|---|
-| ![环境检测](https://gitee.com/yzdydwdd/ComfyHub/raw/master/docs/screenshots/env.png) | ![模型库](https://gitee.com/yzdydwdd/ComfyHub/raw/master/docs/screenshots/models.png) |
-
-> 更多截图见 [docs/screenshots/](https://gitee.com/yzdydwdd/ComfyHub/raw/master/docs/screenshots/)
-
 ## 🚀 快速开始
 
 ### 方式一：下载便携版（推荐）
@@ -107,9 +95,6 @@ pyinstaller --noconfirm --windowed --name ComfyHub --icon assets/icon.ico --add-
 产物在 `dist/ComfyHub/`，整个目录拷走即可分发。
 
 ## ❓ FAQ
-
-**Q: 和绘世/TE 启动器/搅拌手有什么区别？**
-A: ComfyHub 走便携免安装路线（47MB vs 搅拌手 94MB NSIS），无注册表污染；一键安装基于免安装 Python 方案，绕开了官方安装器的静默失败坑；全套下载源国内优先，裸连可用。
 
 **Q: 下载需要挂 VPN 吗？**
 A: 不需要。Python/Git/依赖走国内镜像；GitHub 源码可在设置配 ghproxy 代理；HuggingFace 自动切 hf-mirror.com；torch CUDA 直连较慢但支持断点续传。
