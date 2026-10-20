@@ -3,6 +3,7 @@
 import os
 
 from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QWizard, QWizardPage, QLabel, QVBoxLayout, QLineEdit, QHBoxLayout,
     QPushButton, QFileDialog, QComboBox, QCheckBox, QProgressBar,
@@ -498,34 +499,29 @@ class SetupWizard(QWizard):
         self.install_opts.hide()   # 默认隐藏：扫描无结果后才展开
         form.addRow("", self.install_opts)
 
-        # ---- 使用说明面板（填充空间 + 新手引导） ----
-        from PySide6.QtWidgets import QFrame
-        panel = QFrame()
-        panel.setStyleSheet(
-            "QFrame { background: rgba(120,150,200,0.08);"
-            " border: 1px solid rgba(120,150,200,0.25); border-radius: 8px; }"
-            " QLabel { border: none; background: transparent; }")
-        pv = QVBoxLayout(panel)
-        pv.setContentsMargins(14, 10, 14, 10)
-        pv.setSpacing(6)
-        t = QLabel("📘 使用说明")
-        t.setStyleSheet("font-weight: 500; color: #9ec3f0; background: transparent; border: none;")
-        pv.addWidget(t)
-        guide = QLabel(
-            "①  选择安装位置后自动扫描本机已有环境：\n"
-            "     检测到 → 直接添加为实例（免下载，几秒完成）\n"
-            "     未检测到 → 自动下载安装全套环境（源码+依赖+显卡版 PyTorch）\n"
-            "②  安装位置建议：纯英文路径，磁盘预留 10GB 以上空间\n"
-            "③  全程国内镜像加速，无需科学上网；下载支持断点续传\n"
-            "④  便携 Python 与插件装在 %APPDATA%\\ComfyHub\\tools，不污染系统，"
-            "删除目录即卸载")
-        guide.setWordWrap(True)
-        guide.setStyleSheet("color:#b8c4d4; background: transparent; border: none;")
-        pv.addWidget(guide)
-        pv.addStretch(1)
-        form.addRow("", panel)
-
         self.addPage(p1)
+
+        # 打开向导即自动探测默认路径（用户点添加 = 先看有没有现成的）
+        QTimer.singleShot(150, self._auto_probe)
+
+    def _auto_probe(self):
+        """自动探测 _PROBE_ROOTS：找到现成 ComfyUI → 填入并触发扫描验证；
+        都没有 → 提示用户选择安装位置"""
+        from app.config import _PROBE_ROOTS
+        for root in _PROBE_ROOTS:
+            if os.path.isfile(os.path.join(root, "main.py")):
+                self.ed_dir.setText(os.path.normpath(root))
+                self._detect_existing()
+                return
+        # 默认路径全空：预填用户主盘符的 ComfyUI 作为安装位置，但不扫描
+        drive = os.path.expanduser("~")
+        drive = os.path.splitdrive(drive)[0] + "\\"
+        self.ed_dir.setText(os.path.join(drive, "ComfyUI"))
+        self.lb_scan.setStyleSheet("color:#9aa4b2;")
+        self.lb_scan.setText(
+            "未在常见位置检测到 ComfyUI——请选择安装位置（将自动扫描），"
+            "或直接点「下一步」全新安装。")
+        self.lb_scan.show()
 
         # ---------- 页2：安装进度 ----------
         self.p2 = _LogPage()
