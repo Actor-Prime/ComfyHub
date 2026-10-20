@@ -2,7 +2,7 @@
 """ComfyUI 编辑页：分区表单（基础/高级设置）+ 启停 + 保存/删除（对标截图2/3）"""
 import os
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
     QComboBox, QSpinBox, QCheckBox, QFileDialog, QMessageBox, QFrame,
@@ -34,6 +34,23 @@ class _Row(QFrame):
                 # 路径类控件：悬停看全量内容
                 pass
             h.addWidget(widget, 3, Qt.AlignVCenter)
+
+
+
+
+class _BgWorker(QThread):
+    """通用后台执行器（删除体积计算 / rmtree 等耗时操作）"""
+    sig_done = Signal(object)
+
+    def __init__(self, fn):
+        super().__init__()
+        self.fn = fn
+
+    def run(self):
+        try:
+            self.sig_done.emit(self.fn())
+        except Exception:
+            self.sig_done.emit(None)
 
 
 class ComfyuiPage(QWidget):
@@ -285,13 +302,19 @@ class ComfyuiPage(QWidget):
             self._delete_files(inst)
 
     def _delete_files(self, inst):
-        """彻底删除：停进程 → 二次确认（显示体积）→ 删磁盘目录 → 移出管理"""
+        """彻底删除（全异步，不卡 UI）：
+        停进程 → 后台算体积 → 确认框 → 后台删除 → 移出管理"""
         import shutil
         path = inst.get("comfyui_path", "")
+        if not os.path.isdir(path):
+            QMessageBox.warning(self, "ComfyHub", f"目录不存在：\n{path}")
+            return
+        self.mainwin.procs.get(inst).stop()
+        self.b_del.setEnabled(False)
 
-        def dir_size(p):
+        def _size():
             total = 0
-            for root, _d, files in os.walk(p):
+            for root, _d, files in os.walk(path):
                 for f in files:
                     try:
                         total += os.path.getsize(os.path.join(root, f))
@@ -299,7 +322,18 @@ class ComfyuiPage(QWidget):
                         pass
             return total
 
-        size_gb = dir_size(path) / 1024 ** 3 if os.path.isdir(path) else 0
+        self._del_inst = inst
+        self._del_path = path
+        self.b_del.setText("⏳ 正在计算目录体积…")
+        self._del_worker = _BgWorker(_size)
+        self._del_worker.sig_done.connect(self._on_size_done)
+        self._del_worker.start()
+
+    def _on_size_done(self, size):
+        inst, path = self._del_inst, self._del_path
+        self.b_del.setEnabled(True)
+        self.b_del.setText("🗑 删除此实例（可选仅移出管理 / 彻底删除文件）")
+        size_gb = size / 1024 ** 3
         r = QMessageBox.warning(
             self, "⚠️ 彻底删除确认",
             f"将永久删除以下内容，不可恢复：\n\n"
@@ -308,25 +342,36 @@ class ComfyuiPage(QWidget):
             f"注意：\n"
             f"· 便携 Python / MinGit 在共享 tools 目录，不受影响\n"
             f"· 自定义模型目录（models_dir）若指向本目录之外，不会被删除\n\n"
-            f"确认要删除吗？",
+            f"确认要删除吗？（删除在后台进行，大目录需几分钟）",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if r != QMessageBox.Yes:
             return
-        # 先停进程，防文件占用
-        self.mainwin.procs.get(inst).stop()
-        if os.path.isdir(path):
-            try:
-                shutil.rmtree(path)
-                self._log_msg = None
-            except OSError as e:
-                QMessageBox.critical(self, "ComfyHub",
-                                     f"删除失败（可能有文件被占用）：\n{e}\n\n"
-                                     "请确认 ComfyUI 已停止后重试。")
-                return
-        self.cfg["instances"].remove(inst)
-        save_config(self.cfg)
-        self.mainwin._sync_instances()
-        self.load_current()
+        self.b_del.setEnabled(False)
+        self.b_del.setText("🗑 正在后台删除，请勿关闭软件…")
+
+        def _rm():
+            import shutil
+            shutil.rmtree(path)
+            return True
+
+        self._del_worker = _BgWorker(_rm)
+        self._del_worker.sig_done.connect(self._on_rm_done)
+        self._del_worker.start()
+
+    def _on_rm_done(self, ok):
+        inst, path = self._del_inst, self._del_path
+        self.b_del.setEnabled(True)
+        self.b_del.setText("🗑 删除此实例（可选仅移出管理 / 彻底删除文件）")
+        if not ok:
+            QMessageBox.critical(self, "ComfyHub",
+                                 f"删除失败（可能有文件被占用）：\n{path}\n\n"
+                                 "请确认 ComfyUI 已停止后重试。")
+            return
+        if inst in self.cfg["instances"]:
+            self.cfg["instances"].remove(inst)
+            save_config(self.cfg)
+            self.mainwin._sync_instances()
+            self.load_current()
         QMessageBox.information(self, "ComfyHub",
                                 f"实例「{inst.get('name')}」已彻底删除。")
 
