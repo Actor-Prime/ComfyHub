@@ -398,6 +398,72 @@ def install_min_git(log=print) -> str:
 
 
 # ---------------- 一键全流程 ----------------
+
+
+# ---------------- 步进式安装：每步检测函数 ----------------
+# 返回 (status, info, payload)
+# status: "ok"=已就绪建议跳过 / "missing"=未安装 / "cpu"=CPU 版建议更新 / "outdated"=旧版本
+
+def detect_python_step(python_exe, tools_dir):
+    """步骤1 检测：用户指定解释器 或 便携 Python"""
+    if python_exe and os.path.isfile(python_exe):
+        return "ok", f"使用指定解释器: {python_exe}", {"python_path": python_exe}
+    std = os.path.join(tools_dir, "python", "python.exe")
+    if os.path.isfile(std):
+        return "ok", f"便携 Python 已存在: {std}", {"python_path": std}
+    return "missing", "未检测到可用的 Python 解释器", {}
+
+
+def detect_source_step(target_dir):
+    """步骤2 检测：ComfyUI 源码"""
+    if os.path.isfile(os.path.join(target_dir, "main.py")):
+        return "ok", f"ComfyUI 源码已存在: {target_dir}", {"comfyui_path": target_dir}
+    return "missing", "未检测到 ComfyUI 源码（main.py）", {}
+
+
+_REQ_MARKS = ["rich", "aiohttp", "kornia", "yaml",
+              "comfyui_frontend_package", "comfyui_workflow_templates"]
+
+
+def detect_requirements_step(python_exe, comfyui_path):
+    """步骤3 检测：标志性依赖包（全部在=ok，缺=missing）"""
+    if not python_exe:
+        return "missing", "缺少 Python，无法检测依赖", {}
+    code = ";".join(f"import {m}" for m in _REQ_MARKS)
+    try:
+        r = run([python_exe, "-c", code], capture_output=True, text=True, timeout=120)
+        if r.returncode == 0:
+            return "ok", f"核心依赖已齐备（{_len_marks(r)}）", {}
+        return "missing", "检测到依赖缺失（import 校验未通过）", {}
+    except Exception as e:
+        return "missing", f"依赖检测失败: {e}", {}
+
+
+def _len_marks(r):
+    return "/".join(_REQ_MARKS)
+
+
+def detect_torch_step(python_exe):
+    """步骤4 检测：torch 是否安装 / CUDA / CPU / 版本"""
+    if not python_exe:
+        return "missing", "缺少 Python，无法检测 torch", {}
+    try:
+        r = run([python_exe, "-c",
+                 "import torch;print(torch.__version__);"
+                 "print(getattr(torch.version,'cuda') or 'cpu')"],
+                capture_output=True, text=True, timeout=180)
+        if r.returncode != 0:
+            return "missing", "未检测到 torch", {}
+        lines = (r.stdout or "").strip().splitlines()
+        ver = lines[0].strip() if lines else "?"
+        cuda = lines[1].strip() if len(lines) > 1 else "cpu"
+        if cuda == "cpu":
+            return "cpu", f"已装 torch {ver}（CPU 版）——建议更新为 CUDA 版以启用显卡加速", {}
+        return "ok", f"已装 torch {ver}（CUDA {cuda}）——已就绪", {}
+    except Exception as e:
+        return "missing", f"torch 检测失败: {e}", {}
+
+
 def full_setup(target_dir: str, python_exe: str | None, mirror_name: str,
                proxy: str, log=print, install_torch_flag: bool = True,
                progress=None) -> dict:
