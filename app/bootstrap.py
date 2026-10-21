@@ -390,8 +390,10 @@ def pip_install(python_exe: str, pkgs: list, index_url: str, log=print,
         _env = dict(os.environ)
         for _k in ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP"):
             _env.pop(_k, None)
+        _flags = _sp.CREATE_NO_WINDOW if os.name == "nt" else 0
         proc = _sp.Popen(cmd, stdout=_sp.PIPE, stderr=_sp.STDOUT, text=True,
-                         encoding="utf-8", errors="replace", bufsize=1, env=_env)
+                         encoding="utf-8", errors="replace", bufsize=1, env=_env,
+                         creationflags=_flags)
     except Exception as e:
         log(f"❌ 无法启动 pip: {e}")
         return False
@@ -454,7 +456,8 @@ def install_torch(python_exe: str, variant: str, log=print,
            "-i", idx, *f_links] + pkgs
     log("$ " + " ".join(cmd[:12]) + (" …" if len(cmd) > 12 else ""))
     r = subprocess.run(cmd, capture_output=True, text=True,
-                       encoding="utf-8", errors="replace", timeout=10800)
+                       encoding="utf-8", errors="replace", timeout=10800,
+                       creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     tail = [ln for ln in ((r.stdout or "") + (r.stderr or "")).splitlines()
             if "[safe-delete]" not in ln]
     for ln in tail[-10:]:
