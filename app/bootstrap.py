@@ -185,17 +185,31 @@ def download_multi(url_or_tpl: str | list, dest: str, log=print,
                 headers = {"User-Agent": "Mozilla/5.0 ComfyHub/0.2"}
                 if pos > 0:
                     headers["Range"] = f"bytes={pos}-"
+                log(f"  下载 {os.path.basename(dest)} ← {url[:80]}")
                 r = urllib.request.urlopen(_http_get(url), timeout=timeout)
                 if pos > 0 and r.status != 206:
                     pos = 0  # 该源不支持续传，重来
                 total = pos + int(r.headers.get("Content-Length", 0) or 0)
                 mode = "ab" if pos else "wb"
+                import time as _t
+                _last_log = 0.0
+                _name = os.path.basename(dest)
                 with open(tmp, mode) as f:
                     while True:
                         chunk = r.read(1 << 20)
                         if not chunk:
                             break
                         f.write(chunk)
+                        # 节流进度输出（每 2 秒一行，避免刷屏）
+                        _now = _t.time()
+                        if _now - _last_log >= 2.0:
+                            _last_log = _now
+                            _cur = f.tell()
+                            if total > 0:
+                                log(f"  ↓ {_name}: {_cur / 1048576:.1f}/{total / 1048576:.1f} MB "
+                                    f"({_cur * 100 // max(total, 1)}%)")
+                            else:
+                                log(f"  ↓ {_name}: {_cur / 1048576:.1f} MB")
                 got = os.path.getsize(tmp)
                 if expected_sha and _sha256_of(tmp) != expected_sha:
                     raise IOError("sha256 校验不通过")
