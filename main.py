@@ -52,8 +52,11 @@ def main():
 
     app = QApplication(sys.argv)
     from PySide6.QtGui import QIcon
-    app.setWindowIcon(QIcon(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                         "assets", "logo.png")))
+    _assets = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+    _icon = QIcon(os.path.join(_assets, "icon.ico"))
+    if _icon.isNull():
+        _icon = QIcon(os.path.join(_assets, "logo.png"))
+    app.setWindowIcon(_icon)
     app.setApplicationName("ComfyHub")
     app.setOrganizationName("ComfyHub")
     # 中文界面统一字体
