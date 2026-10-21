@@ -238,6 +238,14 @@ class _LogPage(QWizardPage):
             self.b_act.setText("📦 安装")
             self.b_skip.setText("跳过此步 ▶")
             self.b_act.setDefault(True)
+            # 必需步骤缺失时禁止跳过（跳过=环境残缺，后续启动必失败）
+            # 仅 PyTorch 步骤（最后一步，索引 == total-1）允许跳过
+            is_optional = getattr(self, "cur", 0) >= self.state.get("total", 4) - 1
+            self.b_skip.setEnabled(is_optional)
+            if not is_optional:
+                self.b_skip.setText("此步必需，不可跳过")
+        if kind != "missing":
+            self.b_skip.setEnabled(True)
         elif kind == "update":
             self.b_act.setText("⬆ 更新")
             self.b_skip.setText("跳过（保留现状）▶")
@@ -266,7 +274,8 @@ class _LogPage(QWizardPage):
         if wiz:
             wiz.button(QWizard.BackButton).setEnabled(False)   # 执行中禁止返回改配置
         step = self.plan[self.cur]
-        self.lb_state.setText("⏳ 执行中…（按钮已锁定，完成后自动进入下一步）")
+        _title = step.get("title", "")
+        self.lb_state.setText(f"⏳ 正在执行：{_title}（完成后自动进入下一步）")
         swap_worker(self, "worker", StepWorker(step["install"]))
         self.worker.sig_done.connect(self._on_install_done)
         self.worker.start()
