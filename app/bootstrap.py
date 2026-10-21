@@ -285,7 +285,10 @@ def install_comfyui_source(dest: str, log=print, proxy: str = "") -> str:
     zpath = dest.rstrip("\\/") + "_src.zip"
     ok = download_multi(COMFYUI_ZIP_URLS, zpath, log=log, proxy=proxy)
     if not ok:
-        raise RuntimeError("ComfyUI 源码下载失败（可尝试在设置中更换 GitHub 代理）")
+        raise RuntimeError(
+            "ComfyUI 源码下载失败。\n"
+            "常见原因：①网络/DNS 临时故障（getaddrinfo failed）②GitHub 被墙\n"
+            "处理：检查网络后重试；仍失败请在「GitHub 代理」填 https://ghproxy.net/ 再试")
     _unzip(zpath, dest, strip_root=True)
     os.remove(zpath)
     log(f"ComfyUI 源码就绪: {dest}")
