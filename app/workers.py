@@ -19,17 +19,25 @@ def swap_worker(obj, attr, worker, max_grave=20):
     """把 worker 挂到 obj.attr，旧的断信号入墓碑（后台自然结束）。"""
     old_w = getattr(obj, attr, None)
     if old_w is not None and hasattr(old_w, "isRunning") and old_w.isRunning():
-        for sig_name in ("sig_done", "sig_log", "sig_progress",
-                         "sig_prog", "sig_result"):
-            sig = getattr(old_w, sig_name, None)
-            if sig is not None:
-                try:
-                    sig.disconnect()
-                except Exception:
-                    pass
-        graveyard = [w for w in getattr(obj, "_graveyard", []) if w.isRunning()]
-        graveyard.append(old_w)
-        obj._graveyard = graveyard[-max_grave:]
+        # 关键：绝不能在当前信号回调栈内 disconnect 正在发信号的 sender
+        # （Qt 内部会崩在 Qt6Gui 0xc0000005）——用 QTimer 延迟到事件循环下一轮
+        def _retire(w=old_w):
+            for sig_name in ("sig_done", "sig_log", "sig_progress",
+                             "sig_prog", "sig_result"):
+                sig = getattr(w, sig_name, None)
+                if sig is not None:
+                    try:
+                        sig.disconnect()
+                    except Exception:
+                        pass
+            grave = [x for x in getattr(obj, "_graveyard", []) if x.isRunning()]
+            grave.append(w)
+            obj._graveyard = grave[-max_grave:]
+        try:
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, _retire)
+        except Exception:
+            _retire()
     setattr(obj, attr, worker)
 
 
