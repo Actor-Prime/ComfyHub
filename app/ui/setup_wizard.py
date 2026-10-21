@@ -478,11 +478,8 @@ class SetupWizard(QWizard):
             base = os.path.dirname(os.path.dirname(os.path.dirname(
                 os.path.abspath(__file__))))                 # 源码运行 = 项目根
         self.ed_dir.setText(os.path.join(base, "ComfyUI"))
-        self.lb_scan.setStyleSheet("color:#9aa4b2;")
-        self.lb_scan.setText(
-            "未在常见位置检测到 ComfyUI——请选择安装位置（将自动扫描），"
-            "或直接点「下一步」全新安装。")
-        self.lb_scan.show()
+        # 直接走检测流程：自动建目录 → 扫描 → 展开安装选项（无需用户再点输入框触发）
+        self._detect_existing()
 
         # ---------- 页2：安装进度 ----------
         self.p2 = _LogPage()
