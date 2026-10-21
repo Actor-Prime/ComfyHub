@@ -41,14 +41,17 @@ GET_PIP_URLS = [
     "https://bootstrap.pypa.io/get-pip.py",
 ]
 COMFYUI_ZIP_URLS = [
-    # 可配置代理前缀（ghproxy 系，失效时用户可在界面改）
+    # 用户自定义代理（填了就优先）
     "{proxy}https://codeload.github.com/comfyanonymous/ComfyUI/zip/refs/heads/master",
+    # 公共加速（实测 220+ KB/s，证书已过期→走宽松校验，见 _http_get）
+    "https://gh-proxy.com/https://codeload.github.com/comfyanonymous/ComfyUI/zip/refs/heads/master",
+    # 直连兜底（国内通常 50KB/s 级，仅作最后手段）
     "https://codeload.github.com/comfyanonymous/ComfyUI/zip/refs/heads/master",
 ]
 COMFYUI_MANAGER_URLS = [
     "{proxy}https://codeload.github.com/Comfy-Org/ComfyUI-Manager/zip/refs/heads/main",
+    "https://gh-proxy.com/https://codeload.github.com/Comfy-Org/ComfyUI-Manager/zip/refs/heads/main",
     "https://codeload.github.com/Comfy-Org/ComfyUI-Manager/zip/refs/heads/main",
-    "https://gitee.com/mirrors/ComfyUI-Manager/repository/archive/main.zip",
 ]
 MINGIT_VERSION = "2.47.1"
 MINGIT_URLS = [
@@ -58,6 +61,7 @@ MINGIT_URLS = [
 # PyPI 镜像（安装依赖用）
 PYPI_MIRRORS = {
     "阿里云": "https://mirrors.aliyun.com/pypi/simple/",
+    "清华": "https://pypi.tuna.tsinghua.edu.cn/simple",
     "上交": "https://mirrors.sjtug.sjtu.edu.cn/pypi/web/simple/",
     "官方": "https://pypi.org/simple/",
 }
@@ -154,6 +158,27 @@ def _detect_gpu_impl() -> GpuInfo:
 
 
 # ---------------- 下载器（断点续传 + 多源重试） ----------------
+# 公共加速代理域名（这些域名证书常过期/自签，需宽松校验；直连仍严格校验）
+_PROXY_HOSTS = ("gh-proxy.com", "ghproxy.", "gh.llkk.cc", "ghfast.top",
+                "gh.ddlc.top", "ghp.ci", "ghproxy.cc")
+_SSL_LOOSE = None
+
+
+def _ssl_ctx_for(url: str):
+    """代理加速域名 → 宽松 SSL（证书过期也能用）；其余 → 默认严格校验"""
+    global _SSL_LOOSE
+    host = url.split("//", 1)[-1].split("/", 1)[0].lower()
+    if any(h in host for h in _PROXY_HOSTS):
+        if _SSL_LOOSE is None:
+            import ssl as _ssl
+            ctx = _ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = _ssl.CERT_NONE
+            _SSL_LOOSE = ctx
+        return _SSL_LOOSE
+    return None   # None = urllib 默认严格校验
+
+
 def _http_get(url: str, timeout: int = 60) -> urllib.request.Request:
     req = urllib.request.Request(url, headers={
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ComfyHub/0.2",
@@ -186,7 +211,11 @@ def download_multi(url_or_tpl: str | list, dest: str, log=print,
                 if pos > 0:
                     headers["Range"] = f"bytes={pos}-"
                 log(f"  下载 {os.path.basename(dest)} ← {url[:80]}")
-                r = urllib.request.urlopen(_http_get(url), timeout=timeout)
+                _kw = {"timeout": timeout}
+                _ctx = _ssl_ctx_for(url)
+                if _ctx is not None:
+                    _kw["context"] = _ctx
+                r = urllib.request.urlopen(_http_get(url), **_kw)
                 if pos > 0 and r.status != 206:
                     pos = 0  # 该源不支持续传，重来
                 total = pos + int(r.headers.get("Content-Length", 0) or 0)
@@ -194,6 +223,9 @@ def download_multi(url_or_tpl: str | list, dest: str, log=print,
                 import time as _t
                 _last_log = 0.0
                 _name = os.path.basename(dest)
+                _sp_start = _t.time()
+                _sp_bytes = 0
+                _slow_strikes = 0
                 with open(tmp, mode) as f:
                     while True:
                         chunk = r.read(1 << 20)
@@ -202,6 +234,16 @@ def download_multi(url_or_tpl: str | list, dest: str, log=print,
                         f.write(chunk)
                         # 节流进度输出（每 2 秒一行，避免刷屏）
                         _now = _t.time()
+                        # 慢速检测：每 6 秒结算一次速率，连续 3 次（18 秒）< 80KB/s 就换源
+                        if _now - _sp_start >= 6.0:
+                            rate = (f.tell() - _sp_bytes) / (_now - _sp_start) / 1024
+                            _sp_start, _sp_bytes = _now, f.tell()
+                            if rate < 80:
+                                _slow_strikes += 1
+                                if _slow_strikes >= 3:
+                                    raise IOError(f"源速度过慢({rate:.0f}KB/s)，切换下一源")
+                            else:
+                                _slow_strikes = 0
                         if _now - _last_log >= 2.0:
                             _last_log = _now
                             _cur = f.tell()
@@ -345,8 +387,11 @@ def pip_install(python_exe: str, pkgs: list, index_url: str, log=print,
         cmd += extra
     log("$ " + " ".join(cmd[:12]) + (" …" if len(cmd) > 12 else ""))
     try:
+        _env = dict(os.environ)
+        for _k in ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP"):
+            _env.pop(_k, None)
         proc = _sp.Popen(cmd, stdout=_sp.PIPE, stderr=_sp.STDOUT, text=True,
-                         encoding="utf-8", errors="replace", bufsize=1)
+                         encoding="utf-8", errors="replace", bufsize=1, env=_env)
     except Exception as e:
         log(f"❌ 无法启动 pip: {e}")
         return False
@@ -423,7 +468,7 @@ def install_comfyui_requirements(python_exe: str, comfyui_path: str, log=print,
     if pip_install(python_exe, ["-r", req], mirror, log=log):
         return True
     # 失败（常见：SSL 中断/镜像抖动）→ 换清华源重试一次
-    alt = PYPI_MIRRORS["清华"]
+    alt = PYPI_MIRRORS.get("清华") or PYPI_MIRRORS.get("上交")
     if alt and alt != mirror:
         log(f"⚠️ 首次安装失败，自动换镜像重试：{alt}")
         if pip_install(python_exe, ["-r", req], alt, log=log):

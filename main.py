@@ -42,6 +42,19 @@ def _qt_message_handler(mode, ctx, message):
         _write_crash(f"QT MSG(level={mode}) {ctx.file}:{ctx.line}", message)
 
 
+def _enable_faulthandler():
+    """捕获 C 层段错误（Qt/VCRUNTIME 崩溃）并写栈到 crash.log"""
+    try:
+        import faulthandler
+        _p = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")),
+                          "ComfyHub", "crash.log")
+        os.makedirs(os.path.dirname(_p), exist_ok=True)
+        _f = open(_p, "a", encoding="utf-8", buffering=1)
+        faulthandler.enable(file=_f)
+    except Exception:
+        pass
+
+
 def main():
     sys.excepthook = _excepthook
     try:

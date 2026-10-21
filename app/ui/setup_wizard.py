@@ -21,6 +21,10 @@ from app.bootstrap import PYPI_MIRRORS
 class _LogPage(QWizardPage):
     """安装进度页（步进制：每步 检测 → 询问 → 执行 → 复验 → 下一步）"""
 
+    # ★ 跨线程日志信号：后台 worker 只能 emit，绝不能直接碰 Qt 控件
+    #  （直接调用 UI 方法 = 非 GUI 线程操作 QPlainTextEdit → Qt 堆损坏 0xc0000374）
+    sig_ui_log = Signal(str)
+
     STEP_TITLES = ["准备 Python 环境", "下载 ComfyUI 源码",
                    "安装 ComfyUI 依赖", "安装 PyTorch（按显卡匹配）"]
 
@@ -61,6 +65,8 @@ class _LogPage(QWizardPage):
         self._decision_visible(False)
         self.worker = None
         self.result_data = {}
+        # ★ 跨线程日志：worker 线程只 emit 信号，由主线程执行 _on_log 更新 UI
+        self.sig_ui_log.connect(self._on_log)
 
     # ---------- 入口 ----------
     def start(self, target_dir, python_exe, mirror, proxy, torch_flag, on_done):
@@ -119,7 +125,9 @@ class _LogPage(QWizardPage):
         mirror = bootstrap.PYPI_MIRRORS.get(self.state["mirror_name"],
                                             bootstrap.PYPI_MIRRORS["阿里云"])
         wheels = os.path.join(bootstrap.tools_root(), "wheels")
-        log = self._on_log
+        # ★ 关键：后台线程的日志只能走信号（emit），由主线程执行 _on_log。
+        #   直接把 self._on_log 传进 worker 会导致跨线程操作 Qt 控件 → 堆损坏崩溃
+        log = self.sig_ui_log.emit
 
         def _install_source_with_manager():
             """源码安装 + 附带 ComfyUI-Manager（全新安装的标配插件商店）"""
