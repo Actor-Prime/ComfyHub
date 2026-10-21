@@ -374,11 +374,11 @@ class SetupWizard(QWizard):
         form = QFormLayout(p1)
 
         self.ed_dir = QLineEdit(os.path.join("F:\\", "ComfyUI"))
-        b_pick = QPushButton("浏览…")
-        b_pick.clicked.connect(self._pick)
+        self.b_pick = QPushButton("浏览…")
+        self.b_pick.clicked.connect(self._pick)
         row = QHBoxLayout()
         row.addWidget(self.ed_dir, 1)
-        row.addWidget(b_pick)
+        row.addWidget(self.b_pick)
         form.addRow("安装到:", row)
 
         self.ed_dir.editingFinished.connect(self._detect_existing)
@@ -397,6 +397,13 @@ class SetupWizard(QWizard):
         self.lb_scan.setStyleSheet("color:#4cd47c;")
         self.lb_scan.hide()
         form.addRow("", self.lb_scan)
+        # 检测/验证中的不确定进度条（滚动动画）
+        self.pbar_scan = QProgressBar()
+        self.pbar_scan.setRange(0, 0)
+        self.pbar_scan.setTextVisible(False)
+        self.pbar_scan.setFixedHeight(6)
+        self.pbar_scan.hide()
+        form.addRow("", self.pbar_scan)
         self.cb_found = QComboBox()
         self.cb_found.hide()
         self.lb_found_title = QLabel("检测到:")
@@ -516,9 +523,23 @@ class SetupWizard(QWizard):
                         "_del_worker", "_rm_worker"), 10000)
         event.accept()
 
+    def _lock_inputs(self, locked, hint=""):
+        """检测/验证期间锁住输入框与浏览按钮（防止中途改路径导致状态错乱）"""
+        for w in (getattr(self, "ed_dir", None), getattr(self, "ed_name", None),
+                  getattr(self, "b_pick", None)):
+            if w is not None:
+                w.setEnabled(not locked)
+        if hasattr(self, "pbar_scan"):
+            self.pbar_scan.setVisible(locked)
+        if locked and hint and hasattr(self, "lb_scan"):
+            self.lb_scan.setStyleSheet("color:#9ec3f0;")
+            self.lb_scan.setText(f"🔍 {hint}")
+            self.lb_scan.show()
+
     def _detect_existing(self):
         """后台扫描目录（含两层子目录）：找到 ComfyUI 直接注册；没找到自动补全并展开安装选项"""
         root = os.path.normpath(self.ed_dir.text().strip())
+        self._lock_inputs(True, "正在检测本机环境，请稍候…")
         if not os.path.isdir(root):
             # 全新安装目标目录通常不存在——自动创建，创建失败才报错
             try:
@@ -532,6 +553,7 @@ class SetupWizard(QWizard):
                 self.cb_found.hide()
                 self.lb_found_title.hide()
                 self.install_opts.show()
+                self._lock_inputs(False)
                 p1.setFinalPage(False)
                 self.button(QWizard.NextButton).setEnabled(True)
                 self.button(QWizard.FinishButton).setEnabled(False)
@@ -594,6 +616,7 @@ class SetupWizard(QWizard):
         self.lb_scan.setText(
             "📁 空文件夹：未检测到 ComfyUI 实例，点「下一步」开始安装\n"
             "安装目录已自动指向 ComfyUI 子目录，请确认下方安装选项。")
+        self._lock_inputs(False)
         p1.setFinalPage(False)
         self.button(QWizard.NextButton).setEnabled(True)
         self.button(QWizard.FinishButton).setEnabled(False)
@@ -636,6 +659,7 @@ class SetupWizard(QWizard):
             else:
                 self._py_map[self._verify_comfy] = py
             self._py_map[self._verify_comfy] = py   # 记住验证通过的解验器
+            self._lock_inputs(False)
             self.lb_scan.setStyleSheet("color:#4cd47c;")
             self.lb_scan.setText(f"✅ {info}\n使用解释器: {py}\n选好候选后点「完成」直接添加为实例（免下载）。")
             p1.setFinalPage(True)
@@ -646,6 +670,7 @@ class SetupWizard(QWizard):
 
     def _verify_fail(self, why):
         """验证失败：切回安装模式（展开选项，走安装修齐）"""
+        self._lock_inputs(False)
         self.lb_scan.setStyleSheet("color:#e8a33d;")
         self.lb_scan.setText(
             f"⚠️ 验证未通过：{why}\n"
