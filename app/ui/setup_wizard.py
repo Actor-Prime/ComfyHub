@@ -434,6 +434,25 @@ class SetupWizard(QWizard):
                 seen.add(cand)
         form_opts.addRow("Python 环境:", self.cb_python)
 
+        # 解释器路径展示（跟随上方选择实时更新；选中"重新安装"时显示目标安装路径）
+        self.ed_py_path = QLineEdit("")
+        self.ed_py_path.setReadOnly(True)
+        self.ed_py_path.setStyleSheet("color:#8fa3bf;")
+        form_opts.addRow("解释器路径:", self.ed_py_path)
+
+        def _sync_py_path(_idx=0):
+            ud = self.cb_python.currentData()
+            if ud == "__reinstall__":
+                self.ed_py_path.setText(
+                    "将安装到: " + os.path.join(bootstrap.tools_root(), "python", "python.exe"))
+            elif ud:
+                self.ed_py_path.setText(ud)
+            else:
+                self.ed_py_path.setText("（将自动下载安装便携 Python）")
+
+        self.cb_python.currentIndexChanged.connect(_sync_py_path)
+        _sync_py_path()
+
         self.cb_mirror = QComboBox()
         self.cb_mirror.addItems(list(PYPI_MIRRORS.keys()))
         self.cb_mirror.setCurrentText("阿里云")
