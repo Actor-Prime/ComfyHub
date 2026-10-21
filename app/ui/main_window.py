@@ -56,7 +56,9 @@ class MainWindow(QMainWindow):
         lv.setContentsMargins(0, 8, 0, 4)
         lv.setSpacing(2)
         icon_label = QLabel()
-        icon_pixmap = QPixmap(os.path.join(ASSETS_DIR, "logo.png"))
+        icon_pixmap = QPixmap(os.path.join(ASSETS_DIR, "icon.ico"))
+        if icon_pixmap.isNull():
+            icon_pixmap = QPixmap(os.path.join(ASSETS_DIR, "logo.png"))
         if not icon_pixmap.isNull():
             icon_label.setPixmap(icon_pixmap.scaled(40, 40, Qt.KeepAspectRatio,
                                                     Qt.SmoothTransformation))
@@ -163,7 +165,16 @@ class MainWindow(QMainWindow):
     def _init_tray(self):
         """最小化到任务栏托盘：托盘图标 + 显示/退出菜单"""
         from PySide6.QtWidgets import QSystemTrayIcon, QMenu
-        icon = QIcon(os.path.join(ASSETS_DIR, "logo.png"))
+        # 双保险：ico 优先（Qt 自带 qico 插件），png 兜底
+        ico_path = os.path.join(ASSETS_DIR, "icon.ico")
+        png_path = os.path.join(ASSETS_DIR, "logo.png")
+        icon = QIcon(ico_path)
+        if icon.isNull():
+            icon = QIcon(png_path)
+        if icon.isNull():
+            from app.log import log_exc
+            log_exc(f"tray icon load failed: {ico_path} exists={os.path.isfile(ico_path)}, "
+                    f"{png_path} exists={os.path.isfile(png_path)}")
         self.tray = QSystemTrayIcon(icon, self)
         self.tray.setToolTip("ComfyHub — ComfyUI 多实例管理器")
         menu = QMenu(self)
