@@ -319,19 +319,45 @@ def install_comfyui_manager(comfyui_path: str, log=print, proxy: str = "") -> st
 
 # ---------------- pip / torch / 依赖 ----------------
 def pip_install(python_exe: str, pkgs: list, index_url: str, log=print,
-                extra: list | None = None, timeout: int = 7200) -> bool:
+                extra: list | None = None, timeout: int = 5400) -> bool:
+    """流式执行 pip：逐行实时输出（装依赖可能要几分钟，必须可见进度）。
+    --retries/--timeout 限制单包卡顿；--progress-bar off 避免 \r 进度条阻塞读取。"""
+    import subprocess as _sp
+    import time as _time
     cmd = [python_exe, "-s", "-m", "pip", "install", "--no-warn-script-location",
+           "--retries", "3", "--timeout", "60", "--progress-bar", "off",
            "-i", index_url] + pkgs
     if extra:
         cmd += extra
-    log("$ " + " ".join(cmd[:10]) + (" …" if len(cmd) > 10 else ""))
-    r = run(cmd, capture_output=True, text=True,
-                       encoding="utf-8", errors="replace", timeout=timeout)
-    tail = [ln for ln in ((r.stdout or "") + (r.stderr or "")).splitlines()
-            if "[safe-delete]" not in ln and ln.strip()]
-    for ln in tail[-12:]:
-        log("  " + ln[:160])
-    return r.returncode == 0
+    log("$ " + " ".join(cmd[:12]) + (" …" if len(cmd) > 12 else ""))
+    try:
+        proc = _sp.Popen(cmd, stdout=_sp.PIPE, stderr=_sp.STDOUT, text=True,
+                         encoding="utf-8", errors="replace", bufsize=1)
+    except Exception as e:
+        log(f"❌ 无法启动 pip: {e}")
+        return False
+    start = _time.time()
+    tail = []
+    while True:
+        line = proc.stdout.readline()
+        if not line:
+            if proc.poll() is not None:
+                break
+            if _time.time() - start > timeout:
+                proc.kill()
+                log(f"⏱ pip 超过 {timeout // 60} 分钟未完成，已终止")
+                return False
+            _time.sleep(0.05)
+            continue
+        line = line.strip()
+        if not line or "[safe-delete]" in line:
+            continue
+        tail = (tail + [line])[-12:]
+        log("  " + line[:160])
+    ok = proc.returncode == 0
+    if not ok:
+        log("❌ pip 退出码: {}（最后输出见上）".format(proc.returncode))
+    return ok
 
 
 def install_torch(python_exe: str, variant: str, log=print,
@@ -380,7 +406,17 @@ def install_torch(python_exe: str, variant: str, log=print,
 def install_comfyui_requirements(python_exe: str, comfyui_path: str, log=print,
                                  mirror: str = PYPI_MIRRORS["阿里云"]) -> bool:
     req = os.path.join(comfyui_path, "requirements.txt")
-    return pip_install(python_exe, ["-r", req], mirror, log=log)
+    if pip_install(python_exe, ["-r", req], mirror, log=log):
+        return True
+    # 失败（常见：SSL 中断/镜像抖动）→ 换清华源重试一次
+    alt = PYPI_MIRRORS["清华"]
+    if alt and alt != mirror:
+        log(f"⚠️ 首次安装失败，自动换镜像重试：{alt}")
+        if pip_install(python_exe, ["-r", req], alt, log=log):
+            return True
+    log("❌ 依赖安装失败：网络中断或镜像不可用。可更换 PyPI 镜像后重试，"
+        "或直接点「再次检测」重走本步。")
+    return False
 
 
 # ---------------- 便携 Git（MinGit） ----------------
