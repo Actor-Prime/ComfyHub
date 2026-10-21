@@ -65,6 +65,22 @@ class _LogPage(QWizardPage):
     # ---------- 入口 ----------
     def start(self, target_dir, python_exe, mirror, proxy, torch_flag, on_done):
         from app import bootstrap
+        # 本次安装日志落盘：%APPDATA%\ComfyHub\logs\install_YYYYmmdd_HHMMSS.log
+        import datetime as _dt
+        _logdir = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")),
+                               "ComfyHub", "logs")
+        os.makedirs(_logdir, exist_ok=True)
+        self._install_log_path = os.path.join(
+            _logdir, f"install_{_dt.datetime.now():%Y%m%d_%H%M%S}.log")
+        try:
+            with open(self._install_log_path, "w", encoding="utf-8") as f:
+                f.write(f"# ComfyHub 安装日志 {_dt.datetime.now():%Y-%m-%d %H:%M:%S}\n"
+                        f"# 目标: {target_dir}\n"
+                        f"# Python: {python_exe or '（自动安装便携）'}\n"
+                        f"# 镜像: {mirror}  代理: {proxy or '无'}  torch: {torch_flag}\n"
+                        "--------------------------------------------------------\n")
+        except OSError:
+            self._install_log_path = ""
         self.log.clear()
         self.on_done = on_done
         self.done_ok = False
@@ -353,6 +369,15 @@ class _LogPage(QWizardPage):
         self.log.appendPlainText(msg)
         from PySide6.QtGui import QTextCursor
         self.log.moveCursor(QTextCursor.End)
+        # 同步落盘（失败静默，不打扰安装）
+        _lp = getattr(self, "_install_log_path", "")
+        if _lp:
+            try:
+                import datetime as _dt
+                with open(_lp, "a", encoding="utf-8") as _f:
+                    _f.write(f"[{_dt.datetime.now():%H:%M:%S}] {msg}\n")
+            except OSError:
+                pass
 
     def _on_progress(self, step, total):
         pass
