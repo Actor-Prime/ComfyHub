@@ -604,6 +604,23 @@ class SetupWizard(QWizard):
             self.lb_scan.setText(f"🔍 {hint}")
             self.lb_scan.show()
 
+    def _sync_path_to_candidate(self):
+        """把「安装到」/「实例名称」同步为当前选中候选的真实路径。
+        否则路径框会停在用户输入的（可能不存在的）路径，与实际实例不一致"""
+        try:
+            idx = max(0, self.cb_found.currentIndex())
+            cands = getattr(self, "_scan_candidates", None) or []
+            if not cands:
+                return
+            real = cands[min(idx, len(cands) - 1)]
+            if self.ed_dir.text().strip() and os.path.normpath(
+                    self.ed_dir.text().strip()) == os.path.normpath(real):
+                return
+            self.ed_dir.setText(real)
+            self.ed_name.setText(os.path.basename(real.rstrip("\\/")) or "ComfyUI")
+        except Exception:
+            pass
+
     def _start_scan(self, path: str):
         """发起目录扫描：创建 worker → 连接结果 → 启动。
         ★ 三步必须成套，缺任何一个都会卡在"正在检查"（v0.5.78 踩过）"""
@@ -697,8 +714,14 @@ class SetupWizard(QWizard):
             self.cb_found.setEnabled(len(candidates) > 1)
             self.cb_found.show()
             self.lb_found_title.show()
-            self.cb_found.currentIndexChanged.connect(
-                lambda _i: self._begin_verify() if self._scan_candidates else None)
+            def _on_candidate_changed(_i):
+                self._sync_path_to_candidate()
+                if self._scan_candidates:
+                    self._begin_verify()
+
+            self.cb_found.currentIndexChanged.connect(_on_candidate_changed)
+            # 首次列出候选立刻同步一次，避免路径框停留在用户输入的旧路径
+            self._sync_path_to_candidate()
             n_py = self._match_pythons(candidates)
             self._scan_candidates = candidates
             self._scan_pys = self._py_map
