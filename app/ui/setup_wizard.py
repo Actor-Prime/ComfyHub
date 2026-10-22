@@ -599,23 +599,23 @@ class SetupWizard(QWizard):
         root = os.path.normpath(self.ed_dir.text().strip())
         self._lock_inputs(True, "正在检测本机环境，请稍候…")
         if not os.path.isdir(root):
-            # 全新安装目标目录通常不存在——自动创建，创建失败才报错
-            try:
-                os.makedirs(root, exist_ok=True)
-            except OSError as e:
-                self.lb_scan.setStyleSheet("color:#e8635a;")
-                self.lb_scan.setText(
-                    f"❌ 无法创建目录：{root}\n{e}\n"
-                    "请换一个位置（避免系统盘根目录/无权限目录）。")
-                self.lb_scan.show()
-                self.cb_found.hide()
-                self.lb_found_title.hide()
-                self.install_opts.show()
-                self._lock_inputs(False)
-                p1.setFinalPage(False)
-                self.button(QWizard.NextButton).setEnabled(True)
-                self.button(QWizard.FinishButton).setEnabled(False)
-                return
+            # ★ 探测阶段绝不创建文件夹（用户可能只是选错路径/随时取消）
+            #   只提示"将在此全新安装"，真正的创建发生在点「下一步」开始安装时
+            self._orig_root = root
+            self.cb_found.hide()
+            self.lb_found_title.hide()
+            self.install_opts.show()
+            self._lock_inputs(False)
+            self.lb_scan.setStyleSheet("color:#e8a33d;")
+            self.lb_scan.setText(
+                f"📁 目录不存在：{root}\n"
+                "点「下一步」将在此位置全新安装（安装开始时才创建，现在不会动你的磁盘）。")
+            p1.setFinalPage(False)
+            if not self.ed_name.text().strip():
+                self.ed_name.setText(os.path.basename(root.rstrip("\\/")) or "")
+            self.button(QWizard.NextButton).setEnabled(True)
+            self.button(QWizard.FinishButton).setEnabled(False)
+            return
         # 记录用户选择的原始根目录（实例名默认取它的名字）
         self._orig_root = root
         # 中文/非 ASCII 路径检测：ComfyUI/pip/torch 对中文路径极易出玄学问题
@@ -662,18 +662,21 @@ class SetupWizard(QWizard):
             return
         self.cb_found.hide()
         self.lb_found_title.hide()
-        base = os.path.basename(root).casefold()
-        if "comfyui" in base:
-            target = root
+        # ★ 安装目标规则：用户选的目录就是安装位置，不再自动套一层 ComfyUI 子目录
+        #   唯一例外：选中盘根（F:\）时套 ComfyUI，避免把源码散到盘根
+        _norm = root.rstrip("\\/")
+        if len(_norm) <= 2 and _norm[1:2] == ":":        # "F:" 这种盘根
+            target = os.path.join(_norm + os.sep, "ComfyUI")
         else:
-            target = os.path.join(root, "ComfyUI")
+            target = root
         if not os.path.isfile(os.path.join(target, "main.py")):
             self.ed_dir.setText(target)
         self.install_opts.show()
         self.lb_scan.setStyleSheet("color:#e8a33d;")
         self.lb_scan.setText(
-            "📁 空文件夹：未检测到 ComfyUI 实例，点「下一步」开始安装\n"
-            "安装目录已自动指向 ComfyUI 子目录，请确认下方安装选项。")
+            f"📁 空文件夹：未检测到 ComfyUI 实例，点「下一步」将安装到\n"
+            f"{target}\n"
+            "（不会自动套子目录；如想换位置请用上方「浏览…」）")
         self._lock_inputs(False)
         p1.setFinalPage(False)
         self.button(QWizard.NextButton).setEnabled(True)
