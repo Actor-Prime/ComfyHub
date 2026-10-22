@@ -187,6 +187,124 @@ def _http_get(url: str, timeout: int = 60) -> urllib.request.Request:
     return req
 
 
+def _probe_range(url: str, timeout: int = 15) -> tuple[bool, int]:
+    """探测源是否支持 Range 并返回文件总长（0=未知）"""
+    try:
+        _kw = {"timeout": timeout}
+        _ctx = _ssl_ctx_for(url)
+        if _ctx is not None:
+            _kw["context"] = _ctx
+        req = _http_get(url)
+        req.add_header("Range", "bytes=0-0")
+        r = urllib.request.urlopen(req, **_kw)
+        status = getattr(r, "status", 200)
+        cr = r.headers.get("Content-Range", "")
+        r.close()
+        if status == 206 and "/" in cr:
+            total = int(cr.rsplit("/", 1)[-1])
+            return True, total
+        return False, 0
+    except Exception:
+        return False, 0
+
+
+def _download_threaded(url: str, dest: str, size: int, log=print,
+                       threads: int = 8, timeout: int = 30) -> bool:
+    """分段并发下载（同一 .part 文件按偏移写入）。失败返回 False 交给上层换源。"""
+    import threading
+    tmp = dest + ".part"
+    try:
+        with open(tmp, "wb") as f:
+            f.truncate(size)          # 预分配，避免多线程 seek 越界
+    except OSError as e:
+        log(f"  预分配失败: {e}")
+        return False
+
+    seg = size // threads + 1
+    errors: list = []
+    done = [0]
+    lock = threading.Lock()
+    name = os.path.basename(dest)
+    total_mb = size / 1048576
+
+    def worker(i: int):
+        start = i * seg
+        end = min(start + seg - 1, size - 1)
+        if start >= size:
+            return
+        try:
+            _kw = {"timeout": timeout}
+            _ctx = _ssl_ctx_for(url)
+            if _ctx is not None:
+                _kw["context"] = _ctx
+            req = _http_get(url)
+            req.add_header("Range", f"bytes={start}-{end}")
+            r = urllib.request.urlopen(req, **_kw)
+            if getattr(r, "status", 200) != 206:
+                raise IOError("该源不支持分段")
+            with open(tmp, "r+b") as f:
+                f.seek(start)
+                while True:
+                    chunk = r.read(256 * 1024)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    with lock:
+                        done[0] += len(chunk)
+            r.close()
+        except Exception as e:
+            with lock:
+                errors.append(f"段{i + 1}: {type(e).__name__}")
+
+    ts = [threading.Thread(target=worker, args=(i,), daemon=True) for i in range(threads)]
+    import time as _t
+    [t.start() for t in ts]
+    # 总超时：按最慢 20KB/s 估算 + 90 秒余量，超时即放弃（避免卡死在个别段）
+    _deadline = _t.time() + max(90, size / 1024 / 20 + 90)
+    _last = 0.0
+    _win_start = _t.time()
+    _win_bytes = 0
+    while any(t.is_alive() for t in ts):
+        _t.sleep(0.5)
+        _now = _t.time()
+        if _now > _deadline:
+            log(f"  分段下载总超时（{done[0] / 1048576:.1f}/{total_mb:.1f}MB），放弃该源")
+            return False
+        # 有效速度判定：每 45 秒结算，增长不足 2MB（≈45KB/s）就放弃换单连接
+        if _now - _win_start >= 45.0:
+            _grow = done[0] - _win_bytes
+            if _grow < 2 * 1048576:
+                log(f"  分段并发被限速（45 秒仅 {_grow / 1048576:.1f}MB），"
+                    f"放弃并回退单连接")
+                return False
+            _win_start, _win_bytes = _now, done[0]
+        if _now - _last >= 2.0:
+            _last = _now
+            cur = min(done[0], size)
+            log(f"  ↓ {name}: {cur / 1048576:.1f}/{total_mb:.1f} MB "
+                f"({cur * 100 // max(size, 1)}%) ×{threads} 线程")
+    [t.join(timeout=2) for t in ts]
+
+    def _drop_partial():
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+    if errors:
+        log(f"  分段下载失败: {', '.join(errors[:3])}")
+        _drop_partial()      # 稀疏文件含空洞，不能作为续传基础
+        return False
+    got = os.path.getsize(tmp)
+    if got != size:
+        log(f"  分段下载尺寸不符 {got}/{size}")
+        _drop_partial()
+        return False
+    os.replace(tmp, dest)
+    log(f"下载完成: {name} ({got / 1048576:.1f} MB，{threads} 线程)")
+    return True
+
+
 def download_multi(url_or_tpl: str | list, dest: str, log=print,
                    max_retry: int = 8, proxy: str = "", expected_sha: str | None = None,
                    timeout: int = 20) -> bool:
@@ -228,6 +346,24 @@ def download_multi(url_or_tpl: str | list, dest: str, log=print,
                     headers["Range"] = f"bytes={pos}-"
                 log(f"  下载 {name} ← {url[:78]}"
                     + (f"  (续传 {pos / 1048576:.1f}MB)" if pos else ""))
+                # 多线程并发在 codeload 上会被限速到近乎停滞（实测卡在 67%~78%），
+                # 故默认关闭，只走稳定的单连接续传。开关保留便于将来换源时启用。
+                use_threaded = False
+                if pos == 0 and use_threaded:
+                    _ok_range, _size = _probe_range(url)
+                    if _ok_range and _size > 4 * 1048576:
+                        log(f"  该源支持分段，尝试 4 线程并发（共 {_size / 1048576:.1f}MB，"
+                            f"被限速会自动回退）")
+                        if _download_threaded(url, dest, _size, log=log,
+                                              timeout=timeout):
+                            if expected_sha and _sha256_of(dest) != expected_sha:
+                                log("  sha256 校验失败，删除重试")
+                                os.remove(dest)
+                                raise IOError("sha256 校验不通过")
+                            return True
+                        log("  分段下载未成功，回退单连接重下")
+                        pos = 0
+                        continue      # 直接换下一个源（当前源分段都卡）
                 _kw = {"timeout": timeout}
                 _ctx = _ssl_ctx_for(url)
                 if _ctx is not None:
