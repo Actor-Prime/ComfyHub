@@ -187,6 +187,43 @@ def _http_get(url: str, timeout: int = 60) -> urllib.request.Request:
     return req
 
 
+def _sha256_of(path: str) -> str:
+    """计算文件 sha256（大文件分块读取）"""
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _unzip(zpath: str, dest: str, strip_root: bool = False):
+    """解压 zip 到 dest；strip_root=True 时剥掉压缩包里的顶层目录。
+    GitHub/Gitee 的 archive 都是 ComfyUI-master/ 这种单层结构，必须剥离。"""
+    import zipfile
+    import shutil as _sh
+    os.makedirs(dest, exist_ok=True)
+    with zipfile.ZipFile(zpath) as z:
+        names = z.namelist()
+        prefix = ""
+        if strip_root and names:
+            first = names[0].split("/", 1)[0]
+            if all(nm.split("/", 1)[0] == first for nm in names[:50]):
+                prefix = first + "/"
+        for nm in names:
+            if prefix and not nm.startswith(prefix):
+                continue
+            rel = nm[len(prefix):] if prefix else nm
+            if not rel or rel.endswith("/"):
+                if rel:
+                    os.makedirs(os.path.join(dest, rel), exist_ok=True)
+                continue
+            target = os.path.join(dest, rel)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with z.open(nm) as fsrc, open(target, "wb") as fdst:
+                _sh.copyfileobj(fsrc, fdst)
+
+
 def _probe_range(url: str, timeout: int = 15) -> tuple[bool, int]:
     """探测源是否支持 Range 并返回文件总长（0=未知）"""
     try:
