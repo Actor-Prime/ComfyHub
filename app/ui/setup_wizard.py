@@ -538,9 +538,19 @@ class SetupWizard(QWizard):
         else:
             base = os.path.dirname(os.path.dirname(os.path.dirname(
                 os.path.abspath(__file__))))                 # 源码运行 = 项目根
-        self.ed_dir.setText(os.path.join(base, "ComfyUI"))
-        # 直接走检测流程：自动建目录 → 扫描 → 展开安装选项（无需用户再点输入框触发）
-        self._detect_existing()
+        # 默认扫「程序所在目录的上级」——现成实例常和启动器同级的任意命名目录
+        # （例：F:\ComfyHub\ComfyUIImage 就在启动器目录 F:\ComfyHub 下）
+        self.ed_dir.setText(base)
+        _parent = os.path.dirname(base.rstrip("\\/"))
+        if _parent and os.path.isdir(_parent) and os.path.normpath(_parent) != os.path.normpath(base):
+            self._orig_root = os.path.join(base, "ComfyUI")   # 无实例时的全新安装目标
+            self._scan_parent = True
+            self.lb_scan.setStyleSheet("color:#9aa4b2;")
+            self.lb_scan.setText(f"正在检查 {_parent} 下有没有现成 ComfyUI 实例…")
+            self.lb_scan.show()
+            swap_worker(self, "_scan_worker", ScanWorker(_parent))
+        else:
+            self._detect_existing()
 
         # ---------- 页2：安装进度 ----------
         self.p2 = _LogPage()
@@ -599,8 +609,19 @@ class SetupWizard(QWizard):
         root = os.path.normpath(self.ed_dir.text().strip())
         self._lock_inputs(True, "正在检测本机环境，请稍候…")
         if not os.path.isdir(root):
-            # ★ 探测阶段绝不创建文件夹（用户可能只是选错路径/随时取消）
-            #   只提示"将在此全新安装"，真正的创建发生在点「下一步」开始安装时
+            # ★ 探测阶段绝不创建文件夹
+            # ★ 路径不存在时，先扫「父目录」找现成实例
+            #   （例：输入 F:\ComfyHub\ComfyUI 不存在，但兄弟目录 ComfyUIImage 里就有实例）
+            _parent = os.path.dirname(root.rstrip("\\/"))
+            if _parent and os.path.isdir(_parent) and _parent != root:
+                self._orig_root = root
+                self._scan_parent = True
+                self.lb_scan.setStyleSheet("color:#9aa4b2;")
+                self.lb_scan.setText(
+                    f"该路径不存在，正在检查上级目录 {_parent} 里有没有现成实例…")
+                self.lb_scan.show()
+                swap_worker(self, "_scan_worker", ScanWorker(_parent))
+                return
             self._orig_root = root
             self.cb_found.hide()
             self.lb_found_title.hide()
@@ -641,6 +662,28 @@ class SetupWizard(QWizard):
     def _on_scan_done(self, root, candidates):
         candidates = list(dict.fromkeys(candidates))
         p1 = self.page(0)
+        # 父目录扫描模式：用户输入的路径不存在，在这里扫到了兄弟实例
+        if getattr(self, "_scan_parent", False):
+            self._scan_parent = False
+            if candidates:
+                # 落到正常候选流程（root 就是父目录，rel 显示各子目录名）
+                pass
+            else:
+                # 上级目录也没有实例 → 回到"将在此全新安装"（用户输入的路径）
+                _orig = getattr(self, "_orig_root", root)
+                self._lock_inputs(False)
+                self.cb_found.hide()
+                self.lb_found_title.hide()
+                self.install_opts.show()
+                self.lb_scan.setStyleSheet("color:#e8a33d;")
+                self.lb_scan.setText(
+                    f"📁 未发现现成实例（已检查上级目录 {root}）\n"
+                    f"点「下一步」将在此位置全新安装：{_orig}\n"
+                    "（现在不会动你的磁盘，安装开始时才创建）")
+                p1.setFinalPage(False)
+                self.button(QWizard.NextButton).setEnabled(True)
+                self.button(QWizard.FinishButton).setEnabled(False)
+                return
         if candidates:
             self.cb_found.clear()
             for c in candidates:
