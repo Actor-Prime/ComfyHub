@@ -41,16 +41,17 @@ GET_PIP_URLS = [
     "https://bootstrap.pypa.io/get-pip.py",
 ]
 COMFYUI_ZIP_URLS = [
-    # 用户自定义代理（填了就优先）
-    "{proxy}https://codeload.github.com/comfyanonymous/ComfyUI/zip/refs/heads/master",
-    # 公共加速（实测 220+ KB/s，证书已过期→走宽松校验，见 _http_get）
+    # 公共加速（200-400KB/s；偶发超时/断流会被自动换源）
+    # 注：gitee.com/mirrors 的 archive 地址对程序请求只返回 HTML 登录页，不可用
     "https://gh-proxy.com/https://codeload.github.com/comfyanonymous/ComfyUI/zip/refs/heads/master",
-    # 直连兜底（国内通常 50KB/s 级，仅作最后手段）
+    # 用户自定义代理（界面填了才生效；为空时该项会被自动过滤）
+    "{proxy}https://codeload.github.com/comfyanonymous/ComfyUI/zip/refs/heads/master",
+    # 直连兜底（支持断点续传，速度慢但稳）
     "https://codeload.github.com/comfyanonymous/ComfyUI/zip/refs/heads/master",
 ]
 COMFYUI_MANAGER_URLS = [
-    "{proxy}https://codeload.github.com/Comfy-Org/ComfyUI-Manager/zip/refs/heads/main",
     "https://gh-proxy.com/https://codeload.github.com/Comfy-Org/ComfyUI-Manager/zip/refs/heads/main",
+    "{proxy}https://codeload.github.com/Comfy-Org/ComfyUI-Manager/zip/refs/heads/main",
     "https://codeload.github.com/Comfy-Org/ComfyUI-Manager/zip/refs/heads/main",
 ]
 MINGIT_VERSION = "2.47.1"
@@ -187,109 +188,116 @@ def _http_get(url: str, timeout: int = 60) -> urllib.request.Request:
 
 
 def download_multi(url_or_tpl: str | list, dest: str, log=print,
-                   max_retry: int = 60, proxy: str = "", expected_sha: str | None = None,
-                   timeout: int = 60) -> bool:
-    """断点续传下载。url_or_tpl 支持列表（多源轮换）或含 {proxy} 占位的模板。
-    返回是否成功。"""
+                   max_retry: int = 8, proxy: str = "", expected_sha: str | None = None,
+                   timeout: int = 20) -> bool:
+    """多源下载 + 断点续传。
+
+    设计要点（踩过的坑）：
+    · **选定源后下到底，绝不中途按速度切换**——切换 + 不支持 Range 的源会导致进度清零，
+      形成"0~3MB 无限循环"（v0.5.73 的死循环事故）
+    · 只有当前源**抛异常/断开**才换下一个源；有进度时，不支持续传(Range)的源直接跳过
+    · 所有源都失败且全都不支持续传 → 清空 .part 用第一个可用源从头下（只做一次）
+    """
     if isinstance(url_or_tpl, str):
         urls = [url_or_tpl]
     else:
-        urls = [u.format(proxy=proxy) if "{proxy}" in u else u for u in url_or_tpl]
+        # proxy 为空时跳过 {proxy} 模板项（否则与直连重复，白占第一顺位）
+        raw = [u for u in url_or_tpl if not ("{proxy}" in u and not proxy)]
+        urls = [u.format(proxy=proxy) if "{proxy}" in u else u for u in raw]
+    # 去重保序
+    _seen = set()
+    urls = [u for u in urls if not (u in _seen or _seen.add(u))]
     tmp = dest + ".part"
-    total = 0
+    name = os.path.basename(dest)
+    no_range = set()          # 不支持断点续传的源
+    restart_done = False      # 是否已经清空重下过
+
     for attempt in range(1, max_retry + 1):
         pos = os.path.getsize(tmp) if os.path.exists(tmp) else 0
-        # 完整性预校验（续传前先看是否已完整）
-        if expected_sha and pos > 0:
-            if _sha256_of(tmp) == expected_sha:
-                os.replace(tmp, dest)
-                return True
+        if expected_sha and pos > 0 and _sha256_of(tmp) == expected_sha:
+            os.replace(tmp, dest)
+            return True
+
         last_err = None
         for ui, url in enumerate(urls):
+            if pos > 0 and url in no_range:
+                continue      # 有进度时，不重头下不支持续传的源
             try:
                 headers = {"User-Agent": "Mozilla/5.0 ComfyHub/0.2"}
                 if pos > 0:
                     headers["Range"] = f"bytes={pos}-"
-                log(f"  下载 {os.path.basename(dest)} ← {url[:80]}")
+                log(f"  下载 {name} ← {url[:78]}"
+                    + (f"  (续传 {pos / 1048576:.1f}MB)" if pos else ""))
                 _kw = {"timeout": timeout}
                 _ctx = _ssl_ctx_for(url)
                 if _ctx is not None:
                     _kw["context"] = _ctx
-                r = urllib.request.urlopen(_http_get(url), **_kw)
-                if pos > 0 and r.status != 206:
-                    pos = 0  # 该源不支持续传，重来
+                req = _http_get(url)
+                for k, v in headers.items():
+                    req.add_header(k, v)
+                r = urllib.request.urlopen(req, **_kw)
+                if pos > 0 and getattr(r, "status", 200) != 206:
+                    no_range.add(url)
+                    log(f"  源{ui + 1} 不支持续传，跳过（保留下载进度）")
+                    r.close()
+                    continue
                 total = pos + int(r.headers.get("Content-Length", 0) or 0)
                 mode = "ab" if pos else "wb"
                 import time as _t
                 _last_log = 0.0
-                _name = os.path.basename(dest)
-                _sp_start = _t.time()
-                _sp_bytes = 0
-                _slow_strikes = 0
+                _first = True
                 with open(tmp, mode) as f:
                     while True:
                         chunk = r.read(1 << 20)
                         if not chunk:
                             break
+                        # ★ 首个数据块校验：必须是 ZIP(PK\x03\x04) 或 GZIP(\x1f\x8b) 或 TAR
+                        #   否则说明拿到的是 HTML/错误页（镜像反爬、登录墙等），立刻换源
+                        if _first:
+                            _first = False
+                            if not (chunk[:4] == b"PK\x03\x04" or chunk[:2] == b"\x1f\x8b"
+                                    or chunk[:5] == b"ustar"):
+                                raise IOError("响应不是压缩包（可能是网页/错误页）")
                         f.write(chunk)
-                        # 节流进度输出（每 2 秒一行，避免刷屏）
                         _now = _t.time()
-                        # 慢速检测：每 6 秒结算一次速率，连续 3 次（18 秒）< 80KB/s 就换源
-                        if _now - _sp_start >= 6.0:
-                            rate = (f.tell() - _sp_bytes) / (_now - _sp_start) / 1024
-                            _sp_start, _sp_bytes = _now, f.tell()
-                            if rate < 80:
-                                _slow_strikes += 1
-                                if _slow_strikes >= 3:
-                                    raise IOError(f"源速度过慢({rate:.0f}KB/s)，切换下一源")
-                            else:
-                                _slow_strikes = 0
-                        if _now - _last_log >= 2.0:
+                        if _now - _last_log >= 2.0:     # 仅节流输出，不做任何切换判断
                             _last_log = _now
                             _cur = f.tell()
                             if total > 0:
-                                log(f"  ↓ {_name}: {_cur / 1048576:.1f}/{total / 1048576:.1f} MB "
+                                log(f"  ↓ {name}: {_cur / 1048576:.1f}/{total / 1048576:.1f} MB "
                                     f"({_cur * 100 // max(total, 1)}%)")
                             else:
-                                log(f"  ↓ {_name}: {_cur / 1048576:.1f} MB")
+                                log(f"  ↓ {name}: {_cur / 1048576:.1f} MB")
                 got = os.path.getsize(tmp)
+                # 完整性：有 Content-Length 时校验大小，防止连接中断被当成成功
+                if total > 0 and got < total:
+                    raise IOError(f"下载不完整 {got / 1048576:.1f}/{total / 1048576:.1f}MB")
                 if expected_sha and _sha256_of(tmp) != expected_sha:
                     raise IOError("sha256 校验不通过")
                 os.replace(tmp, dest)
-                log(f"下载完成: {os.path.basename(dest)} ({got / 1048576:.1f} MB)")
+                log(f"下载完成: {name} ({got / 1048576:.1f} MB)")
                 return True
             except Exception as e:
                 last_err = e
                 now = os.path.getsize(tmp) if os.path.exists(tmp) else 0
                 log(f"  源{ui + 1} 失败（已得 {now / 1048576:.1f}MB）: {type(e).__name__}")
-                # 保留 .part，换下一个源续传
-        log(f"  [重试 {attempt}] {last_err}")
+
+        # 一轮源全失败：若进度存在但所有源都不支持续传 → 清空重下一次
+        pos_now = os.path.getsize(tmp) if os.path.exists(tmp) else 0
+        if pos_now > 0 and len(no_range) >= len(urls) and not restart_done:
+            restart_done = True
+            log("  所有源均不支持续传，清空进度从头下载（仅一次）")
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            continue
+        if pos_now == 0:
+            log(f"  第 {attempt} 轮全部源失败: {last_err}")
+        import time as _t2
+        _t2.sleep(min(2 * attempt, 8))
+
     return False
-
-
-def _sha256_of(path: str) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for c in iter(lambda: f.read(1 << 20), b""):
-            h.update(c)
-    return h.hexdigest()
-
-
-def _unzip(zip_path: str, dest_dir: str, strip_root: bool = False):
-    """解压；strip_root=True 时去掉压缩包顶层目录"""
-    import zipfile
-    with zipfile.ZipFile(zip_path) as z:
-        names = z.namelist()
-        if strip_root and names and "/" in names[0]:
-            root = names[0].split("/")[0]
-            z.extractall(dest_dir)
-            src = os.path.join(dest_dir, root)
-            # 把 root 内的文件移到 dest_dir
-            for item in os.listdir(src):
-                shutil.move(os.path.join(src, item), os.path.join(dest_dir, item))
-            os.rmdir(src)
-        else:
-            z.extractall(dest_dir)
 
 
 # ---------------- 便携 Python ----------------
