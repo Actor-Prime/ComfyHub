@@ -548,7 +548,7 @@ class SetupWizard(QWizard):
             self.lb_scan.setStyleSheet("color:#9aa4b2;")
             self.lb_scan.setText(f"正在检查 {_parent} 下有没有现成 ComfyUI 实例…")
             self.lb_scan.show()
-            swap_worker(self, "_scan_worker", ScanWorker(_parent))
+            self._start_scan(_parent)
         else:
             self._detect_existing()
 
@@ -604,6 +604,13 @@ class SetupWizard(QWizard):
             self.lb_scan.setText(f"🔍 {hint}")
             self.lb_scan.show()
 
+    def _start_scan(self, path: str):
+        """发起目录扫描：创建 worker → 连接结果 → 启动。
+        ★ 三步必须成套，缺任何一个都会卡在"正在检查"（v0.5.78 踩过）"""
+        swap_worker(self, "_scan_worker", ScanWorker(path))
+        self._scan_worker.sig_done.connect(self._on_scan_done)
+        self._scan_worker.start()
+
     def _detect_existing(self):
         """后台扫描目录（含两层子目录）：找到 ComfyUI 直接注册；没找到自动补全并展开安装选项"""
         root = os.path.normpath(self.ed_dir.text().strip())
@@ -620,7 +627,7 @@ class SetupWizard(QWizard):
                 self.lb_scan.setText(
                     f"该路径不存在，正在检查上级目录 {_parent} 里有没有现成实例…")
                 self.lb_scan.show()
-                swap_worker(self, "_scan_worker", ScanWorker(_parent))
+                self._start_scan(_parent)
                 return
             self._orig_root = root
             self.cb_found.hide()
@@ -655,9 +662,7 @@ class SetupWizard(QWizard):
         self.lb_scan.setText("正在扫描，请稍候…")
         self.lb_scan.setStyleSheet("color:#9aa4b2;")
         self.lb_scan.show()
-        swap_worker(self, "_scan_worker", ScanWorker(root))
-        self._scan_worker.sig_done.connect(self._on_scan_done)
-        self._scan_worker.start()
+        self._start_scan(root)
 
     def _on_scan_done(self, root, candidates):
         candidates = list(dict.fromkeys(candidates))
