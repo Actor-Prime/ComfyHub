@@ -1,4 +1,4 @@
-APP_VERSION = "0.5.77"
+APP_VERSION = "0.5.78"
 
 # -*- coding: utf-8 -*-
 """配置管理：多实例配置持久化 + 自动探测本机 ComfyUI"""
@@ -100,3 +100,15 @@ def save_config(cfg: dict) -> None:
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
     os.replace(tmp, CONFIG_PATH)  # 原子写，防断电损坏
+
+
+def is_comfyui_dir(path: str) -> bool:
+    """是否为 ComfyUI 实例目录：有 main.py 且具备 ComfyUI 特征文件。
+    仅看 main.py 会误判（任何 Python 项目都可能有 main.py，例如本启动器自身）。"""
+    import os
+    if not os.path.isfile(os.path.join(path, "main.py")):
+        return False
+    # ComfyUI 三个标志性文件/目录，命中任意一个即认定为 ComfyUI
+    return (os.path.isdir(os.path.join(path, "comfy"))
+            or os.path.isfile(os.path.join(path, "nodes.py"))
+            or os.path.isfile(os.path.join(path, "folder_paths.py")))
