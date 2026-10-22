@@ -544,10 +544,11 @@ def detect_python_step(python_exe, tools_dir):
 
 
 def detect_source_step(target_dir):
-    """步骤2 检测：ComfyUI 源码"""
-    if os.path.isfile(os.path.join(target_dir, "main.py")):
+    """步骤2 检测：ComfyUI 源码（main.py + 特征文件，避免误判同名 main.py）"""
+    from app.config import is_comfyui_dir
+    if is_comfyui_dir(target_dir):
         return "ok", f"ComfyUI 源码已存在: {target_dir}", {"comfyui_path": target_dir}
-    return "missing", "未检测到 ComfyUI 源码（main.py）", {}
+    return "missing", "未检测到 ComfyUI 源码（main.py + comfy/ 等特征）", {}
 
 
 _REQ_MARKS = ["rich", "aiohttp", "kornia", "yaml",
