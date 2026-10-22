@@ -365,6 +365,7 @@ def download_multi(url_or_tpl: str | list, dest: str, log=print,
     tmp = dest + ".part"
     name = os.path.basename(dest)
     no_range = set()          # 不支持断点续传的源
+    failed_count = {}         # 每个源本轮累计失败次数
     restart_done = False      # 是否已经清空重下过
 
     for attempt in range(1, max_retry + 1):
@@ -374,9 +375,15 @@ def download_multi(url_or_tpl: str | list, dest: str, log=print,
             return True
 
         last_err = None
-        for ui, url in enumerate(urls):
+        # 有进度时，把候选源按"是否支持续传"排序：codeload 直连在末尾但支持 Range
+        _ordered = urls
+        if pos > 0:
+            _ordered = sorted(urls, key=lambda u: (u in no_range, "codeload.github.com" not in u))
+        for ui, url in enumerate(_ordered):
             if pos > 0 and url in no_range:
                 continue      # 有进度时，不重头下不支持续传的源
+            if failed_count.get(url, 0) >= 2:
+                continue      # 该源已连续失败两次，本轮直接跳过（避免空转）
             try:
                 headers = {"User-Agent": "Mozilla/5.0 ComfyHub/0.2"}
                 if pos > 0:
@@ -452,14 +459,19 @@ def download_multi(url_or_tpl: str | list, dest: str, log=print,
                 return True
             except Exception as e:
                 last_err = e
+                failed_count[url] = failed_count.get(url, 0) + 1
                 now = os.path.getsize(tmp) if os.path.exists(tmp) else 0
                 log(f"  源{ui + 1} 失败（已得 {now / 1048576:.1f}MB）: {type(e).__name__}")
 
-        # 一轮源全失败：若进度存在但所有源都不支持续传 → 清空重下一次
+        # 一轮结束：判断是否还有源可用
         pos_now = os.path.getsize(tmp) if os.path.exists(tmp) else 0
-        if pos_now > 0 and len(no_range) >= len(urls) and not restart_done:
+        usable = [u for u in urls
+                  if not (pos_now > 0 and u in no_range) and failed_count.get(u, 0) < 2]
+        if pos_now > 0 and not usable and not restart_done:
+            # 有进度但没有任何源能续传 → 清空重下一次（只做一次）
             restart_done = True
-            log("  所有源均不支持续传，清空进度从头下载（仅一次）")
+            failed_count.clear()
+            log("  暂无可用源可续传，清空进度从头下载（仅一次）")
             try:
                 os.remove(tmp)
             except OSError:
