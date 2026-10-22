@@ -37,6 +37,8 @@ def check():
     print(f"候选项: {[cb.itemText(i) for i in range(cb.count())]}", flush=True)
     print(f"扫描提示文字: {wiz.lb_scan.text()[:100]}", flush=True)
     print(f"输入框锁定: {not wiz.ed_dir.isEnabled()}", flush=True)
+    print(f"路径框已同步为: {wiz.ed_dir.text()}", flush=True)
+    print(f"实例名已同步为: {wiz.ed_name.text()}", flush=True)
     app.quit()
 
 
