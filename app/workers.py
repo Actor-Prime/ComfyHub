@@ -76,9 +76,13 @@ class ScanWorker(QThread):
                             search_roots.append(p2)
         except OSError:
             pass
+        from app.config import is_comfyui_dir
         for sr in search_roots:
-            if os.path.isfile(os.path.join(sr, "main.py")):
-                candidates.append(sr)
+            try:
+                if is_comfyui_dir(sr):
+                    candidates.append(sr)
+            except Exception:
+                pass
         self.sig_done.emit(root, candidates)
 
 
