@@ -25,3 +25,9 @@ temp/
 # ---- IDE ----
 .idea/
 .vscode/
+
+# ComfyUI 实例目录（安装产物，不入库）
+ComfyUI/
+ComfyUIImage/
+comfyui_env/
+*.part
