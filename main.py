@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""ComfyHub - ComfyUI 多实例启动管理器 入口"""
+"""ComfyHub - ComfyUI 多实例启动管理器 入口
+
+支持命令行模式（不启动界面）：
+    ComfyHub.exe list / start / stop / status / info / logs
+无参数时启动图形界面。
+"""
 import sys
 import os
 import time
@@ -7,6 +12,26 @@ import traceback
 
 # 高 DPI 支持（PySide6 6.4+ 默认开启，这里兜底）
 os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
+
+# ★ CLI 模式必须在导入 PySide6 之前判断，避免无谓加载 Qt
+_CLI_CMDS = {"list", "start", "stop", "status", "info", "logs", "batch", "-h", "--help"}
+
+
+def _maybe_cli() -> int | None:
+    """若首个参数是 CLI 子命令 → 走命令行，返回退出码；否则返回 None 表示进 GUI"""
+    if len(sys.argv) > 1 and sys.argv[1] in _CLI_CMDS:
+        try:
+            from app.cli import main as cli_main
+            return cli_main()
+        except Exception as e:
+            print(f"CLI 执行失败: {e}", file=sys.stderr)
+            return 1
+    return None
+
+
+_cli_code = _maybe_cli()
+if _cli_code is not None:
+    sys.exit(_cli_code)
 
 from PySide6.QtWidgets import QApplication, QMessageBox
 from PySide6.QtGui import QFont

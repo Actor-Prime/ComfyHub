@@ -2,7 +2,7 @@
 """ComfyUI 编辑页：分区表单（基础/高级设置）+ 启停 + 保存/删除（对标截图2/3）"""
 import os
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
     QComboBox, QSpinBox, QCheckBox, QFileDialog, QMessageBox, QFrame,
@@ -39,6 +39,48 @@ class _Row(QFrame):
             h.addWidget(widget, 3, Qt.AlignVCenter)
 
 
+
+
+class _KernelWorker(QThread):
+    """内核版本：拉标签 / 切换+装依赖（git 与 pip 都可能慢，必须后台）"""
+    sig_log = Signal(str)
+    sig_tags = Signal(list)
+    sig_switch = Signal(bool, str)
+
+    def __init__(self, km, action, tag="", python=""):
+        super().__init__()
+        self.km = km
+        self.action = action
+        self.tag = tag
+        self.python = python
+
+    def run(self):
+        try:
+            if self.action == "tags":
+                self.sig_log.emit("[内核] 拉取版本标签…")
+                tags = self.km.list_tags()
+                self.sig_log.emit(f"[内核] 取到 {len(tags)} 个标签")
+                self.sig_tags.emit(tags)
+                return
+            # switch
+            self.sig_log.emit(f"[内核] 切换到 {self.tag} …")
+            ok, msg = self.km.switch_to(self.tag)
+            self.sig_log.emit(f"[内核] checkout: {'OK' if ok else '失败'} {msg[:200]}")
+            if not ok:
+                self.sig_switch.emit(False, msg)
+                return
+            if self.python:
+                from app import bootstrap
+                self.sig_log.emit("[内核] 安装该版本要求的依赖…")
+                try:
+                    bootstrap.install_comfyui_requirements(
+                        self.python, self.km.path, log=self.sig_log.emit)
+                    self.sig_log.emit("[内核] 依赖已同步")
+                except Exception as e:
+                    self.sig_log.emit(f"[内核] 依赖安装异常（可稍后手动装）: {e}")
+            self.sig_switch.emit(True, msg)
+        except Exception as e:
+            self.sig_switch.emit(False, str(e))
 
 
 class ComfyuiPage(QWidget):
@@ -117,6 +159,29 @@ class ComfyuiPage(QWidget):
         h_py.addWidget(b_py)
         wrap3 = QWidget(); wrap3.setLayout(h_py)
         root.addWidget(_Row("Python 路径", "实例配套的解释器（建议用独立 venv）", wrap3))
+
+        # ---- 内核版本 ----
+        lb_k = QLabel("内核版本")
+        lb_k.setObjectName("SectionLabel")
+        root.addWidget(lb_k)
+
+        h_k = QHBoxLayout()
+        self.lb_kver = QLabel("…")
+        self.lb_kver.setStyleSheet("color:#e8eef7;")
+        self.cb_ktag = QComboBox()
+        self.cb_ktag.setMinimumWidth(150)
+        b_krefresh = QPushButton("刷新版本")
+        b_krefresh.clicked.connect(self._refresh_tags)
+        b_kswitch = QPushButton("切换并装依赖")
+        b_kswitch.setProperty("accent", True)
+        b_kswitch.clicked.connect(self._switch_kernel)
+        h_k.addWidget(self.lb_kver, 1)
+        h_k.addWidget(QLabel("目标:"))
+        h_k.addWidget(self.cb_ktag)
+        h_k.addWidget(b_krefresh)
+        h_k.addWidget(b_kswitch)
+        wrap_k = QWidget(); wrap_k.setLayout(h_k)
+        root.addWidget(_Row("版本切换", "按 git tag 切换内核（如回退到旧版救火），切换后自动安装配套依赖", wrap_k))
 
         # ---- 高级设置 ----
         lb2 = QLabel("高级设置")
@@ -215,7 +280,87 @@ class ComfyuiPage(QWidget):
         self.ed_extra.setText(inst.get("extra_args", ""))
         self._use_gpu = inst.get("device", "gpu") != "cpu"
         self._sync_device_buttons()
+        self._refresh_kernel_info()
         self._update_state()
+
+    # ---------- 内核版本 ----------
+    def _km(self):
+        from app.tools import KernelManager
+        inst = self.mainwin.current_inst()
+        return KernelManager(inst["comfyui_path"]) if inst else None
+
+    def _refresh_kernel_info(self):
+        inst = self.mainwin.current_inst()
+        if not inst or not hasattr(self, "lb_kver"):
+            return
+        try:
+            km = self._km()
+            ver = km.current_version() or "未知"
+            if km.is_git_repo:
+                self.lb_kver.setText(f"当前：{ver}　·　git 仓库 ✓")
+                self.lb_kver.setStyleSheet("color:#4cd47c;")
+            else:
+                self.lb_kver.setText(f"当前：{ver}　·　非 git 仓库（无法切换版本）")
+                self.lb_kver.setStyleSheet("color:#e8a33d;")
+        except Exception as e:
+            self.lb_kver.setText(f"读取版本失败：{e}")
+            self.lb_kver.setStyleSheet("color:#e8635a;")
+
+    def _refresh_tags(self):
+        inst = self.mainwin.current_inst()
+        if not inst:
+            return
+        km = self._km()
+        if not km or not km.is_git_repo:
+            QMessageBox.information(self, "内核版本",
+                                    "该实例不是 git 仓库（可能是 zip 安装），无法按标签切换版本。")
+            return
+        if getattr(self, "_kw", None) and self._kw.isRunning():
+            return
+        self.lb_kver.setText("正在拉取版本标签…")
+        self._kw = _KernelWorker(km, "tags")
+        self._kw.sig_log.connect(self.mainwin.console_page.append_line)
+        self._kw.sig_tags.connect(self._on_tags)
+        self._kw.start()
+
+    def _on_tags(self, tags):
+        self.cb_ktag.clear()
+        if tags:
+            self.cb_ktag.addItems(tags)
+            self._refresh_kernel_info()
+            self.lb_kver.setText(self.lb_kver.text() + f"　·　{len(tags)} 个版本可选")
+        else:
+            self.lb_kver.setText("未取到任何版本标签（检查网络 / 代理设置）")
+
+    def _switch_kernel(self):
+        inst = self.mainwin.current_inst()
+        tag = self.cb_ktag.currentText().strip()
+        if not inst or not tag:
+            QMessageBox.information(self, "内核版本", "请先「刷新版本」并选择目标版本")
+            return
+        if self.mainwin.procs.is_running(inst):
+            QMessageBox.warning(self, "内核版本", "请先停止该实例再切换内核版本")
+            return
+        ans = QMessageBox.question(
+            self, "切换内核",
+            f"将把内核切换到 {tag}，并自动安装该版本要求的依赖。\n"
+            "当前未提交的改动会被 git stash 暂存。继续？")
+        if ans != QMessageBox.Yes:
+            return
+        if getattr(self, "_kw", None) and self._kw.isRunning():
+            return
+        self._kw = _KernelWorker(self._km(), "switch", tag, inst.get("python_path") or "")
+        self._kw.sig_log.connect(self.mainwin.console_page.append_line)
+        self._kw.sig_switch.connect(self._on_switched)
+        self._kw.start()
+        self.lb_kver.setText(f"正在切换到 {tag} …（含依赖安装，可能需要几分钟）")
+
+    def _on_switched(self, ok, msg):
+        self._refresh_kernel_info()
+        if ok:
+            QMessageBox.information(self, "切换完成", "内核版本已切换，依赖已同步。\n请重新启动该实例。")
+        else:
+            QMessageBox.warning(self, "切换失败", msg[:400])
 
     def on_show(self):
         self.load_current()
