@@ -30,13 +30,13 @@ if exist dist\ComfyHub (
     --clean ^
     --windowed ^
     --name ComfyHub ^
-    --icon assets\icon.ico ^
-    --add-data "assets;assets" ^
+    --icon "%~dp0..\assets\icon.ico" ^
+    --add-data "%~dp0..\assets;assets" ^
     --hidden-import PySide6.QtSvg ^
-    --distpath dist ^
-    --workpath build ^
-    --specpath build ^
-    main.py
+    --distpath "%~dp0..\dist" ^
+    --workpath "%~dp0..\build" ^
+    --specpath "%~dp0..\build" ^
+    "%~dp0..\main.py"
 
 if errorlevel 1 (
     echo 打包失败！请检查上方报错。
