@@ -108,6 +108,28 @@ class CatalogWorker(QThread):
             self.sig_error.emit(str(e))
 
 
+class StatsWorker(QThread):
+    """拉官方 Registry 热度索引（6131 个仓库，首次约 90 秒，之后走 12h 缓存）"""
+    sig_log = Signal(str)
+    sig_done = Signal(dict)
+    sig_progress = Signal(int, int)
+
+    def __init__(self, force=False):
+        super().__init__()
+        self.force = force
+
+    def run(self):
+        try:
+            stats = store.load_registry_stats(
+                force=self.force,
+                progress=lambda d, t: self.sig_progress.emit(d, t),
+                log=self.sig_log.emit)
+            self.sig_done.emit(stats or {})
+        except Exception as e:
+            self.sig_log.emit(f"热度数据获取失败：{e}")
+            self.sig_done.emit({})
+
+
 # ============================================================ 页面
 class PluginsPage(QWidget):
     def __init__(self, cfg, mainwin):
@@ -120,6 +142,8 @@ class PluginsPage(QWidget):
         self._catalog_meta = {}
         self._catalog_worker = None
         self._last_market_rows = []
+        self._stats = {}
+        self._stats_worker = None
         self._build()
 
     def _inst(self):
@@ -228,19 +252,29 @@ class PluginsPage(QWidget):
         bar.addWidget(self.b_refresh)
         root.addLayout(bar)
 
+        sortbar = QHBoxLayout()
         self.lb_market_stat = QLabel("尚未加载插件清单（切到此页会自动加载，首次约 10 秒）")
         self.lb_market_stat.setStyleSheet("color:#9aa4b2;")
-        root.addWidget(self.lb_market_stat)
+        sortbar.addWidget(self.lb_market_stat, 1)
+        sortbar.addWidget(QLabel("排序:"))
+        self.cb_sort = QComboBox()
+        self.cb_sort.addItem("热门优先", "hot")
+        self.cb_sort.addItem("名称 A→Z", "name")
+        self.cb_sort.currentIndexChanged.connect(lambda _i: self._do_search())
+        sortbar.addWidget(self.cb_sort)
+        root.addLayout(sortbar)
 
-        self.tb_market = QTableWidget(0, 4)
-        self.tb_market.setHorizontalHeaderLabels(["插件", "作者", "说明", "操作"])
+        self.tb_market = QTableWidget(0, 5)
+        self.tb_market.setHorizontalHeaderLabels(["插件", "热度", "作者", "说明", "操作"])
         hh = self.tb_market.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.Interactive)
-        hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        hh.setSectionResizeMode(2, QHeaderView.Stretch)
-        hh.setSectionResizeMode(3, QHeaderView.Fixed)
-        self.tb_market.setColumnWidth(0, 280)
-        self.tb_market.setColumnWidth(3, 96)
+        hh.setSectionResizeMode(1, QHeaderView.Fixed)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(3, QHeaderView.Stretch)
+        hh.setSectionResizeMode(4, QHeaderView.Fixed)
+        self.tb_market.setColumnWidth(0, 250)
+        self.tb_market.setColumnWidth(1, 92)
+        self.tb_market.setColumnWidth(4, 96)
         self.tb_market.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tb_market.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tb_market.setAlternatingRowColors(True)
@@ -504,8 +538,9 @@ class PluginsPage(QWidget):
         src = meta.get("source", "?")
         cached = "缓存" if meta.get("cached") else "在线"
         self.lb_market_stat.setText(
-            f"共 {len(nodes)} 个插件（来源 {src}·{cached}）　输入关键词后回车搜索")
+            f"共 {len(nodes)} 个插件（来源 {src}·{cached}）　正在获取热度数据…")
         self._do_search()
+        self._ensure_stats()
 
     def _on_catalog_err(self, msg):
         self.b_refresh.setEnabled(True)
@@ -513,11 +548,41 @@ class PluginsPage(QWidget):
         QMessageBox.warning(self, "插件市场",
                             f"{msg}\n\n可在「系统设置」里配置代理后点「刷新清单」重试。")
 
+    def _ensure_stats(self, force=False):
+        """拉官方 Registry 热度（后台，约 90 秒首次 / 之后走 12h 缓存）"""
+        if not force and self._stats:
+            store.attach_stats(self._catalog, self._stats)
+            self._do_search()
+            return
+        if self._stats_worker and self._stats_worker.isRunning():
+            return
+        self._stats_worker = StatsWorker(force=force)
+        self._stats_worker.sig_log.connect(self._log)
+        self._stats_worker.sig_progress.connect(self._on_stats_progress)
+        self._stats_worker.sig_done.connect(self._on_stats)
+        self._stats_worker.start()
+
+    def _on_stats_progress(self, done, total):
+        self.lb_market_stat.setText(f"正在获取热度数据…（{done}/{total} 页）")
+
+    def _on_stats(self, stats):
+        self._stats = stats or {}
+        if self._stats:
+            store.attach_stats(self._catalog, self._stats)
+            self._do_search()
+            hit = sum(1 for n in self._catalog if n.get("_downloads") or n.get("_stars"))
+            self.lb_market_stat.setText(
+                f"共 {len(self._catalog)} 个插件　热度已更新（{hit} 个有下载/星标数据）")
+        else:
+            self.lb_market_stat.setText(
+                f"共 {len(self._catalog)} 个插件　热度数据暂不可用（不影响安装）")
+
     def _do_search(self):
         if not self._catalog:
             return
         kw = self.ed_search.text().strip()
-        rows = store.search(self._catalog, kw, limit=400)
+        sort = (self.cb_sort.currentData() or "hot") if hasattr(self, "cb_sort") else "hot"
+        rows = store.search(self._catalog, kw, limit=400, sort=sort)
         self._last_market_rows = rows
         self._render_market(rows)
         if kw:
@@ -536,11 +601,25 @@ class PluginsPage(QWidget):
             t = QTableWidgetItem(name)
             t.setToolTip(store.install_url(n))
             self.tb_market.setItem(i, 0, t)
-            self.tb_market.setItem(i, 1, QTableWidgetItem(n.get("author") or ""))
+            # 热度：下载量优先，其次 GitHub 星数
+            hot = QTableWidgetItem(store.hot_text(n))
+            dl = int(n.get("_downloads") or 0)
+            st_ = int(n.get("_stars") or 0)
+            if dl >= 100000 or st_ >= 1000:
+                hot.setForeground(Qt.cyan)
+            elif dl > 0 or st_ > 0:
+                hot.setForeground(Qt.green)
+            else:
+                hot.setForeground(Qt.gray)
+            hot.setTextAlignment(Qt.AlignCenter)
+            hot.setToolTip(f"官方 Registry 下载量 {dl:,}　·　GitHub 星数 {st_:,}"
+                           + ("" if (dl or st_) else "\n（该插件未注册到 ComfyUI 官方 Registry）"))
+            self.tb_market.setItem(i, 1, hot)
+            self.tb_market.setItem(i, 2, QTableWidgetItem(n.get("author") or ""))
             desc = (n.get("description") or "").replace("\n", " ")
             d = QTableWidgetItem(desc)
             d.setToolTip(desc)
-            self.tb_market.setItem(i, 2, d)
+            self.tb_market.setItem(i, 3, d)
             guess = store.install_url(n).rstrip("/").split("/")[-1]
             if guess.endswith(".git"):
                 guess = guess[:-4]
@@ -548,7 +627,7 @@ class PluginsPage(QWidget):
                 it = QTableWidgetItem("已安装 ✓")
                 it.setForeground(Qt.green)
                 it.setTextAlignment(Qt.AlignCenter)      # 与按钮列视觉对齐
-                self.tb_market.setItem(i, 3, it)
+                self.tb_market.setItem(i, 4, it)
             else:
                 btn = QPushButton("安装")
                 btn.setProperty("success", True)
@@ -558,7 +637,7 @@ class PluginsPage(QWidget):
                 hl = QHBoxLayout(holder)
                 hl.setContentsMargins(0, 0, 0, 0)
                 hl.addWidget(btn, 0, Qt.AlignCenter)
-                self.tb_market.setCellWidget(i, 3, holder)
+                self.tb_market.setCellWidget(i, 4, holder)
 
     def _install_from_store(self, node):
         inst = self._inst()
