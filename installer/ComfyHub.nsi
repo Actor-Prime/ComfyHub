@@ -175,7 +175,6 @@ Section "Uninstall"
     Delete "$INSTDIR\LICENSE"
     Delete "$INSTDIR\THIRD_PARTY_LICENSES.txt"
     Delete "$INSTDIR\CLI.md"
-    Delete "$INSTDIR\DISCLAIMER.txt"
     ; ★ 大量小文件（Qt _internal 有数千个）用系统 rd 批量删比 RMDir 快几十倍
     ;   （实测 NSIS 的 RMDir /r 删 118MB 要 5 分钟，rd 只要几秒）
     nsExec::ExecToStack 'rd /s /q "$INSTDIR\_internal"'
