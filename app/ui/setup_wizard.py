@@ -579,6 +579,17 @@ class SetupWizard(QWizard):
         self._started = False
         # 验证结果缓存 {comfy路径: 可用解释器}——切回已验过的候选秒过，不必重跑 2~4 秒
         self._verify_cache = {}
+        # ★ UI 操作审计：记录真实点击/选择到 %APPDATA%\ComfyHub\logs\ui_YYYYMMDD.log
+        from app.ui.audit import log_ui
+        self._audit = log_ui
+        self.setObjectName("SetupWizard")
+        self._hook_audit()
+        try:
+            from PySide6.QtWidgets import QApplication
+            QApplication.instance().installEventFilter(self)
+        except Exception:
+            pass
+
         # 按钮状态守卫：Qt 的 finalPage/按钮状态会被多处修改，这里按"当前模式"兜底校正
         from PySide6.QtCore import QTimer as _QT
         self._btn_guard = _QT(self)
@@ -619,6 +630,50 @@ class SetupWizard(QWizard):
             self.lb_scan.setStyleSheet("color:#9ec3f0;")
             self.lb_scan.setText(f"🔍 {hint}")
             self.lb_scan.show()
+
+    def _hook_audit(self):
+        """记录向导被打开（后续真实点击由 eventFilter 捕获）"""
+        try:
+            from PySide6.QtWidgets import (QAbstractButton, QComboBox, QLineEdit)
+            self._audit_widgets = (QAbstractButton, QComboBox, QLineEdit)
+            from app.config import APP_VERSION
+            self._audit("WIZARD_OPEN", version=APP_VERSION)
+        except Exception:
+            pass
+
+    def eventFilter(self, obj, ev):
+        """只记录属于本向导的、用户真实触发的交互"""
+        try:
+            from PySide6.QtCore import QEvent
+            t = ev.type()
+            _w = getattr(self, "_audit_widgets", None)
+            if _w and t in (QEvent.MouseButtonRelease, QEvent.KeyPress) and isinstance(obj, _w):
+                if self.isVisible() and self.isAncestorOf(obj):
+                    if t == QEvent.KeyPress and ev.key() not in (0x01000004, 0x01000005):
+                        pass   # 只关心 Enter/Return，其他按键忽略
+                    else:
+                        self._audit_click(obj)
+        except Exception:
+            pass
+        return super().eventFilter(obj, ev)
+
+    def _audit_click(self, w):
+        try:
+            from PySide6.QtWidgets import QAbstractButton, QComboBox, QLineEdit
+            cls = type(w).__name__
+            if isinstance(w, QAbstractButton):
+                self._audit("CLICK", btn=(w.text()[:24] if hasattr(w, "text") else cls))
+            elif isinstance(w, QComboBox):
+                self._audit("SELECT", combo=cls, value=w.currentText()[:30])
+            elif isinstance(w, QLineEdit):
+                self._audit("INPUT", field=cls, value=w.text()[:60])
+            self._audit("STATE",
+                        dir=self.ed_dir.text()[:70],
+                        mode=("fresh" if not self.install_opts.isHidden() else "existing"),
+                        next=f"{self.button(QWizard.NextButton).text()}/{self.button(QWizard.NextButton).isEnabled()}",
+                        cands=self.cb_found.count())
+        except Exception:
+            pass
 
     def _guard_buttons(self):
         """每 300ms 按当前模式校正按钮语义（兜底：多处代码会改 finalPage/按钮状态，
