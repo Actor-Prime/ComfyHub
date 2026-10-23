@@ -142,3 +142,30 @@ A: 看 `%APPDATA%\ComfyHub\crash.log`——内置黑匣子记录完整异常堆�
 **ComfyHub** · 让每个人都能用上 ComfyUI
 
 </div>
+
+
+---
+
+## 📁 项目结构
+
+```
+ComfyHub/
+├── main.py                # 入口
+├── app/                   # 源码（业务层 + ui/ 界面层）
+├── assets/                # 图标资源（随包携带）
+├── docs/                  # 文档
+├── packaging/             # 打包配置（ComfyHub.spec / build_exe.bat / installer.iss）
+└── tests/                 # 自动化验证脚本（冒烟 / 安装链路 / 实例运行探活）
+```
+
+详细的目录说明、分层约束和开发命令见 **[docs/PROJECT_STRUCTURE.md](docs/PROJECT_STRUCTURE.md)**。
+
+### 常用命令
+
+```bash
+python main.py                    # 源码运行
+python tests/smoke.py             # 冒烟测试
+packaging\build_exe.bat           # 打包便携版（输出 dist/ComfyHub-portable.zip）
+python tests/sim_core_flow.py     # 验证安装链路
+python tests/sim_run_instance.py "F://path//to//ComfyUI" 8199   # 启动实例并探活
+```
