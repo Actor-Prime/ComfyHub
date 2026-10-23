@@ -238,11 +238,14 @@ class PluginsPage(QWidget):
         hh.setSectionResizeMode(0, QHeaderView.Interactive)
         hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         hh.setSectionResizeMode(2, QHeaderView.Stretch)
-        hh.setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        self.tb_market.setColumnWidth(0, 260)
+        hh.setSectionResizeMode(3, QHeaderView.Fixed)
+        self.tb_market.setColumnWidth(0, 280)
+        self.tb_market.setColumnWidth(3, 96)
         self.tb_market.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tb_market.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tb_market.setAlternatingRowColors(True)
+        self.tb_market.setWordWrap(False)          # 说明列单行，超长用省略号
+        self.tb_market.verticalHeader().setDefaultSectionSize(30)
         root.addWidget(self.tb_market, 1)
 
         tip = QLabel("数据来源：ComfyUI-Manager 官方插件清单（6000+）。安装走 git clone，"
@@ -544,12 +547,18 @@ class PluginsPage(QWidget):
             if guess in installed:
                 it = QTableWidgetItem("已安装 ✓")
                 it.setForeground(Qt.green)
+                it.setTextAlignment(Qt.AlignCenter)      # 与按钮列视觉对齐
                 self.tb_market.setItem(i, 3, it)
             else:
                 btn = QPushButton("安装")
                 btn.setProperty("success", True)
+                btn.setFixedSize(80, 26)          # 固定尺寸，防止列宽变化时文字换行
                 btn.clicked.connect(lambda _c=False, node=n: self._install_from_store(node))
-                self.tb_market.setCellWidget(i, 3, btn)
+                holder = QWidget()
+                hl = QHBoxLayout(holder)
+                hl.setContentsMargins(0, 0, 0, 0)
+                hl.addWidget(btn, 0, Qt.AlignCenter)
+                self.tb_market.setCellWidget(i, 3, holder)
 
     def _install_from_store(self, node):
         inst = self._inst()
