@@ -825,7 +825,10 @@ def verify_comfyui_runnable(python_exe, comfyui_path=None):
     if not python_exe or not os.path.isfile(python_exe):
         return False, "未找到 Python 解释器"
     try:
-        r = run([python_exe, "-c", "import torch, rich, aiohttp"],
+        # ★ 门禁要贴近"真实能启动"：ComfyUI 启动必经的模块（曾因只查 3 个包导致
+        #   "验证通过但启动报 No module named tqdm"）
+        r = run([python_exe, "-c",
+                 "import torch, rich, aiohttp, tqdm, einops, safetensors, yaml, PIL"],
                 capture_output=True, text=True, timeout=300)
         if r.returncode != 0:
             tail = ((r.stderr or "") or "").strip().splitlines()
