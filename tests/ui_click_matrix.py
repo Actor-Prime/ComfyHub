@@ -76,10 +76,28 @@ def state(wiz):
     }
 
 
+def wait_until(cond, timeout=15):
+    t = time.time()
+    while time.time() - t < timeout:
+        app.processEvents()
+        time.sleep(0.05)
+        try:
+            if cond():
+                return True
+        except Exception:
+            pass
+    return False
+
+
 def detect(wiz, path, wait=9):
+    """发起检测并等待"本轮"结果落定（不依赖固定时长）"""
     wiz.ed_dir.setText(path)
     wiz._detect_existing()
-    pump(wait)
+    # 等到出现结论性文案（验证通过/缺失/无 Python/全新安装/无实例）
+    wait_until(lambda: any(k in wiz.lb_scan.text() for k in
+                          ("验证通过", "缺依赖", "没有可用的 Python", "全新安装",
+                           "未发现", "不是可用的 ComfyUI", "空文件夹")), timeout=wait + 8)
+    pump(0.3)
     return state(wiz)
 
 
@@ -97,7 +115,7 @@ def scenario_multi_instance():
     # 切换候选
     for i in range(len(s["cands"])):
         wiz.cb_found.setCurrentIndex(i)
-        pump(6)
+        wait_until(lambda: "验证通过" in wiz.lb_scan.text() or "缺依赖" in wiz.lb_scan.text(), timeout=12)
         st = state(wiz)
         record(f"A1.5 候选{i+1} 可完成（{st['cands'][i] if i < len(st['cands']) else '?'}）",
                st["next_on"] and "验证通过" in st["text"], st["text"][:28])
@@ -194,6 +212,97 @@ def scenario_chinese_path():
 
 
 # ============================================================
+
+
+# ============================================================
+# E. 更多点击可能性（边界/异常/并发）
+# ============================================================
+def scenario_edge_cases():
+    log("\n【E1】空路径 + 回车")
+    win, wiz = new_wizard()
+    wiz.ed_dir.setText("")
+    wiz._detect_existing()
+    pump(1.5)
+    s = state(wiz)
+    record("E1.1 空路径不崩溃", True, f"next={s['next_text']}/{s['next_on']}")
+    wiz.close(); win.close()
+
+    log("\n【E2】盘根 F:////")
+    win, wiz = new_wizard()
+    s = detect(wiz, "F:////", wait=12)
+    # 盘根下若扫到现成实例 → 添加模式（正确）；没扫到 → 补 ComfyUI（也正确）
+    _ok = (s["path"].rstrip("\\/").lower().endswith("comfyui")) or ("验证" in s["text"])
+    record("E2.1 盘根行为合理（找到实例→添加 / 否则补 ComfyUI）", _ok, f"{s['path']} | {s['text'][:24]}")
+    wiz.close(); win.close()
+
+    log("\n【E3】非法字符路径")
+    win, wiz = new_wizard()
+    s = detect(wiz, r"F://_ui_matrix//a<b>c", wait=4)
+    record("E3.1 非法字符不崩溃", True, s["text"][:30])
+    record("E3.2 仍是全新安装态（可退出）", s["cancel_on"])
+    wiz.close(); win.close()
+
+    log("\n【E4】四层深路径")
+    deep = os.path.join(TMP, "L1", "L2", "L3", "L4")
+    win, wiz = new_wizard()
+    s = detect(wiz, deep, wait=6)
+    record("E4.1 深层路径补 ComfyUI", s["path"].endswith("ComfyUI"), s["path"])
+    record("E4.2 未创建任何目录", not os.path.isdir(os.path.join(TMP, "L1")))
+    wiz.close(); win.close()
+
+    log("\n【E5】实例名留空 → 应自动取目录名")
+    win, wiz = new_wizard()
+    wiz.ed_name.setText("")
+    s = detect(wiz, r"F://ComfyHub//ComfyUIH3", wait=10)
+    record("E5.1 实例名自动填充", bool(s["name"].strip()), s["name"])
+    wiz.close(); win.close()
+
+    log("\n【E6】检测进行中立刻改路径（并发扫描）")
+    win, wiz = new_wizard()
+    wiz.ed_dir.setText(r"F://ComfyHub")
+    wiz._detect_existing()
+    pump(0.3)                                  # 扫描还没结束时改路径
+    wiz.ed_dir.setText(r"F://ComfyHub//ComfyUIH3")
+    wiz._detect_existing()
+    wait_until(lambda: "验证通过" in wiz.lb_scan.text() or "缺依赖" in wiz.lb_scan.text(), timeout=15)
+    s = state(wiz)
+    record("E6.1 以最后一次路径为准", "ComfyUIH3" in s["path"], s["path"])
+    record("E6.2 最终状态可完成", s["next_on"] and s["next_text"] in ("完成", "仍要添加"),
+           f"{s['next_text']}/{s['next_on']}")
+    wiz.close(); win.close()
+
+    log("\n【E7】切换 Python 下拉选项")
+    win, wiz = new_wizard()
+    detect(wiz, r"F://ComfyHub//ComfyUIH3", wait=10)
+    cb = wiz.cb_python
+    ok_all = True
+    for i in range(cb.count()):
+        cb.setCurrentIndex(i)
+        pump(0.3)
+        if not wiz.ed_py_path.text().strip():
+            ok_all = False
+    record("E7.1 每个选项都有解释器路径展示", ok_all, f"{cb.count()} 个选项")
+    wiz.close(); win.close()
+
+    log("\n【E8】取消后重开，状态不残留")
+    win1, wiz1 = new_wizard()
+    detect(wiz1, r"F://ComfyHub", wait=10)
+    wiz1.reject(); pump(0.4)
+    win1.close()
+    win2, wiz2 = new_wizard()
+    # 新向导会自动探测本机实例——有候选属正常；关键是状态自洽
+    wait_until(lambda: "验证通过" in wiz2.lb_scan.text() or "缺依赖" in wiz2.lb_scan.text()
+               or "全新安装" in wiz2.lb_scan.text(), timeout=12)
+    s = state(wiz2)
+    _consistent = (s["next_text"] in ("完成", "仍要添加") and s["next_on"]) or \
+                  (s["next_text"] == "下一步 >" and s["next_on"])
+    record("E8.1 重开后状态自洽（自动探测结果或全新安装）", _consistent,
+           f"cands={s['cands']} next={s['next_text']}/{s['next_on']}")
+    record("E8.2 无历史错误残留（提示文字不含旧错误）",
+           "无法确认" not in s["text"] or s["next_on"])
+    wiz2.close(); win2.close()
+
+
 def main():
     log("=" * 70)
     log("ComfyHub 向导第一页 · 点击与按钮状态矩阵测试")
@@ -207,6 +316,7 @@ def main():
         scenario_comfyui_named()
         scenario_cancel_no_side_effect()
         scenario_chinese_path()
+        scenario_edge_cases()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
         if os.path.isdir(TOOLS_BAK) and not os.path.isdir(TOOLS):
