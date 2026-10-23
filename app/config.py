@@ -1,4 +1,4 @@
-APP_VERSION = "0.5.96"
+APP_VERSION = "0.6.0"
 
 # -*- coding: utf-8 -*-
 """配置管理：多实例配置持久化 + 自动探测本机 ComfyUI"""
@@ -68,6 +68,11 @@ def default_instance() -> dict:
         "vram_mode": "自动",
         "extra_args": "",
         "auto_open_browser": True,
+        # 插件方案（启动模式）：name = 展示名，enabled = 该方案启用的插件名列表，args = 附加启动参数
+        "plugin_profiles": [{"name": "默认", "enabled": [], "args": ""}],
+        "last_profile": "默认",
+        "auto_apply_profile": True,        # 启动实例前自动应用 last_profile
+        "notify_on_task_done": True,       # 任务完成时弹系统通知
     }
     for root in _PROBE_ROOTS:
         if os.path.isfile(os.path.join(root, "main.py")):

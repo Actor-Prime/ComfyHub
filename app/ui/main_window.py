@@ -157,6 +157,7 @@ class MainWindow(QMainWindow):
             self.stack.addWidget(w)
 
         self._init_tray()
+        self._init_task_watch()
 
         self._sync_instances()
         self.nav.setCurrentRow(0)
@@ -186,6 +187,71 @@ class MainWindow(QMainWindow):
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(self._on_tray_activated)
         self.tray.show()
+
+    # ==================== 任务完成通知 ====================
+    def _init_task_watch(self):
+        """统一管理：每 5 秒对齐一次"运行中实例"与"监听器"，其他页面零改动"""
+        from PySide6.QtCore import QTimer
+        self._watchers = {}
+        self._watch_timer = QTimer(self)
+        self._watch_timer.setInterval(5000)
+        self._watch_timer.timeout.connect(self._sync_watchers)
+        self._watch_timer.start()
+
+    def _sync_watchers(self):
+        from app.log import log_exc
+        try:
+            insts = self.cfg.get("instances") or []
+            for inst in insts:
+                iid = inst.get("id")
+                running = self.procs.is_running(inst)
+                has = iid in self._watchers
+                want = running and bool(inst.get("notify_on_task_done", True))
+                if want and not has:
+                    self._ensure_watcher(inst)
+                elif not want and has:
+                    self._drop_watcher(iid)
+        except Exception as e:
+            log_exc(f"_sync_watchers: {e}")
+
+    def _ensure_watcher(self, inst):
+        from app.task_watch import TaskWatcher
+        try:
+            w = TaskWatcher(inst.get("name") or "实例", int(inst.get("port") or 8188), self)
+            w.sig_task_done.connect(self._on_task_done)
+            w.sig_task_error.connect(self._on_task_error)
+            w.start()
+            self._watchers[inst["id"]] = w
+        except Exception as e:
+            from app.log import log_exc
+            log_exc(f"watcher start failed: {e}")
+
+    def _drop_watcher(self, iid):
+        w = self._watchers.pop(iid, None)
+        if w:
+            try:
+                w.stop()
+            except Exception:
+                pass
+
+    def _notify(self, title: str, msg: str, err=False):
+        try:
+            from PySide6.QtWidgets import QSystemTrayIcon
+            icon = (QSystemTrayIcon.Warning if err else QSystemTrayIcon.Information)
+            if self.tray and self.tray.isVisible():
+                self.tray.showMessage(title, msg, icon, 6000)
+            else:
+                self.statusBar().showMessage(f"{title} — {msg}", 8000)
+        except Exception:
+            pass
+
+    def _on_task_done(self, inst_name, summary):
+        self._notify(f"✅ {inst_name} 任务完成", summary)
+        self.console_page.append_line(f"[任务] {inst_name}: {summary}")
+
+    def _on_task_error(self, inst_name, err):
+        self._notify(f"⚠️ {inst_name} 执行出错", err, err=True)
+        self.console_page.append_line(f"[任务] {inst_name} 出错: {err}")
 
     def _on_tray_activated(self, reason):
         from PySide6.QtWidgets import QSystemTrayIcon

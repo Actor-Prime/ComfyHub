@@ -111,6 +111,30 @@ class ComfyProcess(QObject):
         if self.is_running:
             self.log_line.emit("[ComfyHub] 已在运行中，请先停止。")
             return
+        # ★ 启动前：① 恢复上次未完成的插件方案切换 ② 按 last_profile 自动应用方案
+        try:
+            from app import plugin_profiles as pp
+            cp = inst.get("comfyui_path") or ""
+            pp.recover_if_needed(cp, log=self.log_line.emit)
+            if inst.get("auto_apply_profile", True):
+                name = inst.get("last_profile") or ""
+                prof = None
+                for pr in (inst.get("plugin_profiles") or []):
+                    if pr.get("name") == name:
+                        prof = pr
+                        break
+                if prof is not None and isinstance(prof.get("enabled"), list):
+                    out = pp.apply_profile(cp, prof["enabled"], log=self.log_line.emit)
+                    if out.get("ok"):
+                        if out.get("changed"):
+                            self.log_line.emit(
+                                f"[ComfyHub] 已应用插件方案「{name}」"
+                                f"（{len(out['changed'])} 项变更）")
+                    else:
+                        self.log_line.emit(
+                            f"[ComfyHub] ⚠️ 插件方案应用失败：{out.get('errors')}")
+        except Exception as e:
+            self.log_line.emit(f"[ComfyHub] 插件方案处理异常（不影响启动）：{e}")
         cmd = build_command(inst)
         self._port = int(inst.get("port") or 8188)
         self._ready_announced = False
