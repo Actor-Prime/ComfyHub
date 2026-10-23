@@ -58,8 +58,6 @@ def main():
         import app.ui.pages.plugins_page   # noqa: F401
         import app.ui.pages.workflow_page  # noqa: F401
         import app.ui.pages.settings_page  # noqa: F401
-        import app.ui.tools_page           # noqa: F401
-        import app.ui.instance_page        # noqa: F401
     check("ui 模块导入", _gui_imports)
 
     # ---- 3. 真实构造（今天三次启动崩溃都发生在这里）----

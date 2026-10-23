@@ -6,7 +6,7 @@
 ; ============================================================
 
 #define MyAppName "ComfyHub"
-#define MyAppVersion "0.1.0"
+#define MyAppVersion "0.5.84"   ; 与 app/config.py 的 APP_VERSION 保持一致
 #define MyAppPublisher "Starmore"
 #define MyAppExeName "ComfyHub.exe"
 
@@ -20,7 +20,7 @@ DefaultGroupName={#MyAppName}
 ; 普通用户权限即可安装到 Program Files 需管理员；这里选择低权限安装到用户目录，免 UAC
 PrivilegesRequired=lowest
 DefaultDirName={userpf}\{#MyAppName}
-OutputDir=installer_out
+OutputDir=..\dist\installer
 OutputBaseFilename=ComfyHub-Setup-{#MyAppVersion}
 Compression=lzma2/max
 SolidCompression=yes
