@@ -26,7 +26,8 @@ def find_installer_window(timeout=30):
     while time.time() - t0 < timeout:
         for w in ua.GetRootControl().GetChildren():
             name = w.Name or ""
-            if "ComfyHub" in name and ("安装" in name or "Setup" in name):
+            # 精确匹配：NSIS 标题固定为 "<产品名> 安装"，避免抓到聊天窗口等误匹配
+            if name == "ComfyHub 多实例管理器 安装":
                 return w
         time.sleep(0.5)
     return None
@@ -104,7 +105,25 @@ def main():
         print(f"\n[截图] 欢迎页 → {shot1}")
 
         # 遍历「下一步」点击若干次，观察页面流转
-        for step in range(2, 5):   # 只点 3 次下一步，不触发真正安装
+        for step in range(2, 6):   # 欢迎→同意书→目录→安装前，不点"安装"
+            # 同意书页：先勾选 checkbox（NSIS 的自定义控件，UIA 可能识别为 Checkbox）
+            chk = None
+            for c in win.GetChildren():
+                if "CheckBox" in type(c).__name__ or "checkbox" in (c.AutomationId or "").lower():
+                    chk = c; break
+            if chk is None:
+                for c in win.GetChildren():
+                    if "Pane" in type(c).__name__ or "Dialog" in type(c).__name__:
+                        for cc in c.GetChildren():
+                            if "CheckBox" in type(cc).__name__:
+                                chk = cc; break
+            if chk is not None and not chk.IsChecked:
+                try:
+                    chk.SetFocus(); chk.Click()   # 打勾
+                    print(f"    [勾选] 同意书 checkbox")
+                    time.sleep(0.3)
+                except Exception as e:
+                    print(f"    [勾选失败] {e}")
             nxt = find_button(win, "下一步", "Next")
             if nxt is None:
                 print(f"\n[第 {step} 步] 没有「下一步」按钮，页面如下：")
