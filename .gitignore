@@ -45,3 +45,6 @@ packaging/installer_out/
 Thumbs.db
 desktop.ini
 *.bak
+
+# PyInstaller 自动生成的 spec（保持根目录干净）
+/ComfyHub.spec

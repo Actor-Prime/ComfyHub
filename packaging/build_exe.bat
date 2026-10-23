@@ -35,6 +35,7 @@ if exist dist\ComfyHub (
     --hidden-import PySide6.QtSvg ^
     --distpath dist ^
     --workpath build ^
+    --specpath build ^
     main.py
 
 if errorlevel 1 (
