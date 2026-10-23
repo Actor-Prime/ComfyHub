@@ -486,12 +486,17 @@ def download_multi(url_or_tpl: str | list, dest: str, log=print,
 
 
 # ---------------- 便携 Python ----------------
-def install_portable_python(tools_dir: str, log=print, proxy: str = "") -> str:
+def install_portable_python(tools_dir: str, log=print, proxy: str = "",
+                            force: bool = False) -> str:
     """部署 python-build-standalone 免安装 Python 到 tools_dir\\python
-    （完整标准库 + 自带 pip；不写注册表、无安装器，返回 python.exe 路径）"""
+
+    ★ 原子性保证：先下载并解压到临时目录，验证 pip 可用后才替换正式目录。
+      中途失败（断网/包损坏）时旧环境原样保留——绝不出现"旧的删了、新的没装上"。
+    force=True 时即使已存在也重装（用于"重新安装便携 Python"）。
+    """
     py_dir = os.path.join(tools_dir, "python")
     exe = os.path.join(py_dir, "python.exe")
-    if os.path.isfile(exe):
+    if os.path.isfile(exe) and not force:
         log(f"便携 Python 已存在: {exe}")
         return exe
     os.makedirs(tools_dir, exist_ok=True)
@@ -502,21 +507,46 @@ def install_portable_python(tools_dir: str, log=print, proxy: str = "") -> str:
         raise RuntimeError("便携 Python 下载失败（可尝试在设置中更换 GitHub 代理）")
     log("解压中…")
     import tarfile
-    with tarfile.open(tgz, "r:gz") as tf:
-        for m in tf.getmembers():
-            if m.issym() or m.islnk():
-                continue   # Windows 包内 Linux 符号链接成员直接跳过
-            tf.extract(m, tools_dir)
-    os.remove(tgz)
-    if not os.path.isfile(exe):
-        raise RuntimeError("解压后未找到 python.exe（压缩包结构异常）")
-    # 验证 pip 可用
-    r2 = run([exe, "-m", "pip", "--version"],
-             capture_output=True, text=True, timeout=120)
-    if r2.returncode != 0:
-        raise RuntimeError(f"pip 不可用: {(r2.stderr or '')[:200]}")
-    log(f"便携 Python 就绪: {exe}（{(r2.stdout or '').strip()[:60]}）")
-    return exe
+    import shutil as _sh
+    stage = os.path.join(tools_dir, "_python_stage")      # 临时落地区
+    _sh.rmtree(stage, ignore_errors=True)
+    os.makedirs(stage, exist_ok=True)
+    try:
+        with tarfile.open(tgz, "r:gz") as tf:
+            for m in tf.getmembers():
+                if m.issym() or m.islnk():
+                    continue   # Windows 包内 Linux 符号链接成员直接跳过
+                tf.extract(m, stage)
+        staged_exe = os.path.join(stage, "python", "python.exe")
+        if not os.path.isfile(staged_exe):
+            raise RuntimeError("解压后未找到 python.exe（压缩包结构异常）")
+        # 先在临时目录验证 pip，通过后再替换正式目录
+        r2 = run([staged_exe, "-m", "pip", "--version"],
+                 capture_output=True, text=True, timeout=120)
+        if r2.returncode != 0:
+            raise RuntimeError(f"pip 不可用: {(r2.stderr or '')[:200]}")
+        # 替换：旧目录改名备份 → 新目录就位 → 删备份；失败则回滚
+        backup = None
+        if os.path.isdir(py_dir):
+            backup = py_dir + "_old"
+            _sh.rmtree(backup, ignore_errors=True)
+            os.rename(py_dir, backup)
+        try:
+            os.rename(os.path.join(stage, "python"), py_dir)
+        except Exception:
+            if backup and os.path.isdir(backup):
+                os.rename(backup, py_dir)   # 回滚
+            raise
+        if backup:
+            _sh.rmtree(backup, ignore_errors=True)
+        log(f"便携 Python 就绪: {exe}（{(r2.stdout or '').strip()[:60]}）")
+        return exe
+    finally:
+        _sh.rmtree(stage, ignore_errors=True)
+        try:
+            os.remove(tgz)
+        except OSError:
+            pass
 
 
 def portable_pip(python_exe: str) -> str:
