@@ -173,3 +173,14 @@ packaging\build_exe.bat           # 打包便携版（输出 dist/ComfyHub-porta
 python tests/sim_core_flow.py     # 验证安装链路
 python tests/sim_run_instance.py "F://path//to//ComfyUI" 8199   # 启动实例并探活
 ```
+
+## 版权合规
+
+本项目遵循严格的版权合规原则（详见 [docs/COMPLIANCE.md](docs/COMPLIANCE.md)）：
+
+- **零版权风险**：不使用 GPL/AGPL 等传染性许可代码；PySide6 以 LGPL 合规方式使用（onedir 打包，用户可替换 Qt 库）
+- **可借鉴不可抄**：功能设计可参考竞品，代码/文案/资源一律独立实现（记录见 [docs/COMPETITORS.md](docs/COMPETITORS.md)）
+- **来源可追溯**：第三方组件许可见 [THIRD_PARTY_LICENSES.txt](THIRD_PARTY_LICENSES.txt)，素材来源见 [assets/SOURCES.md](assets/SOURCES.md)
+- **数据源**：插件目录来自 ComfyUI-Manager 公开清单，下载量来自 ComfyUI 官方 Registry（运行时拉取，不随程序分发）
+
+本项目以 **MIT** 许可发布，见 [LICENSE](LICENSE)。
