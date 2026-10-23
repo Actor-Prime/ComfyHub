@@ -31,3 +31,20 @@ ComfyUI/
 ComfyUIImage/
 comfyui_env/
 *.part
+
+# ---- 打包脚本产物 ----
+installer_out/
+packaging/installer_out/
+
+# ---- 测试/类型检查缓存 ----
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- 系统垃圾 ----
+Thumbs.db
+desktop.ini
+*.bak
+
+# PyInstaller 自动生成的 spec（保持根目录干净）
+/ComfyHub.spec
