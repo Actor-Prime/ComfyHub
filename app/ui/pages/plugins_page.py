@@ -265,7 +265,7 @@ class PluginsPage(QWidget):
         root.addLayout(sortbar)
 
         self.tb_market = QTableWidget(0, 5)
-        self.tb_market.setHorizontalHeaderLabels(["插件", "热度", "作者", "说明", "操作"])
+        self.tb_market.setHorizontalHeaderLabels(["插件", "下载量", "作者", "说明", "操作"])
         hh = self.tb_market.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.Interactive)
         hh.setSectionResizeMode(1, QHeaderView.Fixed)
@@ -275,6 +275,10 @@ class PluginsPage(QWidget):
         self.tb_market.setColumnWidth(0, 250)
         self.tb_market.setColumnWidth(1, 92)
         self.tb_market.setColumnWidth(4, 96)
+        self.tb_market.horizontalHeaderItem(1).setToolTip(
+            "ComfyUI 官方 Registry 统计的下载量（万 = 10,000 次）\n"
+            "无下载量数据的插件显示 GitHub 星数（⭐）或 —")
+        self.tb_market.horizontalHeaderItem(0).setToolTip("点击行可查看仓库地址")
         self.tb_market.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tb_market.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tb_market.setAlternatingRowColors(True)

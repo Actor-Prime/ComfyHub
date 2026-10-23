@@ -263,13 +263,15 @@ def attach_stats(nodes, stats: dict) -> list:
 
 
 def hot_text(node: dict) -> str:
-    """热度展示：下载量优先，其次星数"""
+    """热度展示：下载量优先（纯数字，靠列头表达含义），无下载量时退回星数"""
     d = int(node.get("_downloads") or 0)
     s = int(node.get("_stars") or 0)
+    if d >= 100_000_000:
+        return f"{d / 100_000_000:.1f}亿"
     if d >= 10000:
-        return f"↓{d / 10000:.1f}万"
+        return f"{d / 10000:.1f}万"
     if d > 0:
-        return f"↓{d}"
+        return f"{d}"
     if s > 0:
         return f"⭐{s}"
     return "—"
