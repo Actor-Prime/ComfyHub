@@ -20,15 +20,24 @@ import uiautomation as ua
 OUT_DIR = r"F:\_installer_probe"
 
 
-def find_installer_window(timeout=30):
-    """等安装器主窗口出现（NSIS 用标准对话框类 #32770）"""
+def find_installer_window(timeout=30, pid=None):
+    """等安装器主窗口出现（NSIS 用标准对话框类 #32770）
+
+    按 PID 过滤最可靠：其他窗口（如聊天软件）标题也可能含 ComfyHub，
+    模糊/精确匹配标题都会误抓。
+    """
     t0 = time.time()
     while time.time() - t0 < timeout:
         for w in ua.GetRootControl().GetChildren():
-            name = w.Name or ""
-            # 精确匹配：NSIS 标题固定为 "<产品名> 安装"，避免抓到聊天窗口等误匹配
-            if name == "ComfyHub 多实例管理器 安装":
-                return w
+            try:
+                if pid is not None and w.ProcessId == pid:
+                    return w
+                if pid is None:
+                    name = w.Name or ""
+                    if name == "ComfyHub 多实例管理器 安装":
+                        return w
+            except Exception:
+                continue
         time.sleep(0.5)
     return None
 
@@ -52,9 +61,9 @@ def dump_tree(ctrl, depth=0, max_depth=5, lines=None):
 
 
 def find_button(win, *keywords):
-    """在窗口里找名称含关键字的按钮"""
+    """在窗口里找名称含关键字的**可用**按钮（禁用的点了无效）"""
     for ctrl in win.GetChildren():
-        if isinstance(ctrl, ua.ButtonControl) or "Button" in type(ctrl).__name__:
+        if (isinstance(ctrl, ua.ButtonControl) or "Button" in type(ctrl).__name__) and ctrl.IsEnabled:
             n = ctrl.Name or ""
             if any(k in n for k in keywords):
                 return ctrl
@@ -90,7 +99,7 @@ def main():
     print(f"启动安装器: {a.exe}")
     proc = subprocess.Popen([a.exe], creationflags=0x00000010)   # CREATE_NEW_CONSOLE
     try:
-        win = find_installer_window()
+        win = find_installer_window(pid=proc.pid)
         if win is None:
             print("❌ 未找到安装器窗口（30 秒超时）")
             return 1
@@ -117,11 +126,13 @@ def main():
                         for cc in c.GetChildren():
                             if "CheckBox" in type(cc).__name__:
                                 chk = cc; break
-            if chk is not None and not chk.IsChecked:
+            if chk is not None:
                 try:
-                    chk.SetFocus(); chk.Click()   # 打勾
+                    chk.SetFocus()
+                    time.sleep(0.15)
+                    chk.Click()                    # 点中心切换勾选状态
                     print(f"    [勾选] 同意书 checkbox")
-                    time.sleep(0.3)
+                    time.sleep(0.4)
                 except Exception as e:
                     print(f"    [勾选失败] {e}")
             nxt = find_button(win, "下一步", "Next")
