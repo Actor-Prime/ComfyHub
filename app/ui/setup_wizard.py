@@ -577,6 +577,8 @@ class SetupWizard(QWizard):
 
         self.currentIdChanged.connect(self._on_page_change)
         self._started = False
+        # 验证结果缓存 {comfy路径: 可用解释器}——切回已验过的候选秒过，不必重跑 2~4 秒
+        self._verify_cache = {}
 
     def _swap_worker(self, attr, worker, timeout=60000):
         """替换 worker：旧线程断开信号后放入墓碑（持引用防 GC，后台自然结束）。
@@ -814,10 +816,30 @@ class SetupWizard(QWizard):
         """后台验证选中候选的 ComfyUI 能否运行；通过才解锁「完成」。
         多个 Python 候选时逐个试，选第一个真正能 import torch 的"""
         from app import bootstrap
-        self.button(QWizard.FinishButton).setEnabled(False)
-        self.button(QWizard.NextButton).setEnabled(False)
         idx = max(0, self.cb_found.currentIndex())
         comfy = self._scan_candidates[min(idx, len(self._scan_candidates) - 1)]
+        # 缓存命中：这个实例之前验证通过过，直接复用结果（切换候选不再等 2~4 秒）
+        _cached_py = self._verify_cache.get(comfy)
+        if _cached_py and os.path.isfile(_cached_py):
+            self._verify_comfy = comfy
+            self.lb_scan.setStyleSheet("color:#4cd47c;")
+            self.lb_scan.setText(
+                f"✅ 验证通过（已缓存）\n使用解释器: {_cached_py}\n"
+                "选好候选后点「完成」直接添加为实例（免下载）。")
+            p1 = self.page(0)
+            p1.setFinalPage(True)
+            self.setButtonText(QWizard.NextButton, "完成")
+            self.button(QWizard.NextButton).setEnabled(True)
+            self.button(QWizard.FinishButton).hide()
+            self._lock_inputs(False)
+            return
+        self.button(QWizard.FinishButton).setEnabled(False)
+        self.button(QWizard.NextButton).setEnabled(False)
+        # 验证要真跑 python（import torch 等，约 2~4 秒）——必须明确告知，否则像卡住
+        self.lb_scan.setStyleSheet("color:#9aa4b2;")
+        self.lb_scan.setText(
+            f"⏳ 正在验证「{os.path.basename(comfy)}」能否运行（约 2~4 秒，需实际加载 torch）…")
+        self.lb_scan.show()
         # key 可能是 normpath 形式；再兜底用共享便携 Python（它带 torch，通常能直接跑）
         cands = (self._py_map.get(comfy)
                  or self._py_map.get(os.path.normpath(comfy))
@@ -864,6 +886,7 @@ class SetupWizard(QWizard):
             # ★ py_map 的值必须是【列表】。此前这里无条件赋值成单个字符串，
             #   导致下轮验证 `for py in cands` 变成逐字符遍历 → 全部判"不存在"
             #   → 误报"没有可用的 Python 解释器"（切换候选时必现）
+            self._verify_cache[self._verify_comfy] = py   # 记入缓存，切回来秒过
             _lst = self._py_map.setdefault(self._verify_comfy, [])
             if not isinstance(_lst, list):
                 _lst = [_lst]
