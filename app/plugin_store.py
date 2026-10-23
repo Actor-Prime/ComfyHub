@@ -109,12 +109,19 @@ def load_catalog(force=False, log=print) -> tuple:
     raise RuntimeError(f"插件清单获取失败：{last_err}")
 
 
-def search(nodes, keyword: str, limit=300) -> list:
-    """按标题/作者/描述过滤（关键词空格分词，需全部命中）"""
+def search(nodes, keyword: str, limit=300, sort="hot") -> list:
+    """按标题/作者/描述过滤（关键词空格分词，需全部命中）
+
+    sort: "hot" = 下载量/星数降序（默认）；"name" = 名称升序
+    """
+    def _hot(n):
+        return (int(n.get("_downloads") or 0), int(n.get("_stars") or 0))
+
     kw = (keyword or "").strip().lower()
     if not kw:
-        # 无关键词：按标题排序取前 limit
-        return sorted(nodes, key=lambda n: (n.get("title") or "").lower())[:limit]
+        if sort == "name":
+            return sorted(nodes, key=lambda n: (n.get("title") or "").lower())[:limit]
+        return sorted(nodes, key=_hot, reverse=True)[:limit]
     parts = kw.split()
     out = []
     for n in nodes:
@@ -124,9 +131,11 @@ def search(nodes, keyword: str, limit=300) -> list:
         ]).lower()
         if all(p in hay for p in parts):
             out.append(n)
-            if len(out) >= limit:
-                break
-    return out
+    if sort == "hot":
+        out.sort(key=_hot, reverse=True)
+    else:
+        out.sort(key=lambda n: (n.get("title") or "").lower())
+    return out[:limit]
 
 
 def install_url(node: dict) -> str:
@@ -145,3 +154,122 @@ def is_git_installable(node: dict) -> bool:
 
 def display_name(node: dict) -> str:
     return (node.get("title") or node.get("reference") or "（未命名）").strip()
+
+# ============================================================ 热度数据（官方 Registry）
+REGISTRY_API = "https://api.comfy.org/nodes"
+STATS_CACHE_TTL = 12 * 3600
+
+
+def stats_cache_path() -> str:
+    d = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")),
+                     "ComfyHub", "cache")
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, "registry_stats.json")
+
+
+def _norm_repo(u: str) -> str:
+    """把各种仓库地址归一化成 owner/repo（小写，去协议/.git/尾斜杠）"""
+    import re as _re
+    u = (u or "").strip().lower().rstrip("/")
+    if u.endswith(".git"):
+        u = u[:-4]
+    m = _re.search(r"github\.com/([^/]+)/([^/]+)", u)
+    if m:
+        return f"{m.group(1)}/{m.group(2)}"
+    m = _re.search(r"gitee\.com/([^/]+)/([^/]+)", u)
+    if m:
+        return f"gitee:{m.group(1)}/{m.group(2)}"
+    return u
+
+
+def load_registry_stats(force=False, progress=None, log=print) -> dict:
+    """拉 ComfyUI 官方 Registry 的全部节点，建 {owner/repo: {downloads, stars, rating}} 索引
+
+    官方 API 不支持排序，只能分页全量拉（约 62 页 / 50~60 秒），结果缓存 12 小时。
+    progress: 可选回调 (done_pages, total_pages)
+    """
+    cp = stats_cache_path()
+    if not force and os.path.isfile(cp):
+        try:
+            with open(cp, "r", encoding="utf-8") as f:
+                blob = json.load(f)
+            if time.time() - float(blob.get("fetched_at") or 0) < STATS_CACHE_TTL:
+                stats = blob.get("stats") or {}
+                if stats:
+                    return stats
+        except Exception:
+            pass
+
+    def _get(url, timeout=25):
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 ComfyHub"})
+        with urllib.request.urlopen(req, timeout=timeout, context=_ssl_ctx()) as r:
+            return json.loads(r.read().decode("utf-8", "ignore"))
+
+    stats = {}
+    try:
+        first = _get(f"{REGISTRY_API}?limit=100&page=1")
+        total_pages = int(first.get("totalPages") or 1)
+        pages = [first]
+        log(f"[市场] 官方 Registry 共 {first.get('total')} 个节点 / {total_pages} 页")
+        for p in range(2, total_pages + 1):
+            try:
+                pages.append(_get(f"{REGISTRY_API}?limit=100&page={p}"))
+            except Exception:
+                continue
+            if progress:
+                progress(p, total_pages)
+        for pg in pages:
+            for n in (pg.get("nodes") or []):
+                key = _norm_repo(n.get("repository") or "")
+                if not key:
+                    continue
+                d = int(n.get("downloads") or 0)
+                s = int(n.get("github_stars") or 0)
+                # 同名仓库取较大的热度（避免被低值覆盖）
+                old = stats.get(key)
+                if old is None or d > old.get("downloads", 0):
+                    stats[key] = {"downloads": d, "stars": s,
+                                  "rating": n.get("rating") or 0,
+                                  "name": n.get("name") or ""}
+    except Exception as e:
+        log(f"[市场] 热度数据拉取失败（不影响使用）：{e}")
+        if os.path.isfile(cp):
+            try:
+                with open(cp, "r", encoding="utf-8") as f:
+                    return (json.load(f).get("stats") or {})
+            except Exception:
+                pass
+        return {}
+
+    try:
+        with open(cp, "w", encoding="utf-8") as f:
+            json.dump({"fetched_at": time.time(), "stats": stats}, f, ensure_ascii=False)
+    except OSError:
+        pass
+    log(f"[市场] 热度索引就绪：{len(stats)} 个仓库")
+    return stats
+
+
+def attach_stats(nodes, stats: dict) -> list:
+    """给插件列表附加 _downloads / _stars（原地修改，返回同一列表）"""
+    if not stats:
+        return nodes
+    for n in nodes:
+        key = _norm_repo(install_url(n))
+        s = stats.get(key)
+        n["_downloads"] = int(s["downloads"]) if s else 0
+        n["_stars"] = int(s["stars"]) if s else 0
+    return nodes
+
+
+def hot_text(node: dict) -> str:
+    """热度展示：下载量优先，其次星数"""
+    d = int(node.get("_downloads") or 0)
+    s = int(node.get("_stars") or 0)
+    if d >= 10000:
+        return f"↓{d / 10000:.1f}万"
+    if d > 0:
+        return f"↓{d}"
+    if s > 0:
+        return f"⭐{s}"
+    return "—"
