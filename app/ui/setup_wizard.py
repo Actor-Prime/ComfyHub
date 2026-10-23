@@ -579,6 +579,11 @@ class SetupWizard(QWizard):
         self._started = False
         # 验证结果缓存 {comfy路径: 可用解释器}——切回已验过的候选秒过，不必重跑 2~4 秒
         self._verify_cache = {}
+        # 按钮状态守卫：Qt 的 finalPage/按钮状态会被多处修改，这里按"当前模式"兜底校正
+        from PySide6.QtCore import QTimer as _QT
+        self._btn_guard = _QT(self)
+        self._btn_guard.timeout.connect(self._guard_buttons)
+        self._btn_guard.start(300)
 
     def _swap_worker(self, attr, worker, timeout=60000):
         """替换 worker：旧线程断开信号后放入墓碑（持引用防 GC，后台自然结束）。
@@ -615,6 +620,42 @@ class SetupWizard(QWizard):
             self.lb_scan.setText(f"🔍 {hint}")
             self.lb_scan.show()
 
+    def _guard_buttons(self):
+        """每 300ms 按当前模式校正按钮语义（兜底：多处代码会改 finalPage/按钮状态，
+        这里保证用户看到的永远自洽——fresh 模式绝不显示"完成"，
+        添加实例模式绝不显示可点的"下一步"）"""
+        try:
+            if not self.isVisible():
+                return
+            _fresh = not self.install_opts.isHidden()
+            _next = self.button(QWizard.NextButton)
+            if _fresh:
+                if _next.text().strip() == "完成":
+                    self.setButtonText(QWizard.NextButton, "下一步 >")
+                if not _next.isEnabled():
+                    _next.setEnabled(True)
+            else:
+                _txt = self.lb_scan.text()
+                if _txt.startswith("❌ 没有可用的 Python") or _txt.startswith("❌ 该目录不是"):
+                    return
+                if _next.text().strip() not in ("仍要添加", "完成"):
+                    self.setButtonText(QWizard.NextButton, "完成")
+        except Exception:
+            pass
+
+    def _apply_fresh_buttons(self):
+        """全新安装状态下的按钮语义（统一出口，避免各处漏设导致显示"完成"）：
+        Next = 「下一步 >」可用、Finish 禁用、本页不是 final page"""
+        try:
+            p1 = self.page(0)
+            if p1.isFinalPage():
+                p1.setFinalPage(False)
+            self.setButtonText(QWizard.NextButton, "下一步 >")
+            self.button(QWizard.NextButton).setEnabled(True)
+            self.button(QWizard.FinishButton).setEnabled(False)
+        except Exception:
+            pass
+
     def _set_mode(self, mode: str):
         """统一控制两种模式的界面差异。
         existing = 添加已有实例：只需要选目录 + 验证，不显示任何安装参数
@@ -633,6 +674,7 @@ class SetupWizard(QWizard):
                 p1.setFinalPage(False)
                 self.setButtonText(QWizard.NextButton, "下一步 >")
                 self.button(QWizard.FinishButton).show()
+                self.button(QWizard.FinishButton).setEnabled(False)   # 安装页才允许完成
             except Exception:
                 pass
             self.install_opts.show()          # 全新安装才需要这些参数
@@ -651,6 +693,15 @@ class SetupWizard(QWizard):
                 self.lb_mode.setStyleSheet("color:#e8a33d; font-weight:600;")
                 self.lb_mode.setText("📦 全新安装（将在下方选定位置创建环境）")
                 self.lb_mode.show()
+            # 末尾再校正一次：fresh 模式下绝不能停留在 final page（否则 Next 会显示成"完成"）
+            try:
+                _p = self.page(0)
+                if _p.isFinalPage():
+                    _p.setFinalPage(False)
+                self.setButtonText(QWizard.NextButton, "下一步 >")
+                self.button(QWizard.FinishButton).setEnabled(False)
+            except Exception:
+                pass
 
     def _sync_path_to_candidate(self):
         """把「安装到」/「实例名称」同步为当前选中候选的真实路径。
@@ -671,14 +722,21 @@ class SetupWizard(QWizard):
 
     def _start_scan(self, path: str):
         """发起目录扫描：创建 worker → 连接结果 → 启动。
-        ★ 三步必须成套，缺任何一个都会卡在"正在检查"（v0.5.78 踩过）"""
+        ★ 三步必须成套，缺任何一个都会卡在"正在检查"（v0.5.78 踩过）
+        ★ 带序号：上一轮扫描（如自动探测）的结果可能延迟到达，必须丢弃，
+          否则会用旧候选覆盖用户刚选的路径状态（v0.5.94 修复）
+        """
+        self._scan_seq = getattr(self, "_scan_seq", 0) + 1
+        _seq = self._scan_seq
         swap_worker(self, "_scan_worker", ScanWorker(path))
-        self._scan_worker.sig_done.connect(self._on_scan_done)
+        self._scan_worker.sig_done.connect(
+            lambda root, cands, s=_seq: self._on_scan_done(root, cands, s))
         self._scan_worker.start()
 
     def _detect_existing(self):
         """后台扫描目录（含两层子目录）：找到 ComfyUI 直接注册；没找到自动补全并展开安装选项"""
         root = os.path.normpath(self.ed_dir.text().strip())
+        self._scan_parent = False          # 清掉上一轮残留标记，避免误走父目录分支
         self._lock_inputs(True, "正在检测本机环境，请稍候…")
         if not os.path.isdir(root):
             # ★ 探测阶段绝不创建文件夹
@@ -701,14 +759,17 @@ class SetupWizard(QWizard):
             self._set_mode("fresh")
             self._lock_inputs(False)
             self.lb_scan.setStyleSheet("color:#e8a33d;")
+            # 目录不存在：按与「空目录」一致的规则推导安装目标（末段不含 comfyui 就补一层）
+            _bn = os.path.basename(root.rstrip("\\/")).casefold()
+            _target = root if "comfyui" in _bn else os.path.join(root, "ComfyUI")
+            self.ed_dir.setText(_target)
             self.lb_scan.setText(
-                f"📁 目录不存在：{root}\n"
-                "点「下一步」将在此位置全新安装（安装开始时才创建，现在不会动你的磁盘）。")
-            p1.setFinalPage(False)
+                f"📁 目录不存在，将在此全新安装：\n{_target}\n"
+                "（安装开始时才创建，现在不会动你的磁盘）")
+            p1 = self.page(0)          # ← 此前漏了这行，导致输入不存在路径直接 NameError 崩溃
+            self._apply_fresh_buttons()
             if not self.ed_name.text().strip():
                 self.ed_name.setText(os.path.basename(root.rstrip("\\/")) or "")
-            self.button(QWizard.NextButton).setEnabled(True)
-            self.button(QWizard.FinishButton).setEnabled(False)
             return
         # 记录用户选择的原始根目录（实例名默认取它的名字）
         self._orig_root = root
@@ -730,7 +791,10 @@ class SetupWizard(QWizard):
         self.lb_scan.show()
         self._start_scan(root)
 
-    def _on_scan_done(self, root, candidates):
+    def _on_scan_done(self, root, candidates, seq=None):
+        # 过期扫描结果（用户已切到别的路径/发起新扫描）→ 直接忽略
+        if seq is not None and seq != getattr(self, "_scan_seq", 0):
+            return
         candidates = list(dict.fromkeys(candidates))
         p1 = self.page(0)
         # 父目录扫描模式：用户输入的路径不存在，在这里扫到了兄弟实例
@@ -750,6 +814,7 @@ class SetupWizard(QWizard):
                 self.cb_found.hide()
                 self.lb_found_title.hide()
                 self._set_mode("fresh")
+                self._apply_fresh_buttons()
                 self.lb_scan.setStyleSheet("color:#e8a33d;")
                 self.lb_scan.setText(
                     f"📁 未发现现成实例（已检查上级目录 {root}）\n"
@@ -808,9 +873,8 @@ class SetupWizard(QWizard):
             f"{target}\n"
             "（不会自动套子目录；如想换位置请用上方「浏览…」）")
         self._lock_inputs(False)
-        p1.setFinalPage(False)
-        self.button(QWizard.NextButton).setEnabled(True)
-        self.button(QWizard.FinishButton).setEnabled(False)
+        # 无候选 = 确定的全新安装状态：末尾统一校正按钮语义（防止早前 existing 状态残留）
+        self._apply_fresh_buttons()
 
     def _begin_verify(self):
         """后台验证选中候选的 ComfyUI 能否运行；通过才解锁「完成」。
@@ -982,6 +1046,9 @@ class SetupWizard(QWizard):
                                 cands.append(os.path.normpath(p))
                 except OSError:
                     pass
+            # 排除打包/构建环境（.venv_build 等）——它们不是给 ComfyUI 用的运行时
+            _skip = (".venv_build", "venv_build", "build_env", "_env_build")
+            cands = [c for c in cands if not any(s in c.lower() for s in _skip)]
             for p in cands:
                 total.add(p)
             if cands:
