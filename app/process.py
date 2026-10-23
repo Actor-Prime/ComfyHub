@@ -152,6 +152,12 @@ class ComfyProcess(QObject):
         # UTF-8 输出，避免中文日志乱码
         env.insert("PYTHONIOENCODING", "utf-8")
         env.insert("PYTHONUTF8", "1")
+        # 实例级代理（ComfyUI-Manager / 插件下载都要用）
+        _proxy = (inst.get("proxy") or "").strip()
+        if _proxy:
+            env.insert("HTTP_PROXY", _proxy)
+            env.insert("HTTPS_PROXY", _proxy)
+            self.log_line.emit(f"[ComfyHub] 已为实例设置代理 {_proxy}")
 
         self._proc = QProcess(self)
         self._proc.setProgram(cmd[0])
