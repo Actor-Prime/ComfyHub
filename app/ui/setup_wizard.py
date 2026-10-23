@@ -822,13 +822,22 @@ class SetupWizard(QWizard):
 
         def _try_all():
             last = ""
+            tried = 0
             for py in cands:
+                # ★ 跳过不存在的解释器（否则会把"未找到 Python 解释器"当成实例本身的问题）
+                if not py or not os.path.isfile(py):
+                    continue
+                tried += 1
                 ok, info = bootstrap.verify_comfyui_runnable(py, comfy)
                 if ok:
                     return (True, info, py)
-                last = f"{py}: {info}"
-            if not cands:
-                return (False, "未找到任何可用的 Python 解释器", "")
+                # 错误信息用短路径，避免界面截断成一串没头没尾的字符
+                short = os.path.basename(os.path.dirname(os.path.dirname(py))) or py
+                last = f"{short}: {info}"
+            if tried == 0:
+                return (False,
+                        "没有可用的 Python 解释器（共享便携 Python 也未安装）——"
+                        "可先添加实例，之后在主界面「实例设置」里指定", "")
             return (False, last, "")
 
         swap_worker(self, "_verify_worker", StepWorker(_try_all))
