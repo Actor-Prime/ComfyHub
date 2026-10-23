@@ -175,6 +175,7 @@ Section "Uninstall"
     Delete "$INSTDIR\LICENSE"
     Delete "$INSTDIR\THIRD_PARTY_LICENSES.txt"
     Delete "$INSTDIR\CLI.md"
+    Delete "$INSTDIR\DISCLAIMER_unicode.txt"
     ; ★ 大量小文件（Qt _internal 有数千个）用系统 rd 批量删比 RMDir 快几十倍
     ;   （实测 NSIS 的 RMDir /r 删 118MB 要 5 分钟，rd 只要几秒）
     nsExec::ExecToStack 'rd /s /q "$INSTDIR\_internal"'
@@ -192,7 +193,24 @@ Section "Uninstall"
     DeleteRegKey HKCU "${UNINST_KEY}"
     DeleteRegKey HKCU "Software\${APP_NAME}"
 
-    IfFileExists "$APPDATA\ComfyHub\*.*" 0 +2
+    ; ---- 配置目录：默认删除（用户要求），选"否"才保留 ----
+    IfFileExists "$APPDATA\ComfyHub\*.*" 0 cfgDone
+    IfSilent delCfg 0                          ; 静默模式 = 默认清理
+    MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON1 \
+        "是否同时删除配置目录？（含实例配置、启动模式、运行日志）$
+$
+$APPDATA\ComfyHub$\r$
+$
+$
+选[否]将保留配置，重装后无需重新配置。" \
+        IDYES delCfg IDNO keepCfg
+    keepCfg:
         MessageBox MB_OK|MB_ICONINFORMATION \
-            "配置目录已保留：$\r$\n$APPDATA\ComfyHub$\r$\n$\r$\n如需彻底清理请手动删除。"
+            "配置目录已保留：$\r$\n$APPDATA\ComfyHub$\r$\n$\r$\n重装后无需重新配置。"
+        Goto cfgDone
+    delCfg:
+        nsExec::ExecToStack 'rd /s /q "$APPDATA\ComfyHub"'
+        Pop $0
+        RMDir /r /REBOOTOK "$APPDATA\ComfyHub"
+    cfgDone:
 SectionEnd
