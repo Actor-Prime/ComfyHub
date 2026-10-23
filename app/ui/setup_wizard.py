@@ -548,7 +548,10 @@ class SetupWizard(QWizard):
         # （例：F:\ComfyHub\ComfyUIImage 就在启动器目录 F:\ComfyHub 下）
         self.ed_dir.setText(base)
         _parent = os.path.dirname(base.rstrip("\\/"))
-        if _parent and os.path.isdir(_parent) and os.path.normpath(_parent) != os.path.normpath(base):
+        # ★ 父目录是盘根（F:\）时绝不扫描——整盘遍历极慢且结果杂乱
+        _is_drive_root = len(_parent.rstrip("\\/")) <= 2
+        if (not _is_drive_root and _parent and os.path.isdir(_parent)
+                and os.path.normpath(_parent) != os.path.normpath(base)):
             self._orig_root = os.path.join(base, "ComfyUI")   # 无实例时的全新安装目标
             self._scan_parent = True
             self.lb_scan.setStyleSheet("color:#9aa4b2;")
@@ -623,6 +626,17 @@ class SetupWizard(QWizard):
                 self.lb_mode.show()
         else:
             self.install_opts.show()          # 全新安装才需要这些参数
+            # 切到全新安装时清掉上一次检测残留的候选，避免"检测到 A 却要装 B"的混淆
+            # 注意：必须先清 _scan_candidates，否则 clear() 触发的 currentIndexChanged
+            #       回调会用旧候选把路径又同步回去
+            self._scan_candidates = []
+            if hasattr(self, "cb_found"):
+                self.cb_found.blockSignals(True)
+                self.cb_found.clear()
+                self.cb_found.blockSignals(False)
+                self.cb_found.hide()
+            if hasattr(self, "lb_found_title"):
+                self.lb_found_title.hide()
             if hasattr(self, "lb_mode"):
                 self.lb_mode.setStyleSheet("color:#e8a33d; font-weight:600;")
                 self.lb_mode.setText("📦 全新安装（将在下方选定位置创建环境）")
@@ -661,7 +675,8 @@ class SetupWizard(QWizard):
             # ★ 路径不存在时，先扫「父目录」找现成实例
             #   （例：输入 F:\ComfyHub\ComfyUI 不存在，但兄弟目录 ComfyUIImage 里就有实例）
             _parent = os.path.dirname(root.rstrip("\\/"))
-            if _parent and os.path.isdir(_parent) and _parent != root:
+            _is_drive_root = len(_parent.rstrip("\\/")) <= 2
+            if not _is_drive_root and _parent and os.path.isdir(_parent) and _parent != root:
                 self._orig_root = root
                 self._scan_parent = True
                 self.lb_scan.setStyleSheet("color:#9aa4b2;")
@@ -717,6 +732,10 @@ class SetupWizard(QWizard):
             else:
                 # 上级目录也没有实例 → 回到"将在此全新安装"（用户输入的路径）
                 _orig = getattr(self, "_orig_root", root)
+                # 无实例 → 安装目标补一层 ComfyUI（除非原路径已含 comfyui 或就是盘根）
+                if "comfyui" not in os.path.basename(_orig.rstrip("\\/")).casefold():
+                    _orig = os.path.join(_orig, "ComfyUI")
+                self.ed_dir.setText(_orig)
                 self._lock_inputs(False)
                 self.cb_found.hide()
                 self.lb_found_title.hide()
@@ -758,13 +777,18 @@ class SetupWizard(QWizard):
             return
         self.cb_found.hide()
         self.lb_found_title.hide()
-        # ★ 安装目标规则：用户选的目录就是安装位置，不再自动套一层 ComfyUI 子目录
-        #   唯一例外：选中盘根（F:\）时套 ComfyUI，避免把源码散到盘根
+        # ★ 安装目标规则（检测确认此处没有实例后才走这里）：
+        #   · 选中盘根（F:\）            → F:\ComfyUI
+        #   · 目录名已含 comfyui          → 就用它（用户明确指定了安装目录）
+        #   · 其余（如程序目录、D:\AI）  → 补一层 \ComfyUI，避免源码散进现有目录
         _norm = root.rstrip("\\/")
+        _base_name = os.path.basename(_norm).casefold()
         if len(_norm) <= 2 and _norm[1:2] == ":":        # "F:" 这种盘根
             target = os.path.join(_norm + os.sep, "ComfyUI")
-        else:
+        elif "comfyui" in _base_name:
             target = root
+        else:
+            target = os.path.join(root, "ComfyUI")
         if not os.path.isfile(os.path.join(target, "main.py")):
             self.ed_dir.setText(target)
         self._set_mode("fresh")
