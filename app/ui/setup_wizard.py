@@ -446,6 +446,12 @@ class SetupWizard(QWizard):
         self.pbar_scan.setFixedHeight(6)
         self.pbar_scan.hide()
         form.addRow("", self.pbar_scan)
+        # 当前模式提示：添加已有实例 / 全新安装（两者界面元素完全不同）
+        self.lb_mode = QLabel("")
+        self.lb_mode.setStyleSheet("color:#4cd47c; font-weight:600;")
+        self.lb_mode.hide()
+        form.addRow("", self.lb_mode)
+
         self.cb_found = QComboBox()
         self.cb_found.hide()
         self.lb_found_title = QLabel("检测到:")
@@ -604,6 +610,24 @@ class SetupWizard(QWizard):
             self.lb_scan.setText(f"🔍 {hint}")
             self.lb_scan.show()
 
+    def _set_mode(self, mode: str):
+        """统一控制两种模式的界面差异。
+        existing = 添加已有实例：只需要选目录 + 验证，不显示任何安装参数
+        fresh    = 全新安装：显示 Python 环境 / 镜像 / 代理 / torch 等安装参数
+        """
+        if mode == "existing":
+            self.install_opts.hide()          # 添加已有实例不需要安装参数
+            if hasattr(self, "lb_mode"):
+                self.lb_mode.setStyleSheet("color:#4cd47c; font-weight:600;")
+                self.lb_mode.setText("🔗 添加已有实例（不会下载任何东西，点「完成」直接注册）")
+                self.lb_mode.show()
+        else:
+            self.install_opts.show()          # 全新安装才需要这些参数
+            if hasattr(self, "lb_mode"):
+                self.lb_mode.setStyleSheet("color:#e8a33d; font-weight:600;")
+                self.lb_mode.setText("📦 全新安装（将在下方选定位置创建环境）")
+                self.lb_mode.show()
+
     def _sync_path_to_candidate(self):
         """把「安装到」/「实例名称」同步为当前选中候选的真实路径。
         否则路径框会停在用户输入的（可能不存在的）路径，与实际实例不一致"""
@@ -649,7 +673,7 @@ class SetupWizard(QWizard):
             self._orig_root = root
             self.cb_found.hide()
             self.lb_found_title.hide()
-            self.install_opts.show()
+            self._set_mode("fresh")
             self._lock_inputs(False)
             self.lb_scan.setStyleSheet("color:#e8a33d;")
             self.lb_scan.setText(
@@ -696,7 +720,7 @@ class SetupWizard(QWizard):
                 self._lock_inputs(False)
                 self.cb_found.hide()
                 self.lb_found_title.hide()
-                self.install_opts.show()
+                self._set_mode("fresh")
                 self.lb_scan.setStyleSheet("color:#e8a33d;")
                 self.lb_scan.setText(
                     f"📁 未发现现成实例（已检查上级目录 {root}）\n"
@@ -714,17 +738,18 @@ class SetupWizard(QWizard):
             self.cb_found.setEnabled(len(candidates) > 1)
             self.cb_found.show()
             self.lb_found_title.show()
+            self._set_mode("existing")
             def _on_candidate_changed(_i):
                 self._sync_path_to_candidate()
                 if self._scan_candidates:
                     self._begin_verify()
 
             self.cb_found.currentIndexChanged.connect(_on_candidate_changed)
-            # 首次列出候选立刻同步一次，避免路径框停留在用户输入的旧路径
-            self._sync_path_to_candidate()
             n_py = self._match_pythons(candidates)
+            # ★ 必须先赋值再同步（否则 _sync_path_to_candidate 读到空列表直接 return）
             self._scan_candidates = candidates
             self._scan_pys = self._py_map
+            self._sync_path_to_candidate()
             # 验证选中候选能否运行——通过才解锁「完成」
             self._phase = "scan_verify"
             self.lb_scan.setStyleSheet("color:#9aa4b2;")
@@ -742,7 +767,7 @@ class SetupWizard(QWizard):
             target = root
         if not os.path.isfile(os.path.join(target, "main.py")):
             self.ed_dir.setText(target)
-        self.install_opts.show()
+        self._set_mode("fresh")
         self.lb_scan.setStyleSheet("color:#e8a33d;")
         self.lb_scan.setText(
             f"📁 空文件夹：未检测到 ComfyUI 实例，点「下一步」将安装到\n"
@@ -810,7 +835,7 @@ class SetupWizard(QWizard):
         self.cb_found.hide()
         self.lb_found_title.hide()
         self._scan_candidates = None
-        self.install_opts.show()
+        self._set_mode("fresh")
         p1 = self.page(0)
         p1.setFinalPage(False)
         self.button(QWizard.NextButton).setEnabled(True)
