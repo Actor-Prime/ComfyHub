@@ -48,17 +48,19 @@ VIAddVersionKey "LegalCopyright"  "MIT License"
 !define MUI_WELCOMEFINISHPAGE_BITMAP "..\assets\installer\welcome.bmp"
 !define MUI_UNWELCOMEFINISHPAGE_BITMAP "..\assets\installer\welcome.bmp"
 !define MUI_BGCOLOR "0F141B"
-!define MUI_TEXTCOLOR "0F141B"
+!define MUI_TEXTCOLOR "DBE4F0"
 !define MUI_WELCOMEPAGE_TITLE "欢迎安装 ${APP_NAME_CN}"
 !define MUI_WELCOMEPAGE_TEXT  "这个向导将引导你完成 ComfyHub 的安装。$\r$\n$\r$\nComfyHub 是 ComfyUI 多实例管理器：一键装环境、插件市场、启动模式、批量任务、任务通知。$\r$\n$\r$\n安装到当前用户目录，无需管理员权限。"
 !define MUI_FINISHPAGE_RUN "$INSTDIR\${APP_EXE}"
 !define MUI_FINISHPAGE_RUN_TEXT "立即运行 ${APP_NAME}"
 !define MUI_FINISHPAGE_LINK "项目主页：${APP_URL}"
 !define MUI_FINISHPAGE_LINK_LOCATION "${APP_URL}"
+!define MUI_LICENSEPAGE_CHECKBOX            ; 用勾选框，必须打勾才能下一步
+!define MUI_LICENSEPAGE_CHECKBOX_TEXT "我已阅读并同意以上条款，愿意承担相应使用责任"
 
 !insertmacro MUI_PAGE_WELCOME
-!define MUI_PAGE_CUSTOMFUNCTION_PRE hideLicense
-!insertmacro MUI_PAGE_LICENSE "..\LICENSE"
+; 用户同意书：必须勾选"我接受"才能继续
+!insertmacro MUI_PAGE_LICENSE "..\docs\DISCLAIMER_unicode.txt"
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
@@ -99,10 +101,6 @@ Function .onInit
     ${EndIf}
 FunctionEnd
 
-Function hideLicense
-    Abort      ; MIT 许可不强制同意，跳过该页减少点击
-FunctionEnd
-
 ; ---------- 安装内容（不再让用户勾选：全装）----------
 Section "ComfyHub 主程序" SEC_CORE
     SectionIn RO
@@ -111,6 +109,7 @@ Section "ComfyHub 主程序" SEC_CORE
     File "..\LICENSE"
     File "..\THIRD_PARTY_LICENSES.txt"
     File "..\docs\CLI.md"
+    File "..\docs\DISCLAIMER_unicode.txt"
     WriteRegStr HKCU "Software\${APP_NAME}" "InstallDir" "$INSTDIR"
     WriteRegStr HKCU "Software\${APP_NAME}" "Version" "${APP_VERSION}"
     WriteUninstaller "$INSTDIR\Uninstall.exe"
@@ -176,6 +175,7 @@ Section "Uninstall"
     Delete "$INSTDIR\LICENSE"
     Delete "$INSTDIR\THIRD_PARTY_LICENSES.txt"
     Delete "$INSTDIR\CLI.md"
+    Delete "$INSTDIR\DISCLAIMER.txt"
     ; ★ 大量小文件（Qt _internal 有数千个）用系统 rd 批量删比 RMDir 快几十倍
     ;   （实测 NSIS 的 RMDir /r 删 118MB 要 5 分钟，rd 只要几秒）
     nsExec::ExecToStack 'rd /s /q "$INSTDIR\_internal"'
