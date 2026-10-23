@@ -625,6 +625,14 @@ class SetupWizard(QWizard):
                 self.lb_mode.setText("🔗 添加已有实例（不会下载任何东西，点「完成」直接注册）")
                 self.lb_mode.show()
         else:
+            # 还原 Next 按钮（全新安装需要"下一步"进入安装页，而非"完成"）
+            try:
+                p1 = self.page(0)
+                p1.setFinalPage(False)
+                self.setButtonText(QWizard.NextButton, "下一步 >")
+                self.button(QWizard.FinishButton).show()
+            except Exception:
+                pass
             self.install_opts.show()          # 全新安装才需要这些参数
             # 切到全新安装时清掉上一次检测残留的候选，避免"检测到 A 却要装 B"的混淆
             # 注意：必须先清 _scan_candidates，否则 clear() 触发的 currentIndexChanged
@@ -865,9 +873,12 @@ class SetupWizard(QWizard):
             self._lock_inputs(False)
             self.lb_scan.setStyleSheet("color:#4cd47c;")
             self.lb_scan.setText(f"✅ {info}\n使用解释器: {py}\n选好候选后点「完成」直接添加为实例（免下载）。")
+            # Qt 的 Finish 按钮只认"向导最后一页"，手动 setEnabled 有时会被 Qt 收回。
+            # 标准做法：把本页设为 final page，Next 按钮即"完成"，点它触发 accept()。
             p1.setFinalPage(True)
-            self.button(QWizard.FinishButton).setEnabled(True)
-            self.button(QWizard.NextButton).setEnabled(False)
+            self.setButtonText(QWizard.NextButton, "完成")
+            self.button(QWizard.NextButton).setEnabled(True)     # 本页的「完成」= Next
+            self.button(QWizard.FinishButton).hide()             # 避免两个"完成"按钮并存
         else:
             self._verify_fail(info)
 
