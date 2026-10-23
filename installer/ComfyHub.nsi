@@ -55,12 +55,13 @@ VIAddVersionKey "LegalCopyright"  "MIT License"
 !define MUI_LICENSEPAGE_CHECKBOX            ; 用勾选框，必须打勾才能下一步
 !define MUI_LICENSEPAGE_CHECKBOX_TEXT "我已阅读并同意以上条款，愿意承担相应使用责任"
 
-!define MUI_FINISHPAGE_TEXT  "${APP_NAME_CN} 已经成功安装到本机。$\r$\n点击【完成】关闭向导，之后可从桌面快捷方式启动 ComfyHub。$\r$\n如需添加实例，启动后进入「实例」页一键安装环境。"
+!define MUI_FINISHPAGE_TEXT  "已经成功安装到本机。桌面快捷方式可随时启动 ComfyHub。"
 !insertmacro MUI_PAGE_WELCOME
 ; 用户同意书：必须勾选"我接受"才能继续
 !insertmacro MUI_PAGE_LICENSE "..\docs\DISCLAIMER_unicode.txt"
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
+!define MUI_PAGE_CUSTOMFUNCTION_SHOW FinishShowFix
 !insertmacro MUI_PAGE_FINISH
 
 !insertmacro MUI_UNPAGE_WELCOME
@@ -141,6 +142,12 @@ Section "文档"
 SectionEnd
 
 ; ---------- 卸载 ----------
+Function FinishShowFix
+    ; 完成页显示时重新上色（创建时设的颜色会被 Win11 混合暗色模式重置）
+    SetCtlColors $mui.FinishPage.Title "FFFFFF" "0F141B"
+    SetCtlColors $mui.FinishPage.Text "FFFFFF" "0F141B"
+FunctionEnd
+
 Function un.onInit
     ; 不再询问"确定要卸载吗"——从控制面板主动卸载已是明确意图
     ; 唯一的询问是卸载末尾的"是否同时删除配置目录"（默认删除）
