@@ -141,6 +141,12 @@ Section "文档"
 SectionEnd
 
 ; ---------- 卸载 ----------
+Function FinishShowFix
+    ; NSIS bug #443：SetCtlColors 无法更改 checkbox 文字颜色，
+    ; 用官方的 UXTHEME 方法移除控件主题，让白色文字生效
+    System::Call 'UXTHEME::SetWindowTheme(p$mui.FinishPage.Run, w" ", w" ")'
+FunctionEnd
+
 Function un.onInit
     ; 不再询问"确定要卸载吗"——从控制面板主动卸载已是明确意图
     ; 唯一的询问是卸载末尾的"是否同时删除配置目录"（默认删除）
