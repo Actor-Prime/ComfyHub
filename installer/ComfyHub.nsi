@@ -55,6 +55,8 @@ VIAddVersionKey "LegalCopyright"  "MIT License"
 !define MUI_LICENSEPAGE_CHECKBOX            ; 用勾选框，必须打勾才能下一步
 !define MUI_LICENSEPAGE_CHECKBOX_TEXT "我已阅读并同意以上条款，愿意承担相应使用责任"
 
+!define MUI_FINISHPAGE_RUN "$INSTDIR\${APP_EXE}"
+!define MUI_FINISHPAGE_RUN_TEXT "立即运行 ${APP_NAME}"
 !define MUI_FINISHPAGE_TEXT  "已经成功安装到本机。桌面快捷方式可随时启动 ComfyHub。"
 !insertmacro MUI_PAGE_WELCOME
 ; 用户同意书：必须勾选"我接受"才能继续
@@ -73,6 +75,8 @@ VIAddVersionKey "LegalCopyright"  "MIT License"
 !insertmacro MUI_LANGUAGE "English"
 
 ; ---------- onInit：读回安装路径 + 处理运行中的实例 ----------
+Var RunLabelChecked
+
 Function .onInit
     ReadRegStr $0 HKCU "Software\${APP_NAME}" "InstallDir"
     ${If} $0 != ""
@@ -143,9 +147,15 @@ SectionEnd
 
 ; ---------- 卸载 ----------
 Function FinishShowFix
-    ; 完成页显示时重新上色（创建时设的颜色会被 Win11 混合暗色模式重置）
-    SetCtlColors $mui.FinishPage.Title "FFFFFF" "0F141B"
-    SetCtlColors $mui.FinishPage.Text "FFFFFF" "0F141B"
+    ; 完成页控件 ID（UIA 实测）：1201=标题 1202=正文 1203=RUN checkbox
+    ; 创建时设的颜色会被 Win11 混合暗色模式重置 → 显示时按 ID 重新上色
+    GetDlgItem $0 $HWNDPARENT 1201
+    SetCtlColors $0 "FFFFFF" "0F141B"
+    GetDlgItem $0 $HWNDPARENT 1202
+    SetCtlColors $0 "FFFFFF" "0F141B"
+    GetDlgItem $0 $HWNDPARENT 1203
+    System::Call 'UXTHEME::SetWindowTheme(p$0, w" ", w" ")'   ; bug #443：先移除主题
+    SetCtlColors $0 "FFFFFF" "0F141B"                          ; 再上白字
 FunctionEnd
 
 Function un.onInit
