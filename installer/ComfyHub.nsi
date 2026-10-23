@@ -51,11 +51,11 @@ VIAddVersionKey "LegalCopyright"  "MIT License"
 !define MUI_TEXTCOLOR "FFFFFF"
 !define MUI_WELCOMEPAGE_TITLE "欢迎安装 ${APP_NAME_CN}"
 !define MUI_WELCOMEPAGE_TEXT  "这个向导将引导你完成 ComfyHub 的安装。$\r$\n$\r$\nComfyHub 是 ComfyUI 多实例管理器：一键装环境、插件市场、启动模式、批量任务、任务通知。$\r$\n$\r$\n安装到当前用户目录，无需管理员权限。"
-!define MUI_FINISHPAGE_RUN "$INSTDIR\${APP_EXE}"
-!define MUI_FINISHPAGE_RUN_TEXT "立即运行 ${APP_NAME}"   
+
 !define MUI_LICENSEPAGE_CHECKBOX            ; 用勾选框，必须打勾才能下一步
 !define MUI_LICENSEPAGE_CHECKBOX_TEXT "我已阅读并同意以上条款，愿意承担相应使用责任"
 
+!define MUI_FINISHPAGE_TEXT  "${APP_NAME_CN} 已经成功安装到本机。$\r$\n点击【完成】关闭向导，之后可从桌面快捷方式启动 ComfyHub。$\r$\n如需添加实例，启动后进入「实例」页一键安装环境。"
 !insertmacro MUI_PAGE_WELCOME
 ; 用户同意书：必须勾选"我接受"才能继续
 !insertmacro MUI_PAGE_LICENSE "..\docs\DISCLAIMER_unicode.txt"
@@ -141,12 +141,6 @@ Section "文档"
 SectionEnd
 
 ; ---------- 卸载 ----------
-Function FinishShowFix
-    ; NSIS bug #443：SetCtlColors 无法更改 checkbox 文字颜色，
-    ; 用官方的 UXTHEME 方法移除控件主题，让白色文字生效
-    System::Call 'UXTHEME::SetWindowTheme(p$mui.FinishPage.Run, w" ", w" ")'
-FunctionEnd
-
 Function un.onInit
     ; 不再询问"确定要卸载吗"——从控制面板主动卸载已是明确意图
     ; 唯一的询问是卸载末尾的"是否同时删除配置目录"（默认删除）
