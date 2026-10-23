@@ -823,7 +823,9 @@ class SetupWizard(QWizard):
         def _try_all():
             last = ""
             tried = 0
-            for py in cands:
+            # 防御：cands 万一不是列表（历史残留的字符串），先规整成列表
+            _cl = cands if isinstance(cands, (list, tuple)) else ([cands] if cands else [])
+            for py in _cl:
                 # ★ 跳过不存在的解释器（否则会把"未找到 Python 解释器"当成实例本身的问题）
                 if not py or not os.path.isfile(py):
                     continue
@@ -851,11 +853,15 @@ class SetupWizard(QWizard):
             return
         v_ok, info, py = res
         if v_ok:
-            if self._verify_comfy in self._py_map:
-                pass
-            else:
-                self._py_map[self._verify_comfy] = py
-            self._py_map[self._verify_comfy] = py   # 记住验证通过的解验器
+            # ★ py_map 的值必须是【列表】。此前这里无条件赋值成单个字符串，
+            #   导致下轮验证 `for py in cands` 变成逐字符遍历 → 全部判"不存在"
+            #   → 误报"没有可用的 Python 解释器"（切换候选时必现）
+            _lst = self._py_map.setdefault(self._verify_comfy, [])
+            if not isinstance(_lst, list):
+                _lst = [_lst]
+            if py and py not in _lst:
+                _lst.insert(0, py)      # 验证通过的排在首位
+            self._py_map[self._verify_comfy] = _lst
             self._lock_inputs(False)
             self.lb_scan.setStyleSheet("color:#4cd47c;")
             self.lb_scan.setText(f"✅ {info}\n使用解释器: {py}\n选好候选后点「完成」直接添加为实例（免下载）。")
