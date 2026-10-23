@@ -48,13 +48,11 @@ VIAddVersionKey "LegalCopyright"  "MIT License"
 !define MUI_WELCOMEFINISHPAGE_BITMAP "..\assets\installer\welcome.bmp"
 !define MUI_UNWELCOMEFINISHPAGE_BITMAP "..\assets\installer\welcome.bmp"
 !define MUI_BGCOLOR "0F141B"
-!define MUI_TEXTCOLOR "DBE4F0"
+!define MUI_TEXTCOLOR "FFFFFF"
 !define MUI_WELCOMEPAGE_TITLE "欢迎安装 ${APP_NAME_CN}"
 !define MUI_WELCOMEPAGE_TEXT  "这个向导将引导你完成 ComfyHub 的安装。$\r$\n$\r$\nComfyHub 是 ComfyUI 多实例管理器：一键装环境、插件市场、启动模式、批量任务、任务通知。$\r$\n$\r$\n安装到当前用户目录，无需管理员权限。"
 !define MUI_FINISHPAGE_RUN "$INSTDIR\${APP_EXE}"
-!define MUI_FINISHPAGE_RUN_TEXT "立即运行 ${APP_NAME}"
-!define MUI_FINISHPAGE_LINK "项目主页：${APP_URL}"
-!define MUI_FINISHPAGE_LINK_LOCATION "${APP_URL}"
+!define MUI_FINISHPAGE_RUN_TEXT "立即运行 ${APP_NAME}"   
 !define MUI_LICENSEPAGE_CHECKBOX            ; 用勾选框，必须打勾才能下一步
 !define MUI_LICENSEPAGE_CHECKBOX_TEXT "我已阅读并同意以上条款，愿意承担相应使用责任"
 
@@ -175,7 +173,7 @@ Section "Uninstall"
     Delete "$INSTDIR\LICENSE"
     Delete "$INSTDIR\THIRD_PARTY_LICENSES.txt"
     Delete "$INSTDIR\CLI.md"
-    Delete "$INSTDIR\DISCLAIMER.txt"
+    Delete "$INSTDIR\DISCLAIMER_unicode.txt"
     ; ★ 大量小文件（Qt _internal 有数千个）用系统 rd 批量删比 RMDir 快几十倍
     ;   （实测 NSIS 的 RMDir /r 删 118MB 要 5 分钟，rd 只要几秒）
     nsExec::ExecToStack 'rd /s /q "$INSTDIR\_internal"'
@@ -193,7 +191,24 @@ Section "Uninstall"
     DeleteRegKey HKCU "${UNINST_KEY}"
     DeleteRegKey HKCU "Software\${APP_NAME}"
 
-    IfFileExists "$APPDATA\ComfyHub\*.*" 0 +2
+    ; ---- 配置目录：默认删除（用户要求），选"否"才保留 ----
+    IfFileExists "$APPDATA\ComfyHub\*.*" 0 cfgDone
+    IfSilent delCfg 0                          ; 静默模式 = 默认清理
+    MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON1 \
+        "是否同时删除配置目录？（含实例配置、启动模式、运行日志）$
+$
+$APPDATA\ComfyHub$\r$
+$
+$
+选[否]将保留配置，重装后无需重新配置。" \
+        IDYES delCfg IDNO keepCfg
+    keepCfg:
         MessageBox MB_OK|MB_ICONINFORMATION \
-            "配置目录已保留：$\r$\n$APPDATA\ComfyHub$\r$\n$\r$\n如需彻底清理请手动删除。"
+            "配置目录已保留：$\r$\n$APPDATA\ComfyHub$\r$\n$\r$\n重装后无需重新配置。"
+        Goto cfgDone
+    delCfg:
+        nsExec::ExecToStack 'rd /s /q "$APPDATA\ComfyHub"'
+        Pop $0
+        RMDir /r /REBOOTOK "$APPDATA\ComfyHub"
+    cfgDone:
 SectionEnd
