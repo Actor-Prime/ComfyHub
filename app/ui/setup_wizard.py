@@ -810,7 +810,14 @@ class SetupWizard(QWizard):
         self.button(QWizard.NextButton).setEnabled(False)
         idx = max(0, self.cb_found.currentIndex())
         comfy = self._scan_candidates[min(idx, len(self._scan_candidates) - 1)]
-        cands = self._py_map.get(comfy) or []
+        # key 可能是 normpath 形式；再兜底用共享便携 Python（它带 torch，通常能直接跑）
+        cands = (self._py_map.get(comfy)
+                 or self._py_map.get(os.path.normpath(comfy))
+                 or [])
+        if not cands:
+            _tools_py = os.path.join(bootstrap.tools_root(), "python", "python.exe")
+            if os.path.isfile(_tools_py):
+                cands = [os.path.normpath(_tools_py)]
         self._verify_comfy = comfy
 
         def _try_all():
@@ -850,20 +857,20 @@ class SetupWizard(QWizard):
             self._verify_fail(info)
 
     def _verify_fail(self, why):
-        """验证失败：切回安装模式（展开选项，走安装修齐）"""
+        """验证未通过：**保留添加实例的能力**（多数情况只是找不到解释器，实例本身是好的）。
+        ★ 绝不擅自切「全新安装」——那会在已有实例目录里重新拉源码，覆盖用户文件。
+        """
         self._lock_inputs(False)
         self.lb_scan.setStyleSheet("color:#e8a33d;")
         self.lb_scan.setText(
-            f"⚠️ 验证未通过：{why}\n"
-            "已切换到安装模式：在下方「Python 环境」选择自动安装便携 Python 即可修齐，确认选项后点「下一步」。")
-        self.cb_found.hide()
-        self.lb_found_title.hide()
-        self._scan_candidates = None
-        self._set_mode("fresh")
+            f"⚠️ 无法确认该实例能否运行：{why}\n"
+            "可以点「完成」把它加进来，之后在主界面「实例设置」里指定解释器并启动。\n"
+            "（若确实想在这个位置全新安装，请清空路径后重新检测，避免覆盖现有文件）")
+        self._set_mode("existing")      # 保持"添加实例"形态：不显示安装参数
         p1 = self.page(0)
-        p1.setFinalPage(False)
-        self.button(QWizard.NextButton).setEnabled(True)
-        self.button(QWizard.FinishButton).setEnabled(False)
+        p1.setFinalPage(True)           # 允许「完成」
+        self.button(QWizard.FinishButton).setEnabled(True)
+        self.button(QWizard.NextButton).setEnabled(False)   # 禁止误触安装覆盖
 
     def _match_pythons(self, candidates):
         """为每个候选 ComfyUI 找配套 Python，构建 {comfy_path: [候选列表]}
@@ -897,7 +904,7 @@ class SetupWizard(QWizard):
             for p in cands:
                 total.add(p)
             if cands:
-                py_map[cp] = cands   # 存全部候选，验证时逐个试
+                py_map[os.path.normpath(cp)] = cands   # key 规范化，避免 normpath 差异导致取不到
         self._py_map = py_map
         return len(total)
 
