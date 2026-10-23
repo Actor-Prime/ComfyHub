@@ -910,9 +910,28 @@ class SetupWizard(QWizard):
         ★ 绝不擅自切「全新安装」——那会在已有实例目录里重新拉源码，覆盖用户文件。
         """
         self._lock_inputs(False)
-        # 失败原因分级：实例本身有问题 → 禁止添加；缺依赖/缺解释器 → 允许"仍要添加"
+        # 失败原因三级分类：
+        #   ① 实例本身坏（无 main.py/comfy）      → 禁止添加
+        #   ② 根本没有任何 Python 环境            → 禁止添加（加了也跑不了），引导去装
+        #   ③ 有 Python 但缺依赖（缺 torch 等）   → 允许「仍要添加」，之后补依赖
+        _no_python = ("没有可用的 Python" in why) or ("共享便携 Python 也未安装" in why) \
+                     or ("未找到 Python 解释器" in why)
         _instance_broken = ("main.py" in why) or ("源码" in why) or ("不是 ComfyUI" in why)
         self.lb_scan.setStyleSheet("color:#e8a33d;")
+        if _no_python:
+            # 没有任何 Python 环境 → 不允许添加（加进去也启动不了），也不允许误触安装覆盖
+            self.lb_scan.setStyleSheet("color:#e8635a;")
+            self.lb_scan.setText(
+                f"❌ 没有可用的 Python 环境，无法添加或启动实例：{why}\n"
+                "请先安装 Python 环境：主界面 →「工具管理」→ 安装共享便携 Python，"
+                "装好后回到这里重新检测。\n"
+                "（此页面不会改动你选的实例目录）")
+            self._set_mode("existing")
+            p1 = self.page(0)
+            p1.setFinalPage(False)
+            self.button(QWizard.NextButton).setEnabled(False)   # 防止在实例目录上误装
+            self.button(QWizard.FinishButton).setEnabled(False)
+            return
         if _instance_broken:
             self.lb_scan.setText(
                 f"❌ 该目录不是可用的 ComfyUI 实例：{why}\n"
