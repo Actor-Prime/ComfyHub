@@ -910,16 +910,48 @@ class SetupWizard(QWizard):
         ★ 绝不擅自切「全新安装」——那会在已有实例目录里重新拉源码，覆盖用户文件。
         """
         self._lock_inputs(False)
+        # 失败原因三级分类：
+        #   ① 实例本身坏（无 main.py/comfy）      → 禁止添加
+        #   ② 根本没有任何 Python 环境            → 禁止添加（加了也跑不了），引导去装
+        #   ③ 有 Python 但缺依赖（缺 torch 等）   → 允许「仍要添加」，之后补依赖
+        _no_python = ("没有可用的 Python" in why) or ("共享便携 Python 也未安装" in why) \
+                     or ("未找到 Python 解释器" in why)
+        _instance_broken = ("main.py" in why) or ("源码" in why) or ("不是 ComfyUI" in why)
         self.lb_scan.setStyleSheet("color:#e8a33d;")
+        if _no_python:
+            # 没有任何 Python 环境 → 不允许添加（加进去也启动不了），也不允许误触安装覆盖
+            self.lb_scan.setStyleSheet("color:#e8635a;")
+            self.lb_scan.setText(
+                f"❌ 没有可用的 Python 环境，无法添加或启动实例：{why}\n"
+                "请先安装 Python 环境：主界面 →「工具管理」→ 安装共享便携 Python，"
+                "装好后回到这里重新检测。\n"
+                "（此页面不会改动你选的实例目录）")
+            self._set_mode("existing")
+            p1 = self.page(0)
+            p1.setFinalPage(False)
+            self.button(QWizard.NextButton).setEnabled(False)   # 防止在实例目录上误装
+            self.button(QWizard.FinishButton).setEnabled(False)
+            return
+        if _instance_broken:
+            self.lb_scan.setText(
+                f"❌ 该目录不是可用的 ComfyUI 实例：{why}\n"
+                "请确认是否选错了目录（应包含 main.py 与 comfy/ 目录）。")
+            self._set_mode("fresh")
+            p1 = self.page(0)
+            p1.setFinalPage(False)
+            self.button(QWizard.NextButton).setEnabled(True)
+            self.button(QWizard.FinishButton).setEnabled(False)
+            return
         self.lb_scan.setText(
-            f"⚠️ 无法确认该实例能否运行：{why}\n"
-            "可以点「完成」把它加进来，之后在主界面「实例设置」里指定解释器并启动。\n"
-            "（若确实想在这个位置全新安装，请清空路径后重新检测，避免覆盖现有文件）")
+            f"⚠️ 实例本身正常，但当前解释器缺依赖：{why}\n"
+            "→ 仍可点「仍要添加」先把它加进列表；\n"
+            "→ 之后在主界面「依赖管理」里补齐依赖（如 PyTorch）即可启动。")
         self._set_mode("existing")      # 保持"添加实例"形态：不显示安装参数
         p1 = self.page(0)
-        p1.setFinalPage(True)           # 允许「完成」
-        self.button(QWizard.FinishButton).setEnabled(True)
-        self.button(QWizard.NextButton).setEnabled(False)   # 禁止误触安装覆盖
+        p1.setFinalPage(True)                                  # 允许完成
+        self.setButtonText(QWizard.NextButton, "仍要添加")      # 明确"这条路仍可走"
+        self.button(QWizard.NextButton).setEnabled(True)
+        self.button(QWizard.FinishButton).hide()
 
     def _match_pythons(self, candidates):
         """为每个候选 ComfyUI 找配套 Python，构建 {comfy_path: [候选列表]}
