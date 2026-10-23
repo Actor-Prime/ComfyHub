@@ -12,7 +12,7 @@ Unicode true
 ; ---------- 基本信息 ----------
 !define APP_NAME       "ComfyHub"
 !define APP_NAME_CN    "ComfyHub 多实例管理器"
-!define APP_VERSION    "0.7.3"
+!define APP_VERSION    "0.7.4"
 !define APP_PUBLISHER  "LeiMengStudio"
 !define APP_URL        "https://gitee.com/yzdydwdd/ComfyHub"
 !define APP_EXE        "ComfyHub.exe"
@@ -30,7 +30,7 @@ SetCompressor /SOLID lzma
 ShowInstDetails show
 ShowUninstDetails show
 
-VIProductVersion "0.7.3.0"
+VIProductVersion "0.7.4.0"
 VIAddVersionKey "ProductName"     "${APP_NAME_CN}"
 VIAddVersionKey "FileDescription" "${APP_NAME_CN} 安装程序"
 VIAddVersionKey "FileVersion"     "${APP_VERSION}"
@@ -59,7 +59,6 @@ VIAddVersionKey "LegalCopyright"  "MIT License"
 !insertmacro MUI_PAGE_WELCOME
 !define MUI_PAGE_CUSTOMFUNCTION_PRE hideLicense
 !insertmacro MUI_PAGE_LICENSE "..\LICENSE"
-!insertmacro MUI_PAGE_COMPONENTS
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
@@ -104,14 +103,7 @@ Function hideLicense
     Abort      ; MIT 许可不强制同意，跳过该页减少点击
 FunctionEnd
 
-; ---------- 组件 ----------
-LangString DESC_Core      ${LANG_SIMPCHINESE} "ComfyHub 主程序与运行时（必需）"
-LangString DESC_Core      ${LANG_ENGLISH}     "ComfyHub main program and runtime (required)"
-LangString DESC_Shortcut  ${LANG_SIMPCHINESE} "在桌面和开始菜单创建快捷方式"
-LangString DESC_Shortcut  ${LANG_ENGLISH}     "Create desktop and Start Menu shortcuts"
-LangString DESC_Docs      ${LANG_SIMPCHINESE} "许可声明与使用文档"
-LangString DESC_Docs      ${LANG_ENGLISH}     "License notice and documentation"
-
+; ---------- 安装内容（不再让用户勾选：全装）----------
 Section "ComfyHub 主程序" SEC_CORE
     SectionIn RO
     SetOutPath "$INSTDIR"
@@ -137,25 +129,19 @@ Section "ComfyHub 主程序" SEC_CORE
     WriteRegDWORD HKCU "${UNINST_KEY}" "EstimatedSize" "$0"
 SectionEnd
 
-Section "创建快捷方式" SEC_SHORTCUT
+Section "快捷方式与文档"
     CreateDirectory "$SMPROGRAMS\${APP_NAME}"
     CreateShortCut "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}" 0
     CreateShortCut "$SMPROGRAMS\${APP_NAME}\卸载 ${APP_NAME}.lnk" "$INSTDIR\Uninstall.exe"
     CreateShortCut "$DESKTOP\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}" 0
 SectionEnd
 
-Section "许可与文档" SEC_DOCS
+Section "文档"
     SetOutPath "$INSTDIR\docs"
     File "..\docs\COMPLIANCE.md"
     File "..\docs\COMPETITORS.md"
     SetOutPath "$INSTDIR"
 SectionEnd
-
-!insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
-  !insertmacro MUI_DESCRIPTION_TEXT ${SEC_CORE}     $(DESC_Core)
-  !insertmacro MUI_DESCRIPTION_TEXT ${SEC_SHORTCUT} $(DESC_Shortcut)
-  !insertmacro MUI_DESCRIPTION_TEXT ${SEC_DOCS}     $(DESC_Docs)
-!insertmacro MUI_FUNCTION_DESCRIPTION_END
 
 ; ---------- 卸载 ----------
 Function un.onInit
