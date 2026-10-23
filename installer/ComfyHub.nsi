@@ -142,12 +142,8 @@ SectionEnd
 
 ; ---------- 卸载 ----------
 Function un.onInit
-    IfSilent skipConfirm 0
-    MessageBox MB_YESNO|MB_ICONQUESTION \
-        "确定要卸载 ${APP_NAME_CN} 吗？（配置与实例记录会保留在 %APPDATA%\ComfyHub）" \
-        IDYES skipConfirm
-    Abort
-    skipConfirm:
+    ; 不再询问"确定要卸载吗"——从控制面板主动卸载已是明确意图
+    ; 唯一的询问是卸载末尾的"是否同时删除配置目录"（默认删除）
 FunctionEnd
 
 Section "Uninstall"
@@ -195,12 +191,7 @@ Section "Uninstall"
     IfFileExists "$APPDATA\ComfyHub\*.*" 0 cfgDone
     IfSilent delCfg 0                          ; 静默模式 = 默认清理
     MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON1 \
-        "是否同时删除配置目录？（含实例配置、启动模式、运行日志）$
-$
-$APPDATA\ComfyHub$\r$
-$
-$
-选[否]将保留配置，重装后无需重新配置。" \
+        "是否同时删除配置目录？（含实例配置、启动模式、运行日志）" \
         IDYES delCfg IDNO keepCfg
     keepCfg:
         MessageBox MB_OK|MB_ICONINFORMATION \
