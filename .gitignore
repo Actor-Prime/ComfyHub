@@ -48,3 +48,5 @@ desktop.ini
 
 # PyInstaller 自动生成的 spec（保持根目录干净）
 /ComfyHub.spec
+tools/mingw64/
+tools/mingw64/
