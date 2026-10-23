@@ -116,11 +116,16 @@ class ComfyuiPage(QWidget):
         self.b_stop.clicked.connect(self.stop)
         self.b_web = QPushButton("🌐 打开网页")
         self.b_web.clicked.connect(self.open_browser)
+        # 批量任务：用户手动开启，可设次数与重启间隔（防 OOM）
+        self.b_batch = QPushButton("🔁 批量运行")
+        self.b_batch.setToolTip("同一工作流跑多次，可设置每 N 次重启实例释放显存")
+        self.b_batch.clicked.connect(self._open_batch)
         self.lb_state = QLabel("未运行")
         self.lb_state.setObjectName("StatusStop")
         bar.addWidget(self.b_start)
         bar.addWidget(self.b_stop)
         bar.addWidget(self.b_web)
+        bar.addWidget(self.b_batch)
         bar.addStretch()
         bar.addWidget(self.lb_state)
         root.addLayout(bar)
@@ -617,6 +622,16 @@ class ComfyuiPage(QWidget):
             pass
 
     # ---------- 启停（供首页/控制台调用） ----------
+    def _open_batch(self):
+        """打开批量运行对话框（用户手动开启，可设次数/重启间隔）"""
+        inst = self.mainwin.current_inst()
+        if not inst:
+            QMessageBox.information(self, "批量运行", "请先选择实例")
+            return
+        from app.ui.batch_dialog import BatchRunDialog
+        dlg = BatchRunDialog(self.mainwin, inst, self)
+        dlg.exec()
+
     def start(self):
         inst = self._current_inst()
         if not inst:
