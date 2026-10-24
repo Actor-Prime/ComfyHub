@@ -22,6 +22,9 @@ v5_*.png
 test_*.py
 temp/
 
+# 竞品黑盒分析产物（截图不入库，结论记 docs/COMPETITORS.md）
+analysis/
+
 # ---- IDE ----
 .idea/
 .vscode/

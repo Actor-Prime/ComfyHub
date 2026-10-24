@@ -375,6 +375,154 @@ def scenario_recursive_and_picker():
         shutil.rmtree(os.path.join(TMP, "L1"), ignore_errors=True)
 
 
+def scenario_fixes_20261024():
+    """G 组：2026-10-24 四项修复的回归（复选框样式 / 日志着色 / torch 损坏判定 / 磁盘预检）"""
+    from app.ui import theme, setup_wizard
+    from app import bootstrap
+
+    log("\n【G1】复选框 indicator 样式（修复「打勾无框」）")
+    record("G1.1 DARK_QSS 含 QCheckBox::indicator 边框样式",
+           "QCheckBox::indicator" in theme.DARK_QSS
+           and "border" in theme.DARK_QSS.split("QCheckBox::indicator")[1][:200])
+
+    log("\n【G2】日志分阶段着色分类")
+    cases = [
+        ("── 步骤 4/4：检测显卡并安装 PyTorch ──", "#6fc3ff", True),
+        ("$ python -s -m pip install torch …", "#8fa3bf", False),
+        ("❌ pip 退出码: 1", "#ff6b6b", False),
+        ("⚠️ 首次安装失败，自动换镜像重试", "#f0a04b", False),
+        ("✅ torch 2.14.1 安装完成并通过导入自检", "#5cc98f", False),
+        ("↓ ComfyUI_src.zip: 12.8/12.8 MB (100%)", "#7ec7ff", False),
+        ("  Collecting torch (from ...)", "#c8d2e0", False),
+    ]
+    all_ok = True
+    for msg, exp_color, exp_bold in cases:
+        c, b = setup_wizard._LogPage._log_css(msg)
+        if (c, b) != (exp_color, exp_bold):
+            all_ok = False
+            log(f"    ✗ 分类不符: {msg[:30]!r} → {(c, b)}，期望 {(exp_color, exp_bold)}")
+    record("G2.1 七类日志行颜色分类全部正确", all_ok)
+
+    log("\n【G3】torch 损坏 vs 未安装 判定（真实环境）")
+    py = os.path.join(TOOLS, "python", "python.exe")
+    if os.path.isfile(py):
+        r = bootstrap.run([py, "-c", "import torch"],
+                          capture_output=True, text=True, timeout=300)
+        st, info, _ = bootstrap.detect_torch_step(py)
+        if r.returncode == 0:
+            record("G3.1 torch 可导入 → 判 ok/cpu", st in ("ok", "cpu"), f"{st}:{info[:50]}")
+        else:
+            record("G3.1 torch 导入崩溃 → 判 broken（非 missing）",
+                   st == "broken", f"{st}:{info[:60]}")
+        free = bootstrap._free_gb(py)
+        record("G3.2 _free_gb 返回正数", free is not None and free >= 0, f"{free}")
+    else:
+        record("G3.1 无便携 Python，跳过 torch 判定", True, "skip")
+
+    log("\n【G4】broken 决策按钮（强制重装 + 必需步骤禁跳过）")
+    win, wiz = new_wizard()
+    try:
+        page = wiz.page(1)   # _LogPage
+        page.state["total"] = 4
+        page.cur = 0         # 非末步 → 必需
+        page._show_decision("broken", "x")
+        record("G4.1 broken 主按钮=强制重装", page.b_act.text().startswith("🔧"),
+               page.b_act.text())
+        record("G4.2 非末步 broken 禁止跳过", not page.b_skip.isEnabled(),
+               f"enabled={page.b_skip.isEnabled()}")
+        page.cur = 3         # 末步（PyTorch）→ 可跳过
+        page._show_decision("broken", "x")
+        record("G4.3 末步 broken 允许跳过", page.b_skip.isEnabled(),
+               f"enabled={page.b_skip.isEnabled()}")
+    finally:
+        wiz.close(); win.close()
+
+
+def scenario_sibling_scan():
+    """H 组：选中某个实例目录时，应扫父目录带出全部兄弟实例（2026-10-25 修复）"""
+    log("\n【H1】三实例并列，直接选中其中一个 → 兄弟全带出、默认选中它")
+    base = os.path.join(TMP, "sib")
+    made = []
+    for nm in ("ComfyUI", "ComfyUIH3", "ComfyUIImage"):
+        d = os.path.join(base, nm)
+        os.makedirs(os.path.join(d, "comfy"), exist_ok=True)
+        open(os.path.join(d, "main.py"), "w").close()
+        made.append(d)
+    picked = made[1]                      # 选中中间的 ComfyUIH3
+    try:
+        win, wiz = new_wizard()
+        s = detect(wiz, picked, wait=6)
+        cands = s["cands"]
+        has_all = (any("ComfyUIH3" in c for c in cands)
+                   and any("ComfyUIImage" in c for c in cands)
+                   and any(c == "(此目录)" or c.endswith("ComfyUI") for c in cands))
+        record("H1.1 选中实例后兄弟实例全被带出（≥3 项含新建）",
+               s["cand_vis"] and len(cands) >= 4 and has_all, f"{cands}")
+        record("H1.2 扫描范围=父目录（同级目录）",
+               "同级目录" in s["full_text"] or os.path.normpath(base) in s["full_text"],
+               s["full_text"][:50].replace("\n", "|"))
+        # 默认选中的应是用户点的那个（ComfyUIH3），路径同步到它
+        _sel = wiz.cb_found.currentIndex()
+        _sel_txt = cands[_sel] if 0 <= _sel < len(cands) else ""
+        record("H1.3 默认选中用户点的实例（非固定第一个）",
+               "ComfyUIH3" in _sel_txt,
+               f"idx={_sel} 选中={_sel_txt}")
+        record("H1.4 路径同步为选中的实例",
+               os.path.normpath(s["path"]).casefold()
+               == os.path.normpath(picked).casefold(), s["path"])
+        wiz.close(); win.close()
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def scenario_integration_package():
+    """I 组：整合包根目录识别（2026-10-25）
+    布局复刻两大主流整合包：
+      · ComfyUI_windows_portable：根目录 ComfyUI\（实例）+ python_embeded\（Python）
+      · ComfyUI-aki-v3（绘世）：根目录 ComfyUI\（实例）+ python\（Python）
+    选根目录 → 应扫出子目录里的实例，且 Python 匹配到根目录的配套解释器"""
+    log("\n【I1】portable 布局：选根目录 → 实例+python_embeded 匹配")
+    base_p = os.path.join(TMP, "pkg_portable")
+    try:
+        # 复刻官方便携包结构
+        os.makedirs(os.path.join(base_p, "ComfyUI", "comfy"), exist_ok=True)
+        open(os.path.join(base_p, "ComfyUI", "main.py"), "w").close()
+        os.makedirs(os.path.join(base_p, "python_embeded"), exist_ok=True)
+        open(os.path.join(base_p, "python_embeded", "python.exe"), "w").close()
+        win, wiz = new_wizard()
+        s = detect(wiz, base_p, wait=6)
+        record("I1.1 根目录扫出子目录实例",
+               any(c.endswith("ComfyUI") for c in s["cands"]), f"{s['cands']}")
+        _py = wiz._py_map.get(os.path.normpath(
+            os.path.join(base_p, "ComfyUI")), [])
+        record("I1.2 Python 匹配到 ../python_embeded/python.exe",
+               any(p.replace("/", "\\").endswith(
+                   "python_embeded\\python.exe") for p in _py), f"{_py}")
+        wiz.close(); win.close()
+    finally:
+        shutil.rmtree(base_p, ignore_errors=True)
+
+    log("\n【I2】绘世(aki) 布局：选根目录 → 实例+python 匹配")
+    base_a = os.path.join(TMP, "pkg_aki")
+    try:
+        os.makedirs(os.path.join(base_a, "ComfyUI", "comfy"), exist_ok=True)
+        open(os.path.join(base_a, "ComfyUI", "main.py"), "w").close()
+        os.makedirs(os.path.join(base_a, "python"), exist_ok=True)
+        open(os.path.join(base_a, "python", "python.exe"), "w").close()
+        win, wiz = new_wizard()
+        s = detect(wiz, base_a, wait=6)
+        record("I2.1 根目录扫出子目录实例",
+               any(c.endswith("ComfyUI") for c in s["cands"]), f"{s['cands']}")
+        _py = wiz._py_map.get(os.path.normpath(
+            os.path.join(base_a, "ComfyUI")), [])
+        record("I2.2 Python 匹配到 ../python/python.exe",
+               any(p.replace("/", "\\").endswith(
+                   "\\python\\python.exe") for p in _py), f"{_py}")
+        wiz.close(); win.close()
+    finally:
+        shutil.rmtree(base_a, ignore_errors=True)
+
+
 def main():
     log("=" * 70)
     log("ComfyHub 向导第一页 · 点击与按钮状态矩阵测试")
@@ -389,6 +537,9 @@ def main():
         scenario_cancel_no_side_effect()
         scenario_chinese_path()
         scenario_recursive_and_picker()
+        scenario_fixes_20261024()
+        scenario_sibling_scan()
+        scenario_integration_package()
         scenario_edge_cases()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)

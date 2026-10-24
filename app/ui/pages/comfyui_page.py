@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""ComfyUI 编辑页：分区表单（基础/高级设置）+ 启停 + 保存/删除（对标截图2/3）"""
+"""ComfyUI 编辑页：实例设置（基础+高级合一页，两分区标题）+ 内核版本 + 启停 + 保存/删除"""
 import os
 
 from PySide6.QtCore import Qt, QThread, Signal
@@ -137,12 +137,13 @@ class ComfyuiPage(QWidget):
         outer.addLayout(bar)
 
 
-        # ---- 三 Tab：基础设置 / 内核版本 / 高级设置 ----
+        # ---- 两 Tab：实例设置（基础+高级合一页）/ 内核版本 ----
+        # 2026-10-25 用户要求：基础设置和高级设置不要分开页面，合并成一页
         self.tabs = QTabWidget()
         self.tabs.setContentsMargins(8, 8, 8, 0)
         outer.addWidget(self.tabs, 1)
 
-        # ---- Tab1 基础设置 ----
+        # ---- Tab1 实例设置：基础区块 + 高级区块（同页两个分区标题）----
         t1 = QWidget(); t1v = QVBoxLayout(t1)
         t1v.setContentsMargins(18, 14, 18, 14); t1v.setSpacing(8)
         lb1 = QLabel("基础设置")
@@ -179,10 +180,67 @@ class ComfyuiPage(QWidget):
         wrap3 = QWidget(); wrap3.setLayout(h_py)
         t1v.addWidget(_Row("Python 路径", "实例配套的解释器（建议用独立 venv）", wrap3))
 
+        # ---- 同页第二分区：高级设置 ----
+        t1v.addSpacing(10)
+        lb2 = QLabel("高级设置")
+        lb2.setObjectName("SectionLabel")
+        t1v.addWidget(lb2)
+
+        self.sp_port = QSpinBox()
+        self.sp_port.setRange(1024, 65535)
+        t1v.addWidget(_Row("启动端口", "用于访问 ComfyUI 的 HTTP 端口（默认 8188）", self.sp_port))
+
+        # 生成设备：GPU/CPU 切换（objectName 驱动选中样式）
+        dev = QWidget()
+        dv = QHBoxLayout(dev); dv.setContentsMargins(0, 0, 0, 0)
+        self.b_gpu = QPushButton("GPU (默认)")
+        self.b_gpu.setObjectName("DeviceBtn")
+        self.b_gpu.setCheckable(True); self.b_gpu.setChecked(True)
+        self.b_cpu = QPushButton("CPU")
+        self.b_cpu.setObjectName("DeviceBtn")
+        self.b_cpu.setCheckable(True)
+        self.b_gpu.clicked.connect(lambda: self._set_device(True))
+        self.b_cpu.clicked.connect(lambda: self._set_device(False))
+        dv.addWidget(self.b_gpu)
+        dv.addWidget(self.b_cpu)
+        t1v.addWidget(_Row("生成设备", "GPU 使用显卡加速 / CPU 仅调试用", dev))
+        self._use_gpu = True
+
+        self.cb_vram = QComboBox()
+        self.cb_vram.addItems(VRAM_MODES.keys())
+        t1v.addWidget(_Row("CPU/显存优化", "按显存大小选择优化级别（低配选低显存）", self.cb_vram))
+
+        self.cb_ca = QComboBox()
+        self.cb_ca.addItems(["自动", "Quad（省显存）", "Split（更快）", "PyTorch SDP"])
+        t1v.addWidget(_Row("Cross Attention 优化", "注意力算法：省显存 / 提速 / PyTorch 原生，出问题回自动", self.cb_ca))
+
+        self.cb_preview = QComboBox()
+        self.cb_preview.addItems(["无", "latent2rgb（快）", "TAESD（精细）"])
+        t1v.addWidget(_Row("采样预览", "出图过程中的实时预览画质（TAESD 更清晰但略耗性能）", self.cb_preview))
+
+        self.ck_fp16 = QCheckBox("开启")
+        t1v.addWidget(_Row("强制 FP16", "半精度运行，低显存显卡提速（画质略降）", self.ck_fp16))
+
+        self.ck_fast = QCheckBox("开启")
+        t1v.addWidget(_Row("快速模式", "启用 PyTorch 加速技巧（新显卡提速明显，老卡慎用）", self.ck_fast))
+
+        self.ck_nosm = QCheckBox("开启")
+        t1v.addWidget(_Row("禁用智能显存", "显存紧张/爆显存时开启，稍降速度换稳定", self.ck_nosm))
+
+        self.ck_lan = QCheckBox("开启")
+        t1v.addWidget(_Row("局域网访问", "允许同一局域网其他设备（手机/平板）打开 ComfyUI", self.ck_lan))
+
+        self.ck_browser = QCheckBox("开启")
+        t1v.addWidget(_Row("自动打开", "启动成功后自动用浏览器打开 ComfyUI 界面", self.ck_browser))
+
+        self.ed_extra = QLineEdit()
+        self.ed_extra.setPlaceholderText("例如: --reserve-vram 2")
+        t1v.addWidget(_Row("启动参数", "附加的命令行参数（逗号分隔的高阶用法）", self.ed_extra))
+
         t1v.addStretch()
         s1 = QScrollArea(); s1.setWidgetResizable(True); s1.setFrameShape(QFrame.NoFrame)
         s1.setWidget(t1)
-        self.tabs.addTab(s1, "⚙️ 基础设置")
+        self.tabs.addTab(s1, "⚙️ 实例设置")
 
         # ---- Tab2 内核版本 ----
         t2 = QWidget(); t2v = QVBoxLayout(t2)
@@ -230,72 +288,6 @@ class ComfyuiPage(QWidget):
         t2v.addWidget(self.tb_kver)
         t2v.addStretch()
         self.tabs.addTab(t2, "🧬 内核版本")
-
-        # ---- Tab3 高级设置 ----
-        t3 = QWidget(); t3v = QVBoxLayout(t3)
-        t3v.setContentsMargins(18, 14, 18, 14); t3v.setSpacing(8)
-        # ---- 高级设置 ----
-        lb2 = QLabel("高级设置")
-        lb2.setObjectName("SectionLabel")
-        t3v.addWidget(lb2)
-
-        self.sp_port = QSpinBox()
-        self.sp_port.setRange(1024, 65535)
-        t3v.addWidget(_Row("启动端口", "用于访问 ComfyUI 的 HTTP 端口（默认 8188）", self.sp_port))
-
-        # 生成设备：GPU/CPU 切换（objectName 驱动选中样式）
-        dev = QWidget()
-        dv = QHBoxLayout(dev); dv.setContentsMargins(0, 0, 0, 0)
-        self.b_gpu = QPushButton("GPU (默认)")
-        self.b_gpu.setObjectName("DeviceBtn")
-        self.b_gpu.setCheckable(True); self.b_gpu.setChecked(True)
-        self.b_cpu = QPushButton("CPU")
-        self.b_cpu.setObjectName("DeviceBtn")
-        self.b_cpu.setCheckable(True)
-        self.b_gpu.clicked.connect(lambda: self._set_device(True))
-        self.b_cpu.clicked.connect(lambda: self._set_device(False))
-        dv.addWidget(self.b_gpu)
-        dv.addWidget(self.b_cpu)
-        t3v.addWidget(_Row("生成设备", "GPU 使用显卡加速 / CPU 仅调试用", dev))
-        self._use_gpu = True
-
-        self.cb_vram = QComboBox()
-        self.cb_vram.addItems(VRAM_MODES.keys())
-        t3v.addWidget(_Row("CPU/显存优化", "按显存大小选择优化级别（低配选低显存）", self.cb_vram))
-
-        self.cb_ca = QComboBox()
-        self.cb_ca.addItems(["自动", "Quad（省显存）", "Split（更快）", "PyTorch SDP"])
-        t3v.addWidget(_Row("Cross Attention 优化", "注意力算法：省显存 / 提速 / PyTorch 原生，出问题回自动", self.cb_ca))
-
-        self.cb_preview = QComboBox()
-        self.cb_preview.addItems(["无", "latent2rgb（快）", "TAESD（精细）"])
-        t3v.addWidget(_Row("采样预览", "出图过程中的实时预览画质（TAESD 更清晰但略耗性能）", self.cb_preview))
-
-        self.ck_fp16 = QCheckBox("开启")
-        t3v.addWidget(_Row("强制 FP16", "半精度运行，低显存显卡提速（画质略降）", self.ck_fp16))
-
-        self.ck_fast = QCheckBox("开启")
-        t3v.addWidget(_Row("快速模式", "启用 PyTorch 加速技巧（新显卡提速明显，老卡慎用）", self.ck_fast))
-
-        self.ck_nosm = QCheckBox("开启")
-        t3v.addWidget(_Row("禁用智能显存", "显存紧张/爆显存时开启，稍降速度换稳定", self.ck_nosm))
-
-        self.ck_lan = QCheckBox("开启")
-        t3v.addWidget(_Row("局域网访问", "允许同一局域网其他设备（手机/平板）打开 ComfyUI", self.ck_lan))
-
-        self.ck_browser = QCheckBox("开启")
-        t3v.addWidget(_Row("自动打开", "启动成功后自动用浏览器打开 ComfyUI 界面", self.ck_browser))
-
-        self.ed_extra = QLineEdit()
-        self.ed_extra.setPlaceholderText("例如: --reserve-vram 2")
-        t3v.addWidget(_Row("启动参数", "附加的命令行参数（逗号分隔的高阶用法）", self.ed_extra))
-
-        t3v.addSpacing(6)
-
-        t3v.addStretch()
-        s3 = QScrollArea(); s3.setWidgetResizable(True); s3.setFrameShape(QFrame.NoFrame)
-        s3.setWidget(t3)
-        self.tabs.addTab(s3, "🔧 高级设置")
 
         # ---- 底部：保存 / 删除（全局）----
         bottom = QHBoxLayout()

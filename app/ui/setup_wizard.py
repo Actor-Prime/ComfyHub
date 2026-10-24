@@ -245,13 +245,20 @@ class _LogPage(QWizardPage):
             log("CUDA 版安装失败，回退 CPU 版")
             bootstrap.install_torch(self.state.get("python_path"), "cpu",
                                     log=log, mirror=mirror)
-        # GPU 加速验证
+        # GPU 加速验证（区分"torch 导入崩溃"与"正常但无 CUDA"两种失败）
         try:
             r = bootstrap.run([self.state["python_path"], "-c",
                 "import torch;print('CUDA_OK' if torch.cuda.is_available() else 'CUDA_NO')"],
-                capture_output=True, text=True, timeout=120)
-            out = (r.stdout or "").strip()
-            log(f"torch 安装完成，GPU 加速: {'✅ 可用' if 'CUDA_OK' in out else '❌ 不可用'}")
+                capture_output=True, text=True, timeout=300)
+            if r.returncode != 0:
+                tail = ((r.stderr or "").strip().splitlines() or ["未知错误"])[-1]
+                log(f"❌ torch 无法导入（安装损坏或依赖不全）：{tail[:140]}")
+            else:
+                out = (r.stdout or "").strip()
+                if "CUDA_OK" in out:
+                    log("torch 安装完成，GPU 加速: ✅ 可用")
+                else:
+                    log("⚠️ torch 安装完成，GPU 加速: 不可用（将以 CPU 运行）")
         except Exception:
             log("torch 验证跳过")
 
@@ -277,56 +284,64 @@ class _LogPage(QWizardPage):
             self._show_decision("retry", f"检测出错：{err}")
             return
         status, info, payload = res
-        color = {"ok": "#4cd47c", "missing": "#e8635a", "cpu": "#e8a33d",
-                 "outdated": "#e8a33d"}.get(status, "#9aa4b2")
+        color = {"ok": "#4cd47c", "missing": "#e8635a", "broken": "#e8635a",
+                 "cpu": "#e8a33d", "outdated": "#e8a33d"}.get(status, "#9aa4b2")
         self.lb_state.setStyleSheet(f"color:{color};")
         self.state.update(payload)
-        icon = {"ok": "✅", "missing": "❌", "cpu": "⚠️", "outdated": "⚠️"}.get(status, "")
+        icon = {"ok": "✅", "missing": "❌", "broken": "🔧",
+                "cpu": "⚠️", "outdated": "⚠️"}.get(status, "")
         self.lb_state.setText(f"{icon} {info}")
         if status == "ok":
             self._show_decision("ok", info)
         elif status == "missing":
             self._show_decision("missing", info)
+        elif status == "broken":
+            self._show_decision("broken", info)
         else:  # cpu / outdated
             self._show_decision("update", info)
 
     def _show_decision(self, kind, info):
         # 自动模式（全新安装）：不等待点击，直接执行默认动作
-        if getattr(self, "_auto", False) and kind in ("ok", "missing", "update"):
+        if getattr(self, "_auto", False) and kind in ("ok", "missing", "broken", "update"):
             from PySide6.QtCore import QTimer as _QT
             if kind == "ok":
                 _QT.singleShot(200, self._on_skip)
             else:
                 _QT.singleShot(200, self._on_act)
-        """kind: ok=建议跳过 / missing=需安装 / update=建议更新 / retry=检测失败重试"""
+        """kind: ok=建议跳过 / missing=需安装 / broken=已装但损坏需强制重装
+                / update=建议更新 / retry=检测失败重试"""
         wiz = self.wizard()
         if wiz:
             wiz.button(QWizard.BackButton).setEnabled(True)   # 决策阶段允许返回
         self.b_act.show()
         self.b_skip.show()
+        # 必需步骤缺失/损坏时禁止跳过（跳过=环境残缺，后续启动必失败）
+        # 仅 PyTorch 步骤（最后一步，索引 == total-1）允许跳过
+        is_optional = getattr(self, "cur", 0) >= self.state.get("total", 4) - 1
         if kind == "ok":
             self.b_act.setText("重新安装")
             self.b_skip.setText("跳过此步 ▶")
+            self.b_skip.setEnabled(True)
             self.b_skip.setDefault(True)
         elif kind == "missing":
             self.b_act.setText("📦 安装")
-            self.b_skip.setText("跳过此步 ▶")
             self.b_act.setDefault(True)
-            # 必需步骤缺失时禁止跳过（跳过=环境残缺，后续启动必失败）
-            # 仅 PyTorch 步骤（最后一步，索引 == total-1）允许跳过
-            is_optional = getattr(self, "cur", 0) >= self.state.get("total", 4) - 1
             self.b_skip.setEnabled(is_optional)
-            if not is_optional:
-                self.b_skip.setText("此步必需，不可跳过")
-        if kind != "missing":
-            self.b_skip.setEnabled(True)
+            self.b_skip.setText("跳过此步 ▶" if is_optional else "此步必需，不可跳过")
+        elif kind == "broken":
+            self.b_act.setText("🔧 强制重装")
+            self.b_act.setDefault(True)
+            self.b_skip.setEnabled(is_optional)
+            self.b_skip.setText("跳过此步 ▶" if is_optional else "此步损坏，必须修复")
         elif kind == "update":
             self.b_act.setText("⬆ 更新")
             self.b_skip.setText("跳过（保留现状）▶")
+            self.b_skip.setEnabled(True)
             self.b_act.setDefault(True)
-        else:
+        else:  # retry
             self.b_act.setText("🔄 重试")
             self.b_skip.setText("跳过此步 ▶")
+            self.b_skip.setEnabled(True)
         self._decision_visible(True)
 
     def _decision_visible(self, vis):
@@ -448,11 +463,40 @@ class _LogPage(QWizardPage):
         if self.on_done:
             self.on_done(True, dict(self.result_data), "")
 
+    @staticmethod
+    def _log_css(msg):
+        """按内容给日志行分类着色（阶段标题/命令/下载/成功/警告/错误）。
+        返回 (颜色, 是否加粗)；判定顺序：错误 > 警告 > 成功 > 阶段 > 下载 > 命令 > 默认。"""
+        s = msg.strip()
+        if not s:
+            return "#c8d2e0", False
+        if ("❌" in s or "✗" in s or s.startswith("Error") or "Traceback" in s
+                or "WinError" in s or "OSError" in s):
+            return "#ff6b6b", False
+        if "⚠️" in s or "警告" in s:
+            return "#f0a04b", False
+        if "失败" in s or "错误" in s:     # 无 ⚠️/❌ 标记的兜底失败行
+            return "#ff6b6b", False
+        if ("✅" in s or s.startswith("✓") or "就绪" in s or "已完成"
+                in s or "安装成功" in s or "已清理" in s):
+            return "#5cc98f", False
+        if s.startswith("──") or s.startswith("═"):
+            return "#6fc3ff", True
+        if s.startswith("↓") or s.startswith("📥") or "下载" in s:
+            return "#7ec7ff", False
+        if s.startswith("$ "):
+            return "#8fa3bf", False
+        return "#c8d2e0", False
+
     def _on_log(self, msg):
-        self.log.appendPlainText(msg)
+        import html as _html
+        _color, _bold = self._log_css(msg)
+        _w = "font-weight:bold;" if _bold else ""
+        self.log.appendHtml(
+            f'<span style="color:{_color};{_w}">{_html.escape(msg)}</span>')
         from PySide6.QtGui import QTextCursor
         self.log.moveCursor(QTextCursor.End)
-        # 同步落盘（失败静默，不打扰安装）
+        # 同步落盘（失败静默，不打扰安装）——磁盘文件保持纯文本，便于排查
         _lp = getattr(self, "_install_log_path", "")
         if _lp:
             try:
@@ -981,6 +1025,25 @@ class SetupWizard(QWizard):
             return
         # 记录用户选择的原始根目录（实例名默认取它的名字）
         self._orig_root = root
+        self._prefer_abs = ""    # 清掉上一轮"默认选中某个候选"的残留
+        # ★ 选中的路径本身就是一个 ComfyUI 实例（有 main.py）：只扫它自己只会找到它自己，
+        #   兄弟实例（如 F:\\ComfyHub_testdata 下并列的 ComfyUIH3/ComfyUIImage）会被漏掉。
+        #   改为扫「父目录」找齐所有实例，并默认选中用户点的这一个（2026-10-25 用户实测反馈）。
+        from app.config import is_comfyui_dir
+        _parent = os.path.dirname(root.rstrip("\\/"))
+        _is_drive_root = len(_parent.rstrip("\\/")) <= 2
+        if (not _is_drive_root and _parent and os.path.isdir(_parent)
+                and _parent != root and is_comfyui_dir(root)):
+            self._scan_parent = True
+            self._prefer_abs = root            # 扫完默认选中用户点的这个实例
+            if not self.ed_name.text().strip():
+                self.ed_name.setText(os.path.basename(root) or "")
+            self.lb_scan.setStyleSheet("color:#9aa4b2;")
+            self.lb_scan.setText(
+                f"该路径是现成实例，正在检查同级目录 {_parent} 里的其他实例…")
+            self.lb_scan.show()
+            self._start_scan(_parent)
+            return
         # 中文/非 ASCII 路径检测：ComfyUI/pip/torch 对中文路径极易出玄学问题
         try:
             root.encode("ascii")
@@ -1047,9 +1110,19 @@ class SetupWizard(QWizard):
             for c in candidates:
                 rel = os.path.relpath(c, root)
                 self.cb_found.addItem(rel if rel != "." else "(此目录)")
-            # 默认选中第一个【实例】（idx 1）而不是"新建"——扫描出实例时主动线是添加已有
+            # 默认选中：优先选用户点的那个实例（扫父目录带出兄弟时，idx 1 不一定是它）；
+            # 否则退回第一个【实例】（idx 1）——扫描出实例时主动线是添加已有
             # （在 connect 槽之前设置，不触发 _on_candidate_changed，下方手动跑一遍流程）
-            self.cb_found.setCurrentIndex(1)
+            _prefer = getattr(self, "_prefer_abs", "")
+            self._prefer_abs = ""              # 用完即清，不影响后续手动切换
+            _default_idx = 1
+            if _prefer:
+                _pnorm = os.path.normpath(_prefer).casefold()
+                for _i, _c in enumerate(candidates):
+                    if os.path.normpath(_c).casefold() == _pnorm:
+                        _default_idx = _i + 1   # +1：下拉第 0 项是「新建新实例」
+                        break
+            self.cb_found.setCurrentIndex(_default_idx)
             # 恒可点（至少有"新建 + 1 个实例"两项）
             self.cb_found.setEnabled(True)
             self.cb_found.show()
@@ -1354,7 +1427,10 @@ class SetupWizard(QWizard):
                      os.path.join(cp, ".venv", "Scripts", "python.exe"),
                      os.path.join(cp, "python_embeded", "python.exe"),
                      os.path.join(cp, "..", "python.exe"),
-                     os.path.join(cp, "..", "python", "python.exe")]
+                     os.path.join(cp, "..", "python", "python.exe"),
+                     # 整合包布局：实例在 ComfyUI\ 子目录，Python 在根目录
+                     # python_embeded\（ComfyUI_windows_portable 官方包）
+                     os.path.join(cp, "..", "python_embeded", "python.exe")]
             cands = [os.path.normpath(p) for p in cands if os.path.isfile(p)]
             if not cands:
                 parent = os.path.dirname(cp)
