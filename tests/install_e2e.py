@@ -15,6 +15,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import uiautomation as ua
+from PIL import ImageGrab
 
 SHOTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "probe_shots")
 SETUP = r"F:\ComfyHub\dist\ComfyHub_Setup_0.7.7.exe"
@@ -24,7 +25,11 @@ SETUP = r"F:\ComfyHub\dist\ComfyHub_Setup_0.7.7.exe"
 def shot(win, name):
     p = os.path.join(SHOTS, f"{name}.png")
     try:
-        win.CaptureToImage(p)
+        win.SetTopmost(True)
+        time.sleep(0.3)
+        g = win.BoundingRectangle
+        img = ImageGrab.grab(bbox=(g.left, g.top, g.right, g.bottom))
+        img.save(p)                                # 屏幕抓取 = 真实渲染
         print(f"  📸 {name}")
     except Exception as e:
         print(f"  📸 失败: {e}")
@@ -158,7 +163,7 @@ def main():
 
     print("\n--- 完成页 ---")
     shot(win, "04_finish")
-    print(f"  checkbox 残留: {chkbox(win) is not None}（应 False）")
+    print(f"  checkbox 存在: {chkbox(win) is not None}（立即运行+桌面图标）")
     # 完成页文字
     texts = []
     def collect(c):

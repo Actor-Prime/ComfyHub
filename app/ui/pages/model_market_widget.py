@@ -199,9 +199,7 @@ class ModelMarketWidget(QWidget):
         bar.addWidget(b)
         root.addLayout(bar)
 
-        self.lb_stat = QLabel("搜索后按下载量排序，点「下载 ↓」选择文件与目标分类。")
-        self.lb_stat.setStyleSheet("color:#9aa4b2;")
-        root.addWidget(self.lb_stat)
+
 
         self.tb = QTableWidget(0, 4)
         self.tb.setHorizontalHeaderLabels(["模型", "下载量", "赞", "操作"])
@@ -215,17 +213,16 @@ class ModelMarketWidget(QWidget):
         self.tb.setSelectionBehavior(QTableWidget.SelectRows)
         self.tb.setAlternatingRowColors(True)
         self.tb.setVisible(False)
-        self.tb.setFixedHeight(220)
-        root.addWidget(self.tb)
+        root.addWidget(self.tb, 1)          # stretch=1：搜索后表格占满剩余空间
 
+        # 底部状态行（表格之下，紧凑）
         prog = QHBoxLayout()
-        self.lb_dl = QLabel("下载队列空闲")
+        self.lb_stat = QLabel("搜索后按下载量排序，点「下载 ↓」选择文件与目标分类。")
+        self.lb_stat.setStyleSheet("color:#9aa4b2;")
+        prog.addWidget(self.lb_stat, 1)
+        self.lb_dl = QLabel("")
         self.lb_dl.setStyleSheet("color:#9aa4b2;")
-        prog.addWidget(self.lb_dl, 1)
-        self.pb = QProgressBar()
-        self.pb.setVisible(False)
-        self.pb.setFixedWidth(240)
-        prog.addWidget(self.pb)
+        prog.addWidget(self.lb_dl)
         b_cancel = QPushButton("取消下载")
         b_cancel.clicked.connect(self._cancel_dl)
         prog.addWidget(b_cancel)
@@ -310,21 +307,15 @@ class ModelMarketWidget(QWidget):
         self._dl_worker.sig_file_done.connect(self._on_file_done)
         self._dl_worker.sig_error.connect(lambda e: self.lb_dl.setText(f"下载出错：{e[:80]}"))
         self._dl_worker.sig_done.connect(self._on_dl_done)
-        self.pb.setVisible(True)
-        self.pb.setValue(0)
         self.lb_dl.setText(f"下载到 models/{items[0][2]}/ …")
 
     def _on_progress(self, done, total, fname):
-        if total > 0:
-            self.pb.setMaximum(total)
-            self.pb.setValue(done)
         self.lb_dl.setText(f"下载 {fname}：{done / 1048576:,.0f} / {total / 1048576:,.0f} MB")
 
     def _on_file_done(self, path):
         self.lb_dl.setText(f"完成：{os.path.basename(path)}")
 
     def _on_dl_done(self, ok, bad):
-        self.pb.setVisible(False)
         self.lb_dl.setText(f"下载队列结束：成功 {ok}，失败 {bad}")
         if ok:
             QMessageBox.information(self, "下载完成",
