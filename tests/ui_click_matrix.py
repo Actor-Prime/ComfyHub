@@ -105,12 +105,14 @@ def detect(wiz, path, wait=9):
 # A. 添加已有实例
 # ============================================================
 def scenario_multi_instance():
-    log("\n【A1】多实例（F:\\ComfyHub 下两个实例）→ 切换候选")
+    log("\n【A1】多实例（F:\\ComfyHub_testdata 下两个实例）→ 切换候选")
     win, wiz = new_wizard()
-    s = detect(wiz, r"F:\ComfyHub")
+    s = detect(wiz, r"F:\ComfyHub_testdata")
     record("A1.1 列出候选", len(s["cands"]) >= 2, f"{s['cands']}")
     record("A1.2 添加模式（安装参数隐藏）", not s["install_shown"])
-    record("A1.3 完成按钮可用", s["next_on"] and s["next_text"] == "完成")
+    # 合法终态两种：验证通过→「完成」；缺依赖→「仍要添加」（共享 Python 未装 torch 的机器）
+    _a1_ok = s["next_on"] and s["next_text"] in ("完成", "仍要添加")
+    record("A1.3 按钮进入可完成态（完成/仍要添加）", _a1_ok, f"{s['next_text']}/{s['next_on']}")
     record("A1.4 无独立 Finish 按钮", not s["finish_vis"])
     # 切换候选
     for i in range(len(s["cands"])):
@@ -118,20 +120,25 @@ def scenario_multi_instance():
         wait_until(lambda: "验证通过" in wiz.lb_scan.text() or "缺依赖" in wiz.lb_scan.text(), timeout=12)
         st = state(wiz)
         record(f"A1.5 候选{i+1} 可完成（{st['cands'][i] if i < len(st['cands']) else '?'}）",
-               st["next_on"] and "验证通过" in st["text"], st["text"][:28])
+               st["next_on"] and st["next_text"] in ("完成", "仍要添加")
+               and ("验证通过" in st["text"] or "缺依赖" in st["text"]), st["text"][:28])
     wiz.close(); win.close()
 
 
 def scenario_no_python():
-    log("\n【A2】完全无 Python 环境（临时移走 tools）→ 应禁止添加")
+    log("\n【A2】完全无 Python 环境（临时移走 tools）→ 仍要添加")
     if os.path.isdir(TOOLS):
         shutil.rmtree(TOOLS_BAK, ignore_errors=True)
         shutil.move(TOOLS, TOOLS_BAK)
     try:
         win, wiz = new_wizard()
-        s = detect(wiz, r"F:\ComfyHub\ComfyUIH3")
-        record("A2.1 完成按钮禁用", not s["next_on"], f"on={s['next_on']}")
-        record("A2.2 下一步也禁用（防误装覆盖）", not (s["next_on"] and s["next_text"].startswith("下一步")))
+        s = detect(wiz, r"F:\ComfyHub_testdata\ComfyUIH3")
+        # 行为（2026-10-24 起）：无 Python 时不再禁止添加，而是「仍要添加」按钮
+        #（先加进列表，之后到工具管理装 Python / 实例设置指定解释器）
+        record("A2.1 显示「仍要添加」按钮", s["next_on"] and s["next_text"] == "仍要添加",
+               f"{s['next_text']}/{s['next_on']}")
+        record("A2.2 绝不显示「下一步」（防误装覆盖）",
+               not (s["next_on"] and s["next_text"].startswith("下一步")))
         record("A2.3 无可见的 Finish 按钮", not s["finish_vis"])
         record("A2.4 提示无 Python 环境", "没有可用的 Python" in s["text"], s["text"][:30])
         record("A2.5 取消仍可用（能退出）", s["cancel_on"])
@@ -230,8 +237,10 @@ def scenario_edge_cases():
     log("\n【E2】盘根 F:////")
     win, wiz = new_wizard()
     s = detect(wiz, "F:////", wait=12)
-    # 盘根下若扫到现成实例 → 添加模式（正确）；没扫到 → 补 ComfyUI（也正确）
-    _ok = (s["path"].rstrip("\\/").lower().endswith("comfyui")) or ("验证" in s["text"])
+    # 盘根下若扫到现成实例 → 添加模式（正确，验证失败时显示「仍要添加」）；
+    # 没扫到 → 补 ComfyUI（也正确）
+    _ok = (s["path"].rstrip("\\/").lower().endswith("comfyui")) or \
+          ("验证" in s["text"]) or (s["next_text"] == "仍要添加")
     record("E2.1 盘根行为合理（找到实例→添加 / 否则补 ComfyUI）", _ok, f"{s['path']} | {s['text'][:24]}")
     wiz.close(); win.close()
 
@@ -253,16 +262,16 @@ def scenario_edge_cases():
     log("\n【E5】实例名留空 → 应自动取目录名")
     win, wiz = new_wizard()
     wiz.ed_name.setText("")
-    s = detect(wiz, r"F://ComfyHub//ComfyUIH3", wait=10)
+    s = detect(wiz, r"F://ComfyHub_testdata//ComfyUIH3", wait=10)
     record("E5.1 实例名自动填充", bool(s["name"].strip()), s["name"])
     wiz.close(); win.close()
 
     log("\n【E6】检测进行中立刻改路径（并发扫描）")
     win, wiz = new_wizard()
-    wiz.ed_dir.setText(r"F://ComfyHub")
+    wiz.ed_dir.setText(r"F://ComfyHub_testdata")
     wiz._detect_existing()
     pump(0.3)                                  # 扫描还没结束时改路径
-    wiz.ed_dir.setText(r"F://ComfyHub//ComfyUIH3")
+    wiz.ed_dir.setText(r"F://ComfyHub_testdata//ComfyUIH3")
     wiz._detect_existing()
     wait_until(lambda: "验证通过" in wiz.lb_scan.text() or "缺依赖" in wiz.lb_scan.text(), timeout=15)
     s = state(wiz)
@@ -273,7 +282,7 @@ def scenario_edge_cases():
 
     log("\n【E7】切换 Python 下拉选项")
     win, wiz = new_wizard()
-    detect(wiz, r"F://ComfyHub//ComfyUIH3", wait=10)
+    detect(wiz, r"F://ComfyHub_testdata//ComfyUIH3", wait=10)
     cb = wiz.cb_python
     ok_all = True
     for i in range(cb.count()):

@@ -682,6 +682,18 @@ class SetupWizard(QWizard):
         try:
             if not self.isVisible():
                 return
+            # ★ 安装未完成前 Finish 必须保持禁用——Qt 翻页时会自动把末页的
+            #   FinishButton 重新置为可用，覆盖手动 setEnabled(False)（2026-10-24 用户实测踩到）
+            _p2 = getattr(self, "p2", None)
+            if _p2 is not None and not getattr(_p2, "done_ok", False):
+                try:
+                    self.button(QWizard.FinishButton).setEnabled(False)
+                except Exception:
+                    pass
+            # ★ 扫描进行中：「下一步」由 _start_scan 禁用、_on_scan_done 解锁，
+            #   守卫不得插手（否则 fresh 分支会在 300ms 后把它重新打开，前功尽弃）
+            if getattr(self, "_busy_scan", False):
+                return
             _fresh = not self.install_opts.isHidden()
             _next = self.button(QWizard.NextButton)
             if _fresh:
@@ -780,9 +792,16 @@ class SetupWizard(QWizard):
         ★ 三步必须成套，缺任何一个都会卡在"正在检查"（v0.5.78 踩过）
         ★ 带序号：上一轮扫描（如自动探测）的结果可能延迟到达，必须丢弃，
           否则会用旧候选覆盖用户刚选的路径状态（v0.5.94 修复）
+        ★ 扫描期间必须禁用「下一步」——否则结果未归就点下一步，
+          会以"全新安装"状态闯进安装页，对着已有实例目录跑安装（2026-10-24 用户实测踩到）
         """
         self._scan_seq = getattr(self, "_scan_seq", 0) + 1
         _seq = self._scan_seq
+        self._busy_scan = True
+        try:
+            self.button(QWizard.NextButton).setEnabled(False)
+        except Exception:
+            pass
         swap_worker(self, "_scan_worker", ScanWorker(path))
         self._scan_worker.sig_done.connect(
             lambda root, cands, s=_seq: self._on_scan_done(root, cands, s))
@@ -790,6 +809,10 @@ class SetupWizard(QWizard):
 
     def _detect_existing(self):
         """后台扫描目录（含两层子目录）：找到 ComfyUI 直接注册；没找到自动补全并展开安装选项"""
+        # ★ 入口先作废在途扫描：用户可能改了路径，旧扫描结果不能再落地（序号作废），
+        #   同时解除 busy——否则走"目录不存在"等不发新扫描的分支时，「下一步」会永久卡禁用
+        self._scan_seq = getattr(self, "_scan_seq", 0) + 1
+        self._busy_scan = False
         root = os.path.normpath(self.ed_dir.text().strip())
         self._scan_parent = False          # 清掉上一轮残留标记，避免误走父目录分支
         self._lock_inputs(True, "正在检测本机环境，请稍候…")
@@ -850,6 +873,7 @@ class SetupWizard(QWizard):
         # 过期扫描结果（用户已切到别的路径/发起新扫描）→ 直接忽略
         if seq is not None and seq != getattr(self, "_scan_seq", 0):
             return
+        self._busy_scan = False
         candidates = list(dict.fromkeys(candidates))
         p1 = self.page(0)
         # 父目录扫描模式：用户输入的路径不存在，在这里扫到了兄弟实例
@@ -1143,11 +1167,15 @@ class SetupWizard(QWizard):
         · 后台检测/验证还在跑 → 提示稍候，向导保持打开（绝不静默关闭）
         · 确认无候选 → 拒绝关闭"""
         if r == QWizard.Accepted:
-            self._prepare_result()
-            if self.setup_result and self.setup_result.get("comfyui_path"):
-                super().done(r)
-                return
-            busy = any(
+            # ★ busy 检查必须放在最前、且必须涵盖安装线程——只要有任何后台线程
+            #   在跑就绝不允许关闭（2026-10-24 用户实测：安装没完成点了「完成」
+            #   向导直接关掉，安装被打断；此前只查了 scan/verify 两个线程）
+            _p2 = getattr(self, "p2", None)
+            _install_running = any(
+                w is not None and hasattr(w, "isRunning") and w.isRunning()
+                for w in (getattr(_p2, "worker", None),
+                          getattr(_p2, "_verify_worker", None)))
+            busy = _install_running or any(
                 getattr(self, a, None) is not None
                 and hasattr(getattr(self, a), "isRunning")
                 and getattr(self, a).isRunning()
@@ -1155,9 +1183,14 @@ class SetupWizard(QWizard):
             if busy:
                 QMessageBox.information(
                     self, "ComfyHub",
-                    "⏳ 正在检测/验证环境，请稍候……\n"
-                    "验证完成后「完成」即可正常使用（通常只需几秒）。")
+                    "⏳ 正在检测/验证/安装环境，请稍候……\n"
+                    "全部完成后再点「完成」（扫描验证通常只需几秒，"
+                    "安装视网络约几分钟）。")
                 return   # 向导保持打开，不静默关闭
+            self._prepare_result()
+            if self.setup_result and self.setup_result.get("comfyui_path"):
+                super().done(r)
+                return
             super().reject()
             return
         super().done(r)
