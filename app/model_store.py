@@ -21,6 +21,19 @@ import urllib.parse
 import urllib.request
 
 MIRROR = "https://hf-mirror.com"
+HF_OFFICIAL = "https://huggingface.co"
+
+# 数据源："mirror"（国内直连）| "hf"（HuggingFace 官方，需代理）
+_source = "mirror"
+
+
+def set_source(mode: str):
+    global _source
+    _source = "hf" if mode == "hf" else "mirror"
+
+
+def base_url() -> str:
+    return HF_OFFICIAL if _source == "hf" else MIRROR
 
 # ComfyUI models 目录分类 + 文件名关键词预判
 CATEGORIES = ["checkpoints", "loras", "vae", "upscale_models",
@@ -59,7 +72,7 @@ def _get(url, timeout=30):
 def search_models(keyword: str, limit=30) -> list:
     """搜索模型仓库，返回 [{id, name, downloads, likes, pipeline_tag}]"""
     kw = urllib.parse.quote(keyword.strip())
-    url = f"{MIRROR}/api/models?search={kw}&limit={limit}&sort=downloads&direction=-1"
+    url = f"{base_url()}/api/models?search={kw}&limit={limit}&sort=downloads&direction=-1"
     raw = _get(url)
     out = []
     for m in raw:
@@ -81,7 +94,7 @@ WEIGHT_EXT = (".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".gguf")
 
 def list_weight_files(repo_id: str) -> list:
     """列出仓库内的模型权重文件 [{path, size}]（跳过隐藏/非权重）"""
-    url = f"{MIRROR}/api/models/{repo_id}/tree/main"
+    url = f"{base_url()}/api/models/{repo_id}/tree/main"
     tree = _get(url)
     out = []
     for f in tree:
@@ -97,7 +110,7 @@ def list_weight_files(repo_id: str) -> list:
 
 
 def download_url(repo_id: str, file_path: str) -> str:
-    return f"{MIRROR}/{repo_id}/resolve/main/{file_path}"
+    return f"{base_url()}/{repo_id}/resolve/main/{file_path}"
 
 
 # -------------------------------------------------- 下载（断点续传）
