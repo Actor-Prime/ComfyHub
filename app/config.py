@@ -1,4 +1,4 @@
-APP_VERSION = "0.7.6"
+APP_VERSION = "0.7.7"
 
 # -*- coding: utf-8 -*-
 """配置管理：多实例配置持久化 + 自动探测本机 ComfyUI"""

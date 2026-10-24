@@ -293,6 +293,11 @@ class ModelMarketWidget(QWidget):
 
     # -------------------------------------------------- 下载
     def _start_download(self, items):
+        # 统一走下载中心（右上角 ⬇ 指示器 + 下拉进度面板）
+        if getattr(self, "dl_center", None) is not None:
+            self.dl_center.enqueue(items)
+            self.lb_dl.setText(f"已加入下载队列（{len(items)} 个文件），右上角 ⬇ 查看进度")
+            return
         if self._dl_worker and self._dl_worker.isRunning():
             QMessageBox.information(self, "提示", "已有下载任务进行中")
             return

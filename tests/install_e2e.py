@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import uiautomation as ua
 
 SHOTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "probe_shots")
-SETUP = r"F:\ComfyHub\dist\ComfyHub_Setup_0.7.4.exe"
+SETUP = r"F:\ComfyHub\dist\ComfyHub_Setup_0.7.7.exe"
 
 
 # -------------------------------------------------- 基础
