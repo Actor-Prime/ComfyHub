@@ -111,6 +111,14 @@ class ComfyProcess(QObject):
         if self.is_running:
             self.log_line.emit("[ComfyHub] 已在运行中，请先停止。")
             return
+        # ★ 未指定 Python 解释器（如向导「仍要添加」先注册后补环境）→ 明确引导，不静默用 PATH 里的 python
+        _py = inst.get("python_path") or ""
+        if not _py or not os.path.isfile(_py):
+            self.log_line.emit(
+                f"[ComfyHub] ❌ 该实例未配置 Python 解释器（当前值: {_py or '空'}），无法启动。\n"
+                "请到「ComfyUI」页 →「实例设置」里指定 Python 路径，"
+                "或到「工具管理」安装共享便携 Python 后重试。")
+            return
         # ★ 启动前：① 恢复上次未完成的插件方案切换 ② 按 last_profile 自动应用方案
         try:
             from app import plugin_profiles as pp

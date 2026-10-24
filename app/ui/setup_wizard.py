@@ -886,6 +886,11 @@ class SetupWizard(QWizard):
                 self.cb_found.addItem(rel if rel != "." else "(此目录)")
             self.cb_found.setEnabled(len(candidates) > 1)
             self.cb_found.show()
+            # 明确告知找到几个实例（多个时提醒可下拉切换），否则单看下拉框容易误以为只有一个
+            if len(candidates) > 1:
+                self.lb_found_title.setText(f"已找到 {len(candidates)} 个实例:")
+            else:
+                self.lb_found_title.setText("检测到:")
             self.lb_found_title.show()
             self._set_mode("existing")
             def _on_candidate_changed(_i):
@@ -1038,18 +1043,22 @@ class SetupWizard(QWizard):
         _instance_broken = ("main.py" in why) or ("源码" in why) or ("不是 ComfyUI" in why)
         self.lb_scan.setStyleSheet("color:#e8a33d;")
         if _no_python:
-            # 没有任何 Python 环境 → 不允许添加（加进去也启动不了），也不允许误触安装覆盖
+            # 没有任何 Python 环境：仍允许「先添加、后补环境」（与文案承诺一致）——
+            # 实例本身是好的，加进列表后到「实例设置」指定/安装 Python 即可。
+            # 绝不切 fresh 模式，防止在实例目录上误触重新安装覆盖源码。
             self.lb_scan.setStyleSheet("color:#e8635a;")
             self.lb_scan.setText(
-                f"❌ 没有可用的 Python 环境，无法添加或启动实例：{why}\n"
-                "请先安装 Python 环境：主界面 →「工具管理」→ 安装共享便携 Python，"
-                "装好后回到这里重新检测。\n"
+                f"⚠️ 暂未找到 Python 环境：{why}\n"
+                "→ 可先点「仍要添加」把实例加进列表；\n"
+                "→ 之后到主界面「工具管理」安装共享便携 Python，"
+                "或在「实例设置」里指定已有解释器，即可启动。\n"
                 "（此页面不会改动你选的实例目录）")
             self._set_mode("existing")
             p1 = self.page(0)
-            p1.setFinalPage(False)
-            self.button(QWizard.NextButton).setEnabled(False)   # 防止在实例目录上误装
-            self.button(QWizard.FinishButton).setEnabled(False)
+            p1.setFinalPage(True)
+            self.setButtonText(QWizard.NextButton, "仍要添加")
+            self.button(QWizard.NextButton).setEnabled(True)
+            self.button(QWizard.FinishButton).hide()
             return
         if _instance_broken:
             self.lb_scan.setText(
@@ -1119,11 +1128,8 @@ class SetupWizard(QWizard):
             comfy = self._scan_candidates[min(idx, len(self._scan_candidates) - 1)]
             pyv = self._py_map.get(comfy) or ""
             python_exe = pyv[0] if isinstance(pyv, list) else pyv
-            if not python_exe:
-                QMessageBox.warning(self, "ComfyHub",
-                                    "该 ComfyUI 未找到配套 Python，无法直接添加。\n"
-                                    "请改走安装流程。")
-                return
+            # 无配套 Python 也允许添加（python_path 留空）：
+            # 与「仍要添加」的承诺一致——先加进列表，之后在实例设置里再指定解释器
             self.setup_result = {
                 "comfyui_path": comfy,
                 "python_path": python_exe,
