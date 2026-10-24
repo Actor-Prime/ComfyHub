@@ -55,13 +55,14 @@ VIAddVersionKey "LegalCopyright"  "MIT License"
 !define MUI_LICENSEPAGE_CHECKBOX            ; 用勾选框，必须打勾才能下一步
 !define MUI_LICENSEPAGE_CHECKBOX_TEXT "我已阅读并同意以上条款，愿意承担相应使用责任"
 
+!define MUI_FINISHPAGE_RUN "$INSTDIR\${APP_EXE}"
+!define MUI_FINISHPAGE_RUN_TEXT "立即运行 ${APP_NAME}"
 !define MUI_FINISHPAGE_TEXT  "已经成功安装到本机。桌面快捷方式可随时启动 ComfyHub。"
 !insertmacro MUI_PAGE_WELCOME
 ; 用户同意书：必须勾选"我接受"才能继续
 !insertmacro MUI_PAGE_LICENSE "..\docs\DISCLAIMER_unicode.txt"
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
-!define MUI_PAGE_CUSTOMFUNCTION_SHOW FinishShowFix
 !insertmacro MUI_PAGE_FINISH
 
 !insertmacro MUI_UNPAGE_WELCOME
@@ -73,6 +74,8 @@ VIAddVersionKey "LegalCopyright"  "MIT License"
 !insertmacro MUI_LANGUAGE "English"
 
 ; ---------- onInit：读回安装路径 + 处理运行中的实例 ----------
+Var RunLabelChecked
+
 Function .onInit
     ReadRegStr $0 HKCU "Software\${APP_NAME}" "InstallDir"
     ${If} $0 != ""
@@ -142,12 +145,6 @@ Section "文档"
 SectionEnd
 
 ; ---------- 卸载 ----------
-Function FinishShowFix
-    ; 完成页显示时重新上色（创建时设的颜色会被 Win11 混合暗色模式重置）
-    SetCtlColors $mui.FinishPage.Title "FFFFFF" "0F141B"
-    SetCtlColors $mui.FinishPage.Text "FFFFFF" "0F141B"
-FunctionEnd
-
 Function un.onInit
     ; 不再询问"确定要卸载吗"——从控制面板主动卸载已是明确意图
     ; 唯一的询问是卸载末尾的"是否同时删除配置目录"（默认删除）
@@ -179,7 +176,7 @@ Section "Uninstall"
     Delete "$INSTDIR\DISCLAIMER_unicode.txt"
     ; ★ 大量小文件（Qt _internal 有数千个）用系统 rd 批量删比 RMDir 快几十倍
     ;   （实测 NSIS 的 RMDir /r 删 118MB 要 5 分钟，rd 只要几秒）
-    nsExec::ExecToStack 'rd /s /q "$INSTDIR\_internal"'
+    nsExec::ExecToStack 'cmd /c rd /s /q "$INSTDIR\_internal"'
     Pop $0
     Sleep 200
     RMDir /r /REBOOTOK "$INSTDIR\_internal"    ; rd 失败时兜底
@@ -205,7 +202,7 @@ Section "Uninstall"
             "配置目录已保留：$\r$\n$APPDATA\ComfyHub$\r$\n$\r$\n重装后无需重新配置。"
         Goto cfgDone
     delCfg:
-        nsExec::ExecToStack 'rd /s /q "$APPDATA\ComfyHub"'
+        nsExec::ExecToStack 'cmd /c rd /s /q "$APPDATA\ComfyHub"'
         Pop $0
         RMDir /r /REBOOTOK "$APPDATA\ComfyHub"
     cfgDone:
