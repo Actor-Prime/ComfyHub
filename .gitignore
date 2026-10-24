@@ -50,3 +50,7 @@ desktop.ini
 /ComfyHub.spec
 tools/mingw64/
 tools/mingw64/
+tools/mingw64/
+tools/.BUILDINFO
+tools/.MTREE
+tools/.PKGINFO
