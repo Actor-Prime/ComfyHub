@@ -5,7 +5,7 @@
 """
 import os
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal, QSettings
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTableWidget,
     QTableWidgetItem, QHeaderView, QMessageBox, QLineEdit, QProgressBar,
@@ -178,6 +178,17 @@ class ModelMarketWidget(QWidget):
         root.addLayout(head)
 
         bar = QHBoxLayout()
+        self.cb_source = QComboBox()
+        self.cb_source.addItem("hf-mirror（国内直连）", "mirror")
+        self.cb_source.addItem("huggingface.co（需代理）", "hf")
+        settings = QSettings("LeiMengStudio", "ComfyHub")
+        saved = settings.value("model_source", "mirror")
+        idx = max(0, self.cb_source.findData(saved))
+        self.cb_source.setCurrentIndex(idx)
+        ms.set_source(self.cb_source.currentData())
+        self.cb_source.currentIndexChanged.connect(self._on_source)
+        self.cb_source.setToolTip("选择模型数据源：\n国内直连 = hf-mirror.com 全量镜像\n官方 = huggingface.co（更新更及时，需系统代理）")
+        bar.addWidget(self.cb_source)
         self.ed_search = QLineEdit()
         self.ed_search.setPlaceholderText("搜索模型：sdxl checkpoint / flux lora / vae…（回车）")
         self.ed_search.returnPressed.connect(self._do_search)
@@ -219,6 +230,12 @@ class ModelMarketWidget(QWidget):
         b_cancel.clicked.connect(self._cancel_dl)
         prog.addWidget(b_cancel)
         root.addLayout(prog)
+
+    def _on_source(self):
+        mode = self.cb_source.currentData()
+        ms.set_source(mode)
+        QSettings("LeiMengStudio", "ComfyHub").setValue("model_source", mode)
+        self.lb_stat.setText(f"数据源已切换：{self.cb_source.currentText()}")
 
     # -------------------------------------------------- 搜索
     def _do_search(self):
