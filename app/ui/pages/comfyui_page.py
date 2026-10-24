@@ -6,7 +6,7 @@ from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
     QComboBox, QSpinBox, QCheckBox, QFileDialog, QMessageBox, QFrame,
-    QScrollArea, QGroupBox,
+    QScrollArea, QGroupBox, QTableWidget, QTableWidgetItem, QHeaderView
 )
 
 from app.config import VRAM_MODES, save_config
@@ -46,6 +46,7 @@ class _KernelWorker(QThread):
     sig_log = Signal(str)
     sig_tags = Signal(list)
     sig_switch = Signal(bool, str)
+    sig_versions = Signal(list)
 
     def __init__(self, km, action, tag="", python=""):
         super().__init__()
@@ -56,11 +57,26 @@ class _KernelWorker(QThread):
 
     def run(self):
         try:
-            if self.action == "tags":
-                self.sig_log.emit("[内核] 拉取版本标签…")
-                tags = self.km.list_tags()
-                self.sig_log.emit(f"[内核] 取到 {len(tags)} 个标签")
-                self.sig_tags.emit(tags)
+            if self.action == "versions":
+                self.sig_log.emit("[内核] 拉取版本列表…")
+                versions = self.km.list_versions(50)
+                self.sig_log.emit(f"[内核] 取到 {len(versions)} 个版本")
+                self.sig_versions.emit(versions)
+                return
+            if self.action == "update":
+                self.sig_log.emit("[内核] 更新至最新稳定版…")
+                ok, msg = self.km.update_stable()
+                self.sig_log.emit(f"[内核] 更新: {'OK' if ok else '失败'} {msg[:200]}")
+                if ok and self.python:
+                    from app import bootstrap
+                    self.sig_log.emit("[内核] 安装该版本要求的依赖…")
+                    try:
+                        bootstrap.install_comfyui_requirements(
+                            self.python, self.km.path, log=self.sig_log.emit)
+                        self.sig_log.emit("[内核] 依赖已同步")
+                    except Exception as e:
+                        self.sig_log.emit(f"[内核] 依赖安装异常（可稍后手动装）: {e}")
+                self.sig_switch.emit(ok, msg)
                 return
             # switch
             self.sig_log.emit(f"[内核] 切换到 {self.tag} …")
@@ -173,20 +189,39 @@ class ComfyuiPage(QWidget):
         h_k = QHBoxLayout()
         self.lb_kver = QLabel("…")
         self.lb_kver.setStyleSheet("color:#e8eef7;")
-        self.cb_ktag = QComboBox()
-        self.cb_ktag.setMinimumWidth(150)
-        b_krefresh = QPushButton("刷新版本")
-        b_krefresh.clicked.connect(self._refresh_tags)
-        b_kswitch = QPushButton("切换并装依赖")
-        b_kswitch.setProperty("accent", True)
-        b_kswitch.clicked.connect(self._switch_kernel)
         h_k.addWidget(self.lb_kver, 1)
-        h_k.addWidget(QLabel("目标:"))
-        h_k.addWidget(self.cb_ktag)
+        self.b_kupdate = QPushButton("⬆ 更新至最新稳定版")
+        self.b_kupdate.setProperty("accent", True)
+        self.b_kupdate.clicked.connect(self._update_stable)
+        b_krefresh = QPushButton("刷新版本")
+        b_krefresh.clicked.connect(self._refresh_versions)
+        self.ed_ksearch = QLineEdit()
+        self.ed_ksearch.setPlaceholderText("按版本 ID 搜索")
+        self.ed_ksearch.setFixedWidth(150)
+        self.ed_ksearch.textChanged.connect(lambda _t: self._filter_versions())
+        self.cb_kkind = QComboBox()
+        self.cb_kkind.addItems(["全部", "稳定版", "开发版"])
+        self.cb_kkind.currentIndexChanged.connect(lambda _i: self._filter_versions())
+        h_k.addWidget(self.b_kupdate)
         h_k.addWidget(b_krefresh)
-        h_k.addWidget(b_kswitch)
+        h_k.addWidget(self.ed_ksearch)
+        h_k.addWidget(self.cb_kkind)
         wrap_k = QWidget(); wrap_k.setLayout(h_k)
-        root.addWidget(_Row("版本切换", "按 git tag 切换内核（如回退到旧版救火），切换后自动安装配套依赖", wrap_k))
+        root.addWidget(_Row("内核版本管理", "一键更新到最新稳定版，或按版本回滚（切换后自动安装配套依赖）", wrap_k))
+
+        # 版本表格（版本 ID | 更新时间 | 类型 | 操作）
+        self.tb_kver = QTableWidget(0, 4)
+        self.tb_kver.setHorizontalHeaderLabels(["版本 ID", "更新时间", "类型", "操作"])
+        hh_k = self.tb_kver.horizontalHeader()
+        hh_k.setSectionResizeMode(0, QHeaderView.Stretch)
+        hh_k.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        hh_k.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        hh_k.setSectionResizeMode(3, QHeaderView.Fixed)
+        self.tb_kver.setColumnWidth(3, 150)
+        self.tb_kver.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.tb_kver.setSelectionBehavior(QTableWidget.SelectRows)
+        self.tb_kver.setMaximumHeight(240)
+        root.addWidget(self.tb_kver)
 
         # ---- 高级设置 ----
         lb2 = QLabel("高级设置")
@@ -311,37 +346,69 @@ class ComfyuiPage(QWidget):
             self.lb_kver.setText(f"读取版本失败：{e}")
             self.lb_kver.setStyleSheet("color:#e8635a;")
 
-    def _refresh_tags(self):
+    def _refresh_versions(self):
         inst = self.mainwin.current_inst()
         if not inst:
             return
         km = self._km()
         if not km or not km.is_git_repo:
             QMessageBox.information(self, "内核版本",
-                                    "该实例不是 git 仓库（可能是 zip 安装），无法按标签切换版本。")
+                                    "该实例不是 git 仓库（可能是 zip 安装），无法按版本切换。")
             return
         if getattr(self, "_kw", None) and self._kw.isRunning():
             return
-        self.lb_kver.setText("正在拉取版本标签…")
-        self._kw = _KernelWorker(km, "tags")
+        self.lb_kver.setText("正在拉取版本列表…")
+        self._kw = _KernelWorker(km, "versions")
         self._kw.sig_log.connect(self.mainwin.console_page.append_line)
-        self._kw.sig_tags.connect(self._on_tags)
+        self._kw.sig_versions.connect(self._on_versions)
         self._kw.start()
 
-    def _on_tags(self, tags):
-        self.cb_ktag.clear()
-        if tags:
-            self.cb_ktag.addItems(tags)
-            self._refresh_kernel_info()
-            self.lb_kver.setText(self.lb_kver.text() + f"　·　{len(tags)} 个版本可选")
-        else:
-            self.lb_kver.setText("未取到任何版本标签（检查网络 / 代理设置）")
+    def _on_versions(self, versions):
+        self._all_versions = versions
+        self._filter_versions()
+        self._refresh_kernel_info()
+        self.lb_kver.setText(self.lb_kver.text() + f"　·　{len(versions)} 个版本")
 
-    def _switch_kernel(self):
+    def _filter_versions(self):
+        kw = self.ed_ksearch.text().strip().lower()
+        kind = self.cb_kkind.currentText()
+        rows = [v for v in getattr(self, "_all_versions", [])
+                if (kind == "全部" or v["kind"] == kind)
+                and (not kw or kw in v["version"].lower() or kw in v["hash"].lower())]
+        self.tb_kver.setRowCount(len(rows))
+        for i, v in enumerate(rows):
+            self.tb_kver.setItem(i, 0, QTableWidgetItem(v["version"]))
+            self.tb_kver.setItem(i, 1, QTableWidgetItem(v["date"]))
+            k = QTableWidgetItem(v["kind"])
+            k.setForeground(Qt.green if v["kind"] == "稳定版" else Qt.gray)
+            self.tb_kver.setItem(i, 2, k)
+            b = QPushButton("切换并装依赖")
+            b.clicked.connect(lambda _c=False, tag=v["version"]: self._switch_kernel(tag))
+            self.tb_kver.setCellWidget(i, 3, b)
+
+    def _update_stable(self):
         inst = self.mainwin.current_inst()
-        tag = self.cb_ktag.currentText().strip()
+        if not inst:
+            return
+        km = self._km()
+        if not km or not km.is_git_repo:
+            QMessageBox.information(self, "内核版本",
+                                    "该实例不是 git 仓库（可能是 zip 安装），无法在线更新。")
+            return
+        if self.mainwin.procs.is_running(inst):
+            QMessageBox.warning(self, "内核版本", "请先停止该实例再更新内核")
+            return
+        if getattr(self, "_kw", None) and self._kw.isRunning():
+            return
+        self._kw = _KernelWorker(km, "update", python=inst.get("python_path") or "")
+        self._kw.sig_log.connect(self.mainwin.console_page.append_line)
+        self._kw.sig_switch.connect(self._on_switched)
+        self._kw.start()
+        self.lb_kver.setText("正在更新至最新稳定版…（含依赖安装，可能需要几分钟）")
+
+    def _switch_kernel(self, tag):
+        inst = self.mainwin.current_inst()
         if not inst or not tag:
-            QMessageBox.information(self, "内核版本", "请先「刷新版本」并选择目标版本")
             return
         if self.mainwin.procs.is_running(inst):
             QMessageBox.warning(self, "内核版本", "请先停止该实例再切换内核版本")

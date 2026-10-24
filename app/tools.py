@@ -43,6 +43,72 @@ class KernelManager:
         except Exception:
             return []
 
+    def stable_branch(self) -> str:
+        """稳定分支名（master 或 main）"""
+        for b in ("master", "main"):
+            r = run([self.git, "-C", self.path, "rev-parse", "--verify", b],
+                    capture_output=True, timeout=30)
+            if r.returncode == 0:
+                return b
+        return "master"
+
+    def update_stable(self) -> tuple:
+        """更新至最新稳定版：checkout 稳定分支 + pull（未提交改动先 stash）"""
+        if not self.is_git_repo:
+            return False, "该实例不是 git 仓库（zip 安装），请重新以 git 方式安装"
+        b = self.stable_branch()
+        try:
+            run([self.git, "-C", self.path, "stash"],
+                capture_output=True, timeout=60)
+            run([self.git, "-C", self.path, "checkout", b],
+                capture_output=True, timeout=120)
+            r = run([self.git, "-C", self.path, "pull", "--ff-only"],
+                    capture_output=True, text=True, timeout=600,
+                    encoding="utf-8", errors="replace")
+            ok = r.returncode == 0
+            msg = ((r.stdout or "") + (r.stderr or "")).strip()[:400]
+            return ok, (msg if ok else f"pull 失败（可稍后重试或手动 git pull）: {msg[:200]}")
+        except Exception as e:
+            return False, str(e)
+
+    def list_versions(self, limit=50) -> list:
+        """版本列表（tag=稳定版优先）：[{version, hash, date, kind}]"""
+        if not self.is_git_repo:
+            return []
+        out = []
+        try:
+            # tag（稳定版）：名字|短hash|日期
+            r = run([self.git, "-C", self.path, "for-each-ref",
+                     "refs/tags", "--sort=-creatordate",
+                     "--format=%(refname:short)|%(objectname:short)|%(creatordate:short)"],
+                    capture_output=True, text=True, timeout=60,
+                    encoding="utf-8", errors="replace")
+            for line in (r.stdout or "").splitlines():
+                parts = line.split("|")
+                if len(parts) == 3:
+                    out.append({"version": parts[0], "hash": parts[1],
+                                "date": parts[2], "kind": "稳定版"})
+        except Exception:
+            pass
+        try:
+            # 最近提交（开发版）
+            r = run([self.git, "-C", self.path, "log", f"-{limit}",
+                     "--format=%h|%cd|%s", "--date=short"],
+                    capture_output=True, text=True, timeout=60,
+                    encoding="utf-8", errors="replace")
+            for line in (r.stdout or "").splitlines():
+                parts = line.split("|", 2)
+                if len(parts) == 3:
+                    tag_names = {v["hash"] for v in out}
+                    if parts[0] not in tag_names:
+                        out.append({"version": parts[2][:40] or parts[0],
+                                    "hash": parts[0], "date": parts[1],
+                                    "kind": "开发版"})
+        except Exception:
+            pass
+        return out[:limit]
+
+
     def switch_to(self, tag: str) -> tuple:
         """检出指定版本（未提交改动会 stash 保存）"""
         if not self.is_git_repo:
