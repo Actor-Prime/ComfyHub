@@ -38,6 +38,9 @@ def _fmt_size(n: int) -> str:
     return f"{n / 1024:.0f} KB"
 
 
+from app.ui.pages.model_market_widget import ModelMarketWidget
+
+
 class ModelsPage(QWidget):
     def __init__(self, cfg, mainwin):
         super().__init__()
@@ -60,6 +63,10 @@ class ModelsPage(QWidget):
         t = QLabel("模型库")
         t.setStyleSheet("font-size:17px; font-weight:bold; color:#fff;")
         root.addWidget(t)
+
+        # 在线市场（搜索 hf-mirror → 选文件 → 下载到 models 分类目录）
+        self.market = ModelMarketWidget(self.cfg, self.mainwin)
+        root.addWidget(self.market)
 
         # 下载区（单行分组）
         g = QGroupBox("下载模型（直链 · 断点续传）")
@@ -152,7 +159,7 @@ class ModelsPage(QWidget):
         if not inst:
             self.tb.setColumnCount(3)
             self.tb.setHorizontalHeaderLabels(["提示", "", ""])
-            self._add_row("（未选择实例）", "-", "-")
+            self._add_row(["（未选择实例）", "-", "-"])
             return
         cat = self._cur_cat()
         kw = self.ed_search.text().strip()
