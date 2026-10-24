@@ -176,7 +176,7 @@ Section "Uninstall"
     Delete "$INSTDIR\DISCLAIMER_unicode.txt"
     ; ★ 大量小文件（Qt _internal 有数千个）用系统 rd 批量删比 RMDir 快几十倍
     ;   （实测 NSIS 的 RMDir /r 删 118MB 要 5 分钟，rd 只要几秒）
-    nsExec::ExecToStack 'rd /s /q "$INSTDIR\_internal"'
+    nsExec::ExecToStack 'cmd /c rd /s /q "$INSTDIR\_internal"'
     Pop $0
     Sleep 200
     RMDir /r /REBOOTOK "$INSTDIR\_internal"    ; rd 失败时兜底
@@ -202,7 +202,7 @@ Section "Uninstall"
             "配置目录已保留：$\r$\n$APPDATA\ComfyHub$\r$\n$\r$\n重装后无需重新配置。"
         Goto cfgDone
     delCfg:
-        nsExec::ExecToStack 'rd /s /q "$APPDATA\ComfyHub"'
+        nsExec::ExecToStack 'cmd /c rd /s /q "$APPDATA\ComfyHub"'
         Pop $0
         RMDir /r /REBOOTOK "$APPDATA\ComfyHub"
     cfgDone:
