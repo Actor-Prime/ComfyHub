@@ -63,7 +63,6 @@ VIAddVersionKey "LegalCopyright"  "MIT License"
 !insertmacro MUI_PAGE_LICENSE "..\docs\DISCLAIMER_unicode.txt"
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
-!define MUI_PAGE_CUSTOMFUNCTION_SHOW FinishShowFix
 !insertmacro MUI_PAGE_FINISH
 
 !insertmacro MUI_UNPAGE_WELCOME
@@ -146,18 +145,6 @@ Section "文档"
 SectionEnd
 
 ; ---------- 卸载 ----------
-Function FinishShowFix
-    ; 完成页控件 ID（UIA 实测）：1201=标题 1202=正文 1203=RUN checkbox
-    ; 创建时设的颜色会被 Win11 混合暗色模式重置 → 显示时按 ID 重新上色
-    GetDlgItem $0 $HWNDPARENT 1201
-    SetCtlColors $0 "FFFFFF" "0F141B"
-    GetDlgItem $0 $HWNDPARENT 1202
-    SetCtlColors $0 "FFFFFF" "0F141B"
-    GetDlgItem $0 $HWNDPARENT 1203
-    System::Call 'UXTHEME::SetWindowTheme(p$0, w" ", w" ")'   ; bug #443：先移除主题
-    SetCtlColors $0 "FFFFFF" "0F141B"                          ; 再上白字
-FunctionEnd
-
 Function un.onInit
     ; 不再询问"确定要卸载吗"——从控制面板主动卸载已是明确意图
     ; 唯一的询问是卸载末尾的"是否同时删除配置目录"（默认删除）
