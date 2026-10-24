@@ -12,7 +12,7 @@ Unicode true
 ; ---------- 基本信息 ----------
 !define APP_NAME       "ComfyHub"
 !define APP_NAME_CN    "ComfyHub 多实例管理器"
-!define APP_VERSION    "0.7.9"
+!define APP_VERSION    "0.8.0"
 !define APP_PUBLISHER  "LeiMengStudio"
 !define APP_URL        "https://gitee.com/yzdydwdd/ComfyHub"
 !define APP_EXE        "ComfyHub.exe"
