@@ -106,6 +106,12 @@ QPushButton[success="true"] {
     color: white;
 }
 QPushButton[success="true"]:hover { background: #37a063; }
+/* 禁用态统一灰色（含 success/danger/accent 等彩色按钮，避免"看着能点"） */
+QPushButton:disabled {
+    background: #232830;
+    border: 1px solid #2a3038;
+    color: #5a6472;
+}
 
 /* ===== 标签页 ===== */
 QTabWidget::pane {
