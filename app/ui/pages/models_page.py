@@ -1,5 +1,11 @@
 # -*- coding: utf-8 -*-
-"""模型库页：类别标签页（对标绘世模型管理）+ 文件明细 + 搜索 + 导入(复制/剪切) + URL 下载"""
+"""模型库页：本地模型列表（主角）+ 添加模型（在线下载 Tab）+ 下载中心指示器（右上角下拉）
+
+交互（对齐插件页模式）：
+  · 默认显示本地模型列表（类别筛选 + 明细）
+  · 「➕ 添加模型」→ 切到「在线下载」Tab：选源 → 搜索 → 勾文件 → 入队下载
+  · 右上角 ⬇ 指示器：点击下拉显示每个任务的实时进度
+"""
 import os
 import shutil
 import datetime
@@ -10,10 +16,13 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QComboBox,
     QPushButton, QTableWidget, QTableWidgetItem, QHeaderView,
     QPlainTextEdit, QGroupBox, QFileDialog, QMessageBox, QTabBar,
+    QTabWidget,
 )
 
 from app.tools import ModelDownloader
 from app import instance as inst_lib
+from app.ui.pages.model_market_widget import ModelMarketWidget
+from app.ui.download_center import DownloadCenter
 
 
 class DlWorker(QThread):
@@ -36,9 +45,6 @@ def _fmt_size(n: int) -> str:
     if n >= 1024 ** 2:
         return f"{n / 1024 ** 2:.1f} MB"
     return f"{n / 1024:.0f} KB"
-
-
-from app.ui.pages.model_market_widget import ModelMarketWidget
 
 
 class ModelsPage(QWidget):
@@ -64,12 +70,60 @@ class ModelsPage(QWidget):
         t.setStyleSheet("font-size:17px; font-weight:bold; color:#fff;")
         root.addWidget(t)
 
-        # 在线市场（搜索 hf-mirror → 选文件 → 下载到 models 分类目录）
-        self.market = ModelMarketWidget(self.cfg, self.mainwin)
-        root.addWidget(self.market)
+        # 标题行：实例信息 | stretch | 下载中心指示器（右上角下拉）
+        head = QHBoxLayout()
+        self.lb_inst = QLabel()
+        self.lb_inst.setStyleSheet("color:#9aa4b2;")
+        head.addWidget(self.lb_inst)
+        head.addStretch()
+        self.dl_center = DownloadCenter()
+        self.dl_center.sig_queue_done.connect(lambda *_: self.refresh_stats())
+        head.addWidget(self.dl_center)
+        root.addLayout(head)
 
-        # 下载区（单行分组）
-        g = QGroupBox("下载模型（直链 · 断点续传）")
+        # 操作行：添加模型（主入口）+ 本地库操作
+        h2 = QHBoxLayout()
+        b_add = QPushButton("➕ 添加模型")
+        b_add.setProperty("accent", True)
+        b_add.clicked.connect(self._go_market)
+        h2.addWidget(b_add)
+        self.ed_search = QLineEdit()
+        self.ed_search.setPlaceholderText("🔍 搜索本地模型文件名…")
+        self.ed_search.textChanged.connect(lambda _t: self.refresh_stats())
+        h2.addWidget(self.ed_search, 1)
+        b_refresh = QPushButton("🔄 刷新列表")
+        b_refresh.clicked.connect(self.refresh_stats)
+        b_import = QPushButton("📥 导入模型文件")
+        b_import.clicked.connect(self._import_files)
+        b_open = QPushButton("📂 打开文件夹")
+        b_open.clicked.connect(self._open_dir)
+        h2.addWidget(b_refresh)
+        h2.addWidget(b_import)
+        h2.addWidget(b_open)
+        root.addLayout(h2)
+
+        # 双 Tab：本地模型（默认）/ 在线下载
+        self.tabs2 = QTabWidget()
+        self.tabs2.addTab(self._build_local_tab(), "💾 本地模型")
+        self.market = ModelMarketWidget(self.cfg, self.mainwin)
+        self.market.dl_center = self.dl_center            # 下载统一走下载中心
+        self.tabs2.addTab(self.market, "🛒 在线下载")
+        self.tabs2.currentChanged.connect(self._on_main_tab)
+        root.addWidget(self.tabs2, 1)
+
+        self.log = QPlainTextEdit()
+        self.log.setReadOnly(True)
+        self.log.setObjectName("LogConsole")
+        self.log.setMaximumHeight(110)
+        root.addWidget(self.log, 0)
+
+    def _build_local_tab(self) -> QWidget:
+        w = QWidget()
+        lv = QVBoxLayout(w)
+        lv.setContentsMargins(0, 6, 0, 0)
+
+        # 直链下载（高级功能）
+        g = QGroupBox("直链下载（断点续传 · CivitAI / HuggingFace 链接）")
         h1 = QHBoxLayout(g)
         self.ed_url = QLineEdit()
         self.ed_url.setPlaceholderText(
@@ -79,37 +133,18 @@ class ModelsPage(QWidget):
         self.cb_sub.addItems(ModelDownloader("").MODEL_SUBDIRS)
         h1.addWidget(self.cb_sub)
         b_dl = QPushButton("⬇ 下载")
-        b_dl.setProperty("accent", True)
         b_dl.clicked.connect(self._download)
         h1.addWidget(b_dl)
-        root.addWidget(g)
+        lv.addWidget(g)
 
-        # 类别标签页（对标绘世：顶部横排 tab）
+        # 类别标签（顶部横排）
         self.tabs = QTabBar()
         self.tabs.addTab("全部")
         for sub in ModelDownloader("").MODEL_SUBDIRS:
             self.tabs.addTab(sub)
         self.tabs.setExpanding(False)
         self.tabs.currentChanged.connect(lambda _i: self.refresh_stats())
-        root.addWidget(self.tabs)
-
-        # 工具行：搜索 + 操作
-        h2 = QHBoxLayout()
-        self.ed_search = QLineEdit()
-        self.ed_search.setPlaceholderText("🔍 搜索模型文件名…")
-        self.ed_search.textChanged.connect(lambda _t: self.refresh_stats())
-        h2.addWidget(self.ed_search, 1)
-        b_refresh = QPushButton("🔄 刷新列表")
-        b_refresh.clicked.connect(self.refresh_stats)
-        b_import = QPushButton("📥 导入模型文件")
-        b_import.setProperty("accent", True)
-        b_import.clicked.connect(self._import_files)
-        b_open = QPushButton("📂 打开文件夹")
-        b_open.clicked.connect(self._open_dir)
-        h2.addWidget(b_refresh)
-        h2.addWidget(b_import)
-        h2.addWidget(b_open)
-        root.addLayout(h2)
+        lv.addWidget(self.tabs)
 
         # 文件明细表
         self.tb = QTableWidget(0, 3)
@@ -117,13 +152,16 @@ class ModelsPage(QWidget):
         self.tb.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.tb.setEditTriggers(QTableWidget.NoEditTriggers)
         self.tb.setSelectionBehavior(QTableWidget.SelectRows)
-        root.addWidget(self.tb, 1)
+        lv.addWidget(self.tb, 1)
+        return w
 
-        self.log = QPlainTextEdit()
-        self.log.setReadOnly(True)
-        self.log.setObjectName("LogConsole")
-        self.log.setMaximumHeight(120)
-        root.addWidget(self.log, 0)
+    def _go_market(self):
+        self.tabs2.setCurrentWidget(self.market)
+        self.market.ed_search.setFocus()
+
+    def _on_main_tab(self, i):
+        if self.tabs2.tabText(i).startswith("💾"):
+            self.refresh_stats()
 
     # ---------- 数据 ----------
     def _cur_cat(self) -> str:
@@ -170,7 +208,7 @@ class ModelsPage(QWidget):
             files = self._list_files(cat, kw)
             if not files:
                 self._add_row(["（此类别暂无文件）", "-",
-                               "点「导入模型文件」或用上方直链下载"],
+                               "点「➕ 添加模型」在线下载，或「导入模型文件」"],
                               {0: "#7d8797"})
             for name, size, mtime in files:
                 dt = datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
@@ -181,7 +219,7 @@ class ModelsPage(QWidget):
             self.tb.setHorizontalHeaderLabels(["类别", "文件数", "总体积"])
             rows = inst_lib.model_stats(inst["comfyui_path"])
             if not rows:
-                self._add_row(["（models 目录为空）", "-", "选类别标签后点「导入模型文件」"],
+                self._add_row(["（models 目录为空）", "-", "点「➕ 添加模型」在线下载"],
                               {0: "#7d8797"})
             for cat_name, cnt, gb in rows:
                 if kw and kw.lower() not in cat_name.lower():
@@ -256,7 +294,7 @@ class ModelsPage(QWidget):
     def _log(self, m):
         self.log.appendPlainText(str(m))
 
-    # ---------- 下载 ----------
+    # ---------- 直链下载 ----------
     def _download(self):
         inst = self._inst()
         if not inst:

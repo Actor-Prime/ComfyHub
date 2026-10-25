@@ -106,6 +106,12 @@ QPushButton[success="true"] {
     color: white;
 }
 QPushButton[success="true"]:hover { background: #37a063; }
+/* 禁用态统一灰色（含 success/danger/accent 等彩色按钮，避免"看着能点"） */
+QPushButton:disabled {
+    background: #232830;
+    border: 1px solid #2a3038;
+    color: #5a6472;
+}
 
 /* ===== 标签页 ===== */
 QTabWidget::pane {
@@ -167,6 +173,22 @@ QComboBox QAbstractItemView {
     border: 1px solid #333c49;
     selection-background-color: #2f4a75;
 }
+
+/* ===== 复选框 ===== */
+/* ★ 必须显式画 indicator：暗色 QSS 下不写这段时 Qt 用系统默认绘制，
+   勾选框边框与深色背景融为一体，只剩一个勾（用户反馈"打勾时没有显示框"） */
+QCheckBox { color: #d8dee6; spacing: 6px; }
+QCheckBox::indicator {
+    width: 15px; height: 15px;
+    border: 1px solid #5a6a80;
+    border-radius: 3px;
+    background: #181c22;
+}
+QCheckBox::indicator:hover { border-color: #8fa3bf; }
+QCheckBox::indicator:checked { background: #2f6fed; border-color: #3d8bff; }
+QCheckBox::indicator:checked:hover { background: #4a83f2; }
+QCheckBox::indicator:disabled { background: #22262e; border-color: #3a4250; }
+QCheckBox:disabled { color: #667; }
 
 /* ===== 卡片 ===== */
 #Card {

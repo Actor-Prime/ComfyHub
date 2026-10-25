@@ -12,7 +12,7 @@ Unicode true
 ; ---------- 基本信息 ----------
 !define APP_NAME       "ComfyHub"
 !define APP_NAME_CN    "ComfyHub 多实例管理器"
-!define APP_VERSION    "0.7.6"
+!define APP_VERSION    "0.8.0"
 !define APP_PUBLISHER  "LeiMengStudio"
 !define APP_URL        "https://gitee.com/yzdydwdd/ComfyHub"
 !define APP_EXE        "ComfyHub.exe"
@@ -30,7 +30,7 @@ SetCompressor /SOLID lzma
 ShowInstDetails show
 ShowUninstDetails show
 
-VIProductVersion "0.7.6.0"
+VIProductVersion "0.7.9.0"
 VIAddVersionKey "ProductName"     "${APP_NAME_CN}"
 VIAddVersionKey "FileDescription" "${APP_NAME_CN} 安装程序"
 VIAddVersionKey "FileVersion"     "${APP_VERSION}"
@@ -57,7 +57,11 @@ VIAddVersionKey "LegalCopyright"  "MIT License"
 
 !define MUI_FINISHPAGE_RUN "$INSTDIR\${APP_EXE}"
 !define MUI_FINISHPAGE_RUN_TEXT "立即运行 ${APP_NAME}"
-!define MUI_FINISHPAGE_TEXT  "已经成功安装到本机。桌面快捷方式可随时启动 ComfyHub。"
+; 第二个勾选框：创建桌面快捷方式（默认勾选，由 Finish 页的 ShowReadme 回调执行）
+!define MUI_FINISHPAGE_SHOWREADME ""
+!define MUI_FINISHPAGE_SHOWREADME_TEXT "创建桌面快捷方式"
+!define MUI_FINISHPAGE_SHOWREADME_FUNCTION CreateDesktopShortcut
+!define MUI_FINISHPAGE_TEXT  "已经成功安装到本机。"
 !insertmacro MUI_PAGE_WELCOME
 ; 用户同意书：必须勾选"我接受"才能继续
 !insertmacro MUI_PAGE_LICENSE "..\docs\DISCLAIMER_unicode.txt"
@@ -134,8 +138,17 @@ Section "快捷方式与文档"
     CreateDirectory "$SMPROGRAMS\${APP_NAME}"
     CreateShortCut "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}" 0
     CreateShortCut "$SMPROGRAMS\${APP_NAME}\卸载 ${APP_NAME}.lnk" "$INSTDIR\Uninstall.exe"
-    CreateShortCut "$DESKTOP\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}" 0
+    ; 桌面快捷方式改为完成页勾选项控制（CreateDesktopShortcut 函数）
 SectionEnd
+
+; 完成页勾选「创建桌面快捷方式」时执行
+Function CreateDesktopShortcut
+    CreateShortCut "$DESKTOP\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}" 0
+    ; 调试：确认函数被调用与桌面路径
+    FileOpen $9 "$PLUGINSDIR\..\debug_shortcut.txt" w
+    FileWrite $9 "called. desktop=$DESKTOP instdir=$INSTDIR$\r$\n"
+    FileClose $9
+FunctionEnd
 
 Section "文档"
     SetOutPath "$INSTDIR\docs"

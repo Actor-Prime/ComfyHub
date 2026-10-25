@@ -53,36 +53,73 @@ def wait_all(obj, attrs, timeout_ms=10000):
             w.wait(timeout_ms)
 
 
+# 扫描剪枝目录（小写精确匹配）：全深度递归时整棵跳过。
+# 只列"确定不可能是 ComfyUI 实例根"的系统/缓存目录——宁可多扫几层，不漏实例。
+_SCAN_PRUNE = {
+    # Windows 系统与还原目录
+    "windows", "$recycle.bin", "system volume information", "recovery",
+    "documents and settings", "perflogs", "$windows.~ws", "$win.~bt",
+    "$windows.~bt", "$sysreset", "$sysrq", "msocache",
+    # 程序安装目录（实例不会长在这里，且极深极大）
+    "program files", "program files (x86)", "program files (x7)",
+    "programdata",
+    # 源码/依赖缓存：深且杂，绝无实例
+    ".git", "node_modules", "__pycache__", "site-packages",
+    ".venv_build", "venv_build", ".cache", ".gradle", ".m2", ".npm",
+    # 系统 junction 链接（会重复遍历甚至死循环）
+    "appdata", "application data", "local settings", "onedrive",
+}
+
+
 class ScanWorker(QThread):
-    """目录扫描线程：找 main.py（含两层子目录）"""
+    """目录扫描线程：全深度递归找 ComfyUI 实例（main.py + comfy/）。
+    2026-10-24 用户要求：选盘根（如 F:\\）必须扫描全部子文件夹，不再限两层。
+    · 剪枝 _SCAN_PRUNE：系统/缓存目录整棵跳过（否则全盘扫描几万个文件夹白扫）
+    · 发现实例即收录、且不下钻其内部（插件/模型目录里可能有伪装候选）
+    · sig_progress：每检查 ~100 个文件夹发一次，UI 显示"已检查 N 个"防假死观感"""
     sig_done = Signal(str, list)   # root, candidates
+    sig_progress = Signal(int)     # 已检查文件夹数
 
     def __init__(self, root):
         super().__init__()
         self.root = root
 
+    @staticmethod
+    def _is_inst(d):
+        try:
+            from app.config import is_comfyui_dir
+            return bool(is_comfyui_dir(d))
+        except Exception:
+            return False
+
     def run(self):
         root = self.root
         candidates = []
-        search_roots = [root]
+        count = 0
+        # root 自身就是实例：直接返回（不再下钻，等价旧版"(此目录)"候选）
+        if self._is_inst(root):
+            self.sig_progress.emit(1)
+            self.sig_done.emit(root, [root])
+            return
         try:
-            for d1 in os.listdir(root):
-                p1 = os.path.join(root, d1)
-                if os.path.isdir(p1):
-                    search_roots.append(p1)
-                    for d2 in os.listdir(p1):
-                        p2 = os.path.join(p1, d2)
-                        if os.path.isdir(p2):
-                            search_roots.append(p2)
+            for dirpath, dirnames, _files in os.walk(root, topdown=True):
+                keep = []
+                for d in dirnames:
+                    if d.lower() in _SCAN_PRUNE:
+                        continue
+                    p = os.path.join(dirpath, d)
+                    if self._is_inst(p):
+                        candidates.append(p)   # 收录实例、剪掉其子树（不下钻）
+                    else:
+                        keep.append(d)
+                dirnames[:] = keep              # 就地修改 = os.walk 跳过整棵子树
+                count += 1
+                if count % 100 == 0:
+                    self.sig_progress.emit(count)
         except OSError:
             pass
-        from app.config import is_comfyui_dir
-        for sr in search_roots:
-            try:
-                if is_comfyui_dir(sr):
-                    candidates.append(sr)
-            except Exception:
-                pass
+        if count:
+            self.sig_progress.emit(count)
         self.sig_done.emit(root, candidates)
 
 

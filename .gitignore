@@ -22,12 +22,16 @@ v5_*.png
 test_*.py
 temp/
 
+# 竞品黑盒分析产物（截图不入库，结论记 docs/COMPETITORS.md）
+analysis/
+
 # ---- IDE ----
 .idea/
 .vscode/
 
-# ComfyUI 实例目录（安装产物，不入库）
+# ComfyUI 实例目录（安装产物/测试用副本，不入库）
 ComfyUI/
+ComfyUIH3/
 ComfyUIImage/
 comfyui_env/
 *.part
@@ -48,8 +52,6 @@ desktop.ini
 
 # PyInstaller 自动生成的 spec（保持根目录干净）
 /ComfyHub.spec
-tools/mingw64/
-tools/mingw64/
 tools/mingw64/
 tools/.BUILDINFO
 tools/.MTREE

@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
-"""ComfyUI 编辑页：分区表单（基础/高级设置）+ 启停 + 保存/删除（对标截图2/3）"""
+"""ComfyUI 编辑页：实例设置（基础+高级合一页，两分区标题）+ 内核版本 + 启停 + 保存/删除"""
 import os
 
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
     QComboBox, QSpinBox, QCheckBox, QFileDialog, QMessageBox, QFrame,
-    QScrollArea, QGroupBox,
+    QScrollArea, QGroupBox, QTableWidget, QTableWidgetItem, QHeaderView,
+    QTabWidget
 )
 
 from app.config import VRAM_MODES, save_config
@@ -46,6 +47,7 @@ class _KernelWorker(QThread):
     sig_log = Signal(str)
     sig_tags = Signal(list)
     sig_switch = Signal(bool, str)
+    sig_versions = Signal(list)
 
     def __init__(self, km, action, tag="", python=""):
         super().__init__()
@@ -56,11 +58,26 @@ class _KernelWorker(QThread):
 
     def run(self):
         try:
-            if self.action == "tags":
-                self.sig_log.emit("[内核] 拉取版本标签…")
-                tags = self.km.list_tags()
-                self.sig_log.emit(f"[内核] 取到 {len(tags)} 个标签")
-                self.sig_tags.emit(tags)
+            if self.action == "versions":
+                self.sig_log.emit("[内核] 拉取版本列表…")
+                versions = self.km.list_versions(50)
+                self.sig_log.emit(f"[内核] 取到 {len(versions)} 个版本")
+                self.sig_versions.emit(versions)
+                return
+            if self.action == "update":
+                self.sig_log.emit("[内核] 更新至最新稳定版…")
+                ok, msg = self.km.update_stable()
+                self.sig_log.emit(f"[内核] 更新: {'OK' if ok else '失败'} {msg[:200]}")
+                if ok and self.python:
+                    from app import bootstrap
+                    self.sig_log.emit("[内核] 安装该版本要求的依赖…")
+                    try:
+                        bootstrap.install_comfyui_requirements(
+                            self.python, self.km.path, log=self.sig_log.emit)
+                        self.sig_log.emit("[内核] 依赖已同步")
+                    except Exception as e:
+                        self.sig_log.emit(f"[内核] 依赖安装异常（可稍后手动装）: {e}")
+                self.sig_switch.emit(ok, msg)
                 return
             # switch
             self.sig_log.emit(f"[内核] 切换到 {self.tag} …")
@@ -96,17 +113,6 @@ class ComfyuiPage(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        outer.addWidget(scroll, 1)
-
-        body = QWidget()
-        scroll.setWidget(body)
-        root = QVBoxLayout(body)
-        root.setContentsMargins(18, 14, 18, 18)
-        root.setSpacing(8)
-
         # ---- 快捷操作行 ----
         bar = QHBoxLayout()
         self.b_start = QPushButton("▶ 启动")
@@ -128,15 +134,24 @@ class ComfyuiPage(QWidget):
         bar.addWidget(self.b_batch)
         bar.addStretch()
         bar.addWidget(self.lb_state)
-        root.addLayout(bar)
+        outer.addLayout(bar)
 
-        # ---- 基础设置 ----
+
+        # ---- 两 Tab：实例设置（基础+高级合一页）/ 内核版本 ----
+        # 2026-10-25 用户要求：基础设置和高级设置不要分开页面，合并成一页
+        self.tabs = QTabWidget()
+        self.tabs.setContentsMargins(8, 8, 8, 0)
+        outer.addWidget(self.tabs, 1)
+
+        # ---- Tab1 实例设置：基础区块 + 高级区块（同页两个分区标题）----
+        t1 = QWidget(); t1v = QVBoxLayout(t1)
+        t1v.setContentsMargins(18, 14, 18, 14); t1v.setSpacing(8)
         lb1 = QLabel("基础设置")
         lb1.setObjectName("SectionLabel")
-        root.addWidget(lb1)
+        t1v.addWidget(lb1)
 
         self.ed_name = QLineEdit()
-        root.addWidget(_Row("整合包名称", "实例显示名称", self.ed_name))
+        t1v.addWidget(_Row("整合包名称", "实例显示名称", self.ed_name))
 
         h_dir = QHBoxLayout()
         self.ed_path = QLineEdit();  self.ed_path.setReadOnly(True)
@@ -145,7 +160,7 @@ class ComfyuiPage(QWidget):
         h_dir.addWidget(self.ed_path, 1)
         h_dir.addWidget(b_dir)
         wrap1 = QWidget(); wrap1.setLayout(h_dir)
-        root.addWidget(_Row("根目录", "包含 main.py 的 ComfyUI 目录", wrap1))
+        t1v.addWidget(_Row("根目录", "包含 main.py 的 ComfyUI 目录", wrap1))
 
         h_models = QHBoxLayout()
         self.ed_models = QLineEdit(); self.ed_models.setReadOnly(True)
@@ -154,7 +169,7 @@ class ComfyuiPage(QWidget):
         h_models.addWidget(self.ed_models, 1)
         h_models.addWidget(b_models)
         wrap2 = QWidget(); wrap2.setLayout(h_models)
-        root.addWidget(_Row("模型目录", "checkpoints/loras/vae 等模型的存放位置", wrap2))
+        t1v.addWidget(_Row("模型目录", "checkpoints/loras/vae 等模型的存放位置", wrap2))
 
         h_py = QHBoxLayout()
         self.ed_python = QLineEdit()
@@ -163,39 +178,17 @@ class ComfyuiPage(QWidget):
         h_py.addWidget(self.ed_python, 1)
         h_py.addWidget(b_py)
         wrap3 = QWidget(); wrap3.setLayout(h_py)
-        root.addWidget(_Row("Python 路径", "实例配套的解释器（建议用独立 venv）", wrap3))
+        t1v.addWidget(_Row("Python 路径", "实例配套的解释器（建议用独立 venv）", wrap3))
 
-        # ---- 内核版本 ----
-        lb_k = QLabel("内核版本")
-        lb_k.setObjectName("SectionLabel")
-        root.addWidget(lb_k)
-
-        h_k = QHBoxLayout()
-        self.lb_kver = QLabel("…")
-        self.lb_kver.setStyleSheet("color:#e8eef7;")
-        self.cb_ktag = QComboBox()
-        self.cb_ktag.setMinimumWidth(150)
-        b_krefresh = QPushButton("刷新版本")
-        b_krefresh.clicked.connect(self._refresh_tags)
-        b_kswitch = QPushButton("切换并装依赖")
-        b_kswitch.setProperty("accent", True)
-        b_kswitch.clicked.connect(self._switch_kernel)
-        h_k.addWidget(self.lb_kver, 1)
-        h_k.addWidget(QLabel("目标:"))
-        h_k.addWidget(self.cb_ktag)
-        h_k.addWidget(b_krefresh)
-        h_k.addWidget(b_kswitch)
-        wrap_k = QWidget(); wrap_k.setLayout(h_k)
-        root.addWidget(_Row("版本切换", "按 git tag 切换内核（如回退到旧版救火），切换后自动安装配套依赖", wrap_k))
-
-        # ---- 高级设置 ----
+        # ---- 同页第二分区：高级设置 ----
+        t1v.addSpacing(10)
         lb2 = QLabel("高级设置")
         lb2.setObjectName("SectionLabel")
-        root.addWidget(lb2)
+        t1v.addWidget(lb2)
 
         self.sp_port = QSpinBox()
         self.sp_port.setRange(1024, 65535)
-        root.addWidget(_Row("启动端口", "用于访问 ComfyUI 的 HTTP 端口（默认 8188）", self.sp_port))
+        t1v.addWidget(_Row("启动端口", "用于访问 ComfyUI 的 HTTP 端口（默认 8188）", self.sp_port))
 
         # 生成设备：GPU/CPU 切换（objectName 驱动选中样式）
         dev = QWidget()
@@ -210,51 +203,105 @@ class ComfyuiPage(QWidget):
         self.b_cpu.clicked.connect(lambda: self._set_device(False))
         dv.addWidget(self.b_gpu)
         dv.addWidget(self.b_cpu)
-        root.addWidget(_Row("生成设备", "GPU 使用显卡加速 / CPU 仅调试用", dev))
+        t1v.addWidget(_Row("生成设备", "GPU 使用显卡加速 / CPU 仅调试用", dev))
         self._use_gpu = True
 
         self.cb_vram = QComboBox()
         self.cb_vram.addItems(VRAM_MODES.keys())
-        root.addWidget(_Row("CPU/显存优化", "按显存大小选择优化级别（低配选低显存）", self.cb_vram))
+        t1v.addWidget(_Row("CPU/显存优化", "按显存大小选择优化级别（低配选低显存）", self.cb_vram))
 
         self.cb_ca = QComboBox()
         self.cb_ca.addItems(["自动", "Quad（省显存）", "Split（更快）", "PyTorch SDP"])
-        root.addWidget(_Row("Cross Attention 优化", "注意力算法：省显存 / 提速 / PyTorch 原生，出问题回自动", self.cb_ca))
+        t1v.addWidget(_Row("Cross Attention 优化", "注意力算法：省显存 / 提速 / PyTorch 原生，出问题回自动", self.cb_ca))
 
         self.cb_preview = QComboBox()
         self.cb_preview.addItems(["无", "latent2rgb（快）", "TAESD（精细）"])
-        root.addWidget(_Row("采样预览", "出图过程中的实时预览画质（TAESD 更清晰但略耗性能）", self.cb_preview))
+        t1v.addWidget(_Row("采样预览", "出图过程中的实时预览画质（TAESD 更清晰但略耗性能）", self.cb_preview))
 
         self.ck_fp16 = QCheckBox("开启")
-        root.addWidget(_Row("强制 FP16", "半精度运行，低显存显卡提速（画质略降）", self.ck_fp16))
+        t1v.addWidget(_Row("强制 FP16", "半精度运行，低显存显卡提速（画质略降）", self.ck_fp16))
 
         self.ck_fast = QCheckBox("开启")
-        root.addWidget(_Row("快速模式", "启用 PyTorch 加速技巧（新显卡提速明显，老卡慎用）", self.ck_fast))
+        t1v.addWidget(_Row("快速模式", "启用 PyTorch 加速技巧（新显卡提速明显，老卡慎用）", self.ck_fast))
 
         self.ck_nosm = QCheckBox("开启")
-        root.addWidget(_Row("禁用智能显存", "显存紧张/爆显存时开启，稍降速度换稳定", self.ck_nosm))
+        t1v.addWidget(_Row("禁用智能显存", "显存紧张/爆显存时开启，稍降速度换稳定", self.ck_nosm))
 
         self.ck_lan = QCheckBox("开启")
-        root.addWidget(_Row("局域网访问", "允许同一局域网其他设备（手机/平板）打开 ComfyUI", self.ck_lan))
+        t1v.addWidget(_Row("局域网访问", "允许同一局域网其他设备（手机/平板）打开 ComfyUI", self.ck_lan))
 
         self.ck_browser = QCheckBox("开启")
-        root.addWidget(_Row("自动打开", "启动成功后自动用浏览器打开 ComfyUI 界面", self.ck_browser))
+        t1v.addWidget(_Row("自动打开", "启动成功后自动用浏览器打开 ComfyUI 界面", self.ck_browser))
 
         self.ed_extra = QLineEdit()
         self.ed_extra.setPlaceholderText("例如: --reserve-vram 2")
-        root.addWidget(_Row("启动参数", "附加的命令行参数（逗号分隔的高阶用法）", self.ed_extra))
+        t1v.addWidget(_Row("启动参数", "附加的命令行参数（逗号分隔的高阶用法）", self.ed_extra))
 
-        root.addSpacing(6)
+        t1v.addStretch()
+        s1 = QScrollArea(); s1.setWidgetResizable(True); s1.setFrameShape(QFrame.NoFrame)
+        s1.setWidget(t1)
+        self.tabs.addTab(s1, "⚙️ 实例设置")
+
+        # ---- Tab2 内核版本 ----
+        t2 = QWidget(); t2v = QVBoxLayout(t2)
+        t2v.setContentsMargins(18, 14, 18, 14); t2v.setSpacing(8)
+        # ---- 内核版本 ----
+        lb_k = QLabel("内核版本")
+        lb_k.setObjectName("SectionLabel")
+        t2v.addWidget(lb_k)
+
+        h_k = QHBoxLayout()
+        self.lb_kver = QLabel("…")
+        self.lb_kver.setStyleSheet("color:#e8eef7;")
+        h_k.addWidget(self.lb_kver, 1)
+        self.b_kupdate = QPushButton("⬆ 更新至最新稳定版")
+        self.b_kupdate.setProperty("accent", True)
+        self.b_kupdate.clicked.connect(self._update_stable)
+        b_krefresh = QPushButton("刷新版本")
+        b_krefresh.clicked.connect(self._refresh_versions)
+        self.ed_ksearch = QLineEdit()
+        self.ed_ksearch.setPlaceholderText("按版本 ID 搜索")
+        self.ed_ksearch.setFixedWidth(150)
+        self.ed_ksearch.textChanged.connect(lambda _t: self._filter_versions())
+        self.cb_kkind = QComboBox()
+        self.cb_kkind.addItems(["全部", "稳定版", "开发版"])
+        self.cb_kkind.currentIndexChanged.connect(lambda _i: self._filter_versions())
+        h_k.addWidget(self.b_kupdate)
+        h_k.addWidget(b_krefresh)
+        h_k.addWidget(self.ed_ksearch)
+        h_k.addWidget(self.cb_kkind)
+        wrap_k = QWidget(); wrap_k.setLayout(h_k)
+        t2v.addWidget(_Row("内核版本管理", "一键更新到最新稳定版，或按版本回滚（切换后自动安装配套依赖）", wrap_k))
+
+        # 版本表格（版本 ID | 更新时间 | 类型 | 操作）
+        self.tb_kver = QTableWidget(0, 4)
+        self.tb_kver.setHorizontalHeaderLabels(["版本 ID", "更新时间", "类型", "操作"])
+        hh_k = self.tb_kver.horizontalHeader()
+        hh_k.setSectionResizeMode(0, QHeaderView.Stretch)
+        hh_k.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        hh_k.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        hh_k.setSectionResizeMode(3, QHeaderView.Fixed)
+        self.tb_kver.setColumnWidth(3, 150)
+        self.tb_kver.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.tb_kver.setSelectionBehavior(QTableWidget.SelectRows)
+        self.tb_kver.setMaximumHeight(240)
+        t2v.addWidget(self.tb_kver)
+        t2v.addStretch()
+        self.tabs.addTab(t2, "🧬 内核版本")
+
+        # ---- 底部：保存 / 删除（全局）----
+        bottom = QHBoxLayout()
+        bottom.setContentsMargins(18, 0, 18, 12)
+        bottom.addStretch()
         b_save = QPushButton("保存设置")
         b_save.setObjectName("SaveBtn")
         b_save.clicked.connect(self._save)
-        root.addWidget(b_save)
-
+        bottom.addWidget(b_save)
         self.b_del = QPushButton("🗑 删除此实例（可选仅移出管理 / 彻底删除文件）")
         self.b_del.setObjectName("DeleteBtn")
         self.b_del.clicked.connect(self._delete)
-        root.addWidget(self.b_del)
-
+        bottom.addWidget(self.b_del)
+        outer.addLayout(bottom)
     # ---------- 数据 ----------
     def load_current(self):
         inst = self.mainwin.current_inst()
@@ -311,37 +358,69 @@ class ComfyuiPage(QWidget):
             self.lb_kver.setText(f"读取版本失败：{e}")
             self.lb_kver.setStyleSheet("color:#e8635a;")
 
-    def _refresh_tags(self):
+    def _refresh_versions(self):
         inst = self.mainwin.current_inst()
         if not inst:
             return
         km = self._km()
         if not km or not km.is_git_repo:
             QMessageBox.information(self, "内核版本",
-                                    "该实例不是 git 仓库（可能是 zip 安装），无法按标签切换版本。")
+                                    "该实例不是 git 仓库（可能是 zip 安装），无法按版本切换。")
             return
         if getattr(self, "_kw", None) and self._kw.isRunning():
             return
-        self.lb_kver.setText("正在拉取版本标签…")
-        self._kw = _KernelWorker(km, "tags")
+        self.lb_kver.setText("正在拉取版本列表…")
+        self._kw = _KernelWorker(km, "versions")
         self._kw.sig_log.connect(self.mainwin.console_page.append_line)
-        self._kw.sig_tags.connect(self._on_tags)
+        self._kw.sig_versions.connect(self._on_versions)
         self._kw.start()
 
-    def _on_tags(self, tags):
-        self.cb_ktag.clear()
-        if tags:
-            self.cb_ktag.addItems(tags)
-            self._refresh_kernel_info()
-            self.lb_kver.setText(self.lb_kver.text() + f"　·　{len(tags)} 个版本可选")
-        else:
-            self.lb_kver.setText("未取到任何版本标签（检查网络 / 代理设置）")
+    def _on_versions(self, versions):
+        self._all_versions = versions
+        self._filter_versions()
+        self._refresh_kernel_info()
+        self.lb_kver.setText(self.lb_kver.text() + f"　·　{len(versions)} 个版本")
 
-    def _switch_kernel(self):
+    def _filter_versions(self):
+        kw = self.ed_ksearch.text().strip().lower()
+        kind = self.cb_kkind.currentText()
+        rows = [v for v in getattr(self, "_all_versions", [])
+                if (kind == "全部" or v["kind"] == kind)
+                and (not kw or kw in v["version"].lower() or kw in v["hash"].lower())]
+        self.tb_kver.setRowCount(len(rows))
+        for i, v in enumerate(rows):
+            self.tb_kver.setItem(i, 0, QTableWidgetItem(v["version"]))
+            self.tb_kver.setItem(i, 1, QTableWidgetItem(v["date"]))
+            k = QTableWidgetItem(v["kind"])
+            k.setForeground(Qt.green if v["kind"] == "稳定版" else Qt.gray)
+            self.tb_kver.setItem(i, 2, k)
+            b = QPushButton("切换并装依赖")
+            b.clicked.connect(lambda _c=False, tag=v["version"]: self._switch_kernel(tag))
+            self.tb_kver.setCellWidget(i, 3, b)
+
+    def _update_stable(self):
         inst = self.mainwin.current_inst()
-        tag = self.cb_ktag.currentText().strip()
+        if not inst:
+            return
+        km = self._km()
+        if not km or not km.is_git_repo:
+            QMessageBox.information(self, "内核版本",
+                                    "该实例不是 git 仓库（可能是 zip 安装），无法在线更新。")
+            return
+        if self.mainwin.procs.is_running(inst):
+            QMessageBox.warning(self, "内核版本", "请先停止该实例再更新内核")
+            return
+        if getattr(self, "_kw", None) and self._kw.isRunning():
+            return
+        self._kw = _KernelWorker(km, "update", python=inst.get("python_path") or "")
+        self._kw.sig_log.connect(self.mainwin.console_page.append_line)
+        self._kw.sig_switch.connect(self._on_switched)
+        self._kw.start()
+        self.lb_kver.setText("正在更新至最新稳定版…（含依赖安装，可能需要几分钟）")
+
+    def _switch_kernel(self, tag):
+        inst = self.mainwin.current_inst()
         if not inst or not tag:
-            QMessageBox.information(self, "内核版本", "请先「刷新版本」并选择目标版本")
             return
         if self.mainwin.procs.is_running(inst):
             QMessageBox.warning(self, "内核版本", "请先停止该实例再切换内核版本")

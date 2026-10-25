@@ -561,7 +561,8 @@ def install_comfyui_source(dest: str, log=print, proxy: str = "") -> str:
         log(f"ComfyUI 源码已存在: {dest}")
         return dest
     os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
-    zpath = dest.rstrip("\\/") + "_src.zip"
+    zpath = dest.rstrip("\\/") + "_src.zip"   # 实例目录同级（不占 C 盘）
+    log(f"ComfyUI 源码压缩包下载到: {zpath}")
     ok = download_multi(COMFYUI_ZIP_URLS, zpath, log=log, proxy=proxy)
     if not ok:
         raise RuntimeError(
@@ -570,6 +571,7 @@ def install_comfyui_source(dest: str, log=print, proxy: str = "") -> str:
             "处理：检查网络后重试；仍失败请在「GitHub 代理」填 https://ghproxy.net/ 再试")
     _unzip(zpath, dest, strip_root=True)
     os.remove(zpath)
+    log(f"✅ 已清理安装包: {zpath}（解压成功后自动删除）")
     log(f"ComfyUI 源码就绪: {dest}")
     return dest
 
@@ -644,27 +646,75 @@ def pip_install(python_exe: str, pkgs: list, index_url: str, log=print,
     return ok
 
 
+def _free_gb(path: str) -> float | None:
+    """返回 path 所在盘的剩余空间（GB）；取不到返回 None"""
+    import shutil
+    try:
+        return shutil.disk_usage(os.path.abspath(path)).free / 1e9
+    except OSError:
+        return None
+
+
+def _zero_byte_dlls(pkg_dir: str) -> list:
+    """扫描包目录下 0 字节 DLL（磁盘满/下载中断的典型残留）"""
+    import glob as _g
+    hits = []
+    for pat in ("*.dll", "*.pyd"):
+        for f in _g.glob(os.path.join(pkg_dir, "**", pat), recursive=True):
+            try:
+                if os.path.getsize(f) == 0:
+                    hits.append(f)
+            except OSError:
+                pass
+    return hits[:5]
+
+
 def install_torch(python_exe: str, variant: str, log=print,
                   mirror: str = PYPI_MIRRORS["官方"], wheels_dir: str | None = None) -> bool:
     """按变体安装 torch 三件套。
-    cu 变体：先检测已装 torch 是否为 CPU 版——是则先卸载再装（防止 CPU/CUDA 混装）；
-    wheels_dir 存在匹配的本地 wheel 时用 --find-links 秒装（免 2.5GB 慢速下载）。"""
-    if variant == "cpu":
-        return pip_install(python_exe, ["torch", "torchvision", "torchaudio"],
-                           mirror, log=log)
-    idx = TORCH_VARIANTS[variant]["index"]
-    pkgs = ["torch", "torchvision", "torchaudio"]
+    · 磁盘空间预检：cu 版需约 6GB（解压+安装），不足直接失败并明确提示
+      （磁盘满会留下 0 字节 DLL → import 时报 WinError 193，事后极难排查）
+    · cu 变体：已装 CPU 版 → 先卸载再装（防混装）；torch 已装但无法 import
+      （安装损坏）→ --force-reinstall 强制重装
+    · wheels_dir 存在匹配的本地 wheel 时用 --find-links 秒装（免 2.5GB 慢速下载）
+    · 安装后 import 自检：pip 成功 ≠ 真的能用，损坏要当场抓住"""
+    need_gb = 3.0 if variant == "cpu" else 6.0
+    free = _free_gb(os.path.dirname(python_exe) or ".")
+    if free is not None and free < need_gb:
+        log(f"❌ 磁盘空间不足：{os.path.splitdrive(python_exe)[0] or '目标盘'} "
+            f"剩余 {free:.1f} GB，安装 PyTorch（{variant}）需要约 {need_gb:.0f} GB。"
+            "请清理磁盘后重试（torch 约 6GB，磁盘满会导致安装损坏）。")
+        return False
 
-    # 检测已装 torch 的 CUDA 状态
+    pkgs = ["torch", "torchvision", "torchaudio"]
+    force_flags: list = []   # 安装损坏时的强制重装参数
+
+    # 检测已装 torch 状态（能否 import + CUDA 版本）
     r = run([python_exe, "-c",
              "import torch;print(getattr(torch.version,'cuda') or 'cpu')"],
-            capture_output=True, text=True, timeout=180)
-    installed_cuda = (r.stdout or "").strip()
-    has_cpu_torch = installed_cuda == "cpu"   # torch 存在但无 CUDA
-    if has_cpu_torch:
-        log("检测到已装 torch 为 CPU 版，先卸载避免混装…")
-        run([python_exe, "-m", "pip", "uninstall", "-y", *pkgs],
-            capture_output=True, text=True, timeout=600)
+            capture_output=True, text=True, timeout=300)
+    import_ok = r.returncode == 0
+    if import_ok:
+        installed_cuda = (r.stdout or "").strip()
+        if variant != "cpu" and installed_cuda == "cpu":
+            log("检测到已装 torch 为 CPU 版，先卸载避免混装…")
+            run([python_exe, "-m", "pip", "uninstall", "-y", *pkgs],
+                capture_output=True, text=True, timeout=600)
+    else:
+        # pip 认为已装、但 import 直接崩（典型：0 字节 DLL / WinError 193）
+        err_tail = ((r.stderr or "").strip().splitlines() or ["未知错误"])[-1]
+        log(f"⚠️ 检测到 torch 已安装但无法加载（安装损坏）：{err_tail[:140]}")
+        zeros = _zero_byte_dlls(
+            os.path.join(os.path.dirname(python_exe), "Lib", "site-packages", "torch"))
+        if zeros:
+            log(f"⚠️ 发现 {len(zeros)} 个 0 字节 DLL（如 {os.path.basename(zeros[0])}）"
+                "——通常是磁盘空间不足/下载中断导致，将强制重装修复")
+        force_flags = ["--force-reinstall", "--no-deps"]
+
+    if variant == "cpu":
+        return pip_install(python_exe, pkgs, mirror, log=log, extra=force_flags)
+
+    idx = TORCH_VARIANTS[variant]["index"]
 
     # 本地 wheel 缓存加速（如 tools\wheels\torch-2.10.0+cu130-....whl）
     f_links = []
@@ -676,7 +726,7 @@ def install_torch(python_exe: str, variant: str, log=print,
                 break
 
     cmd = [python_exe, "-s", "-m", "pip", "install", "--no-warn-script-location",
-           "-i", idx, *f_links] + pkgs
+           "-i", idx, *force_flags, *f_links] + pkgs
     log("$ " + " ".join(cmd[:12]) + (" …" if len(cmd) > 12 else ""))
     r = subprocess.run(cmd, capture_output=True, text=True,
                        encoding="utf-8", errors="replace", timeout=10800,
@@ -685,7 +735,23 @@ def install_torch(python_exe: str, variant: str, log=print,
             if "[safe-delete]" not in ln]
     for ln in tail[-10:]:
         log("  " + ln[:160])
-    return r.returncode == 0
+    if r.returncode != 0:
+        return False
+
+    # ★ 安装后 import 自检：磁盘满时 pip 也可能报成功但留下损坏文件
+    r2 = run([python_exe, "-c", "import torch;print(torch.__version__)"],
+             capture_output=True, text=True, timeout=300)
+    if r2.returncode != 0:
+        err_tail = ((r2.stderr or "").strip().splitlines() or ["未知错误"])[-1]
+        log(f"❌ torch 安装后自检失败（pip 完成但 import 崩溃）：{err_tail[:140]}")
+        zeros = _zero_byte_dlls(
+            os.path.join(os.path.dirname(python_exe), "Lib", "site-packages", "torch"))
+        if zeros:
+            log(f"⚠️ 发现 {len(zeros)} 个 0 字节 DLL（如 {os.path.basename(zeros[0])}）"
+                "——请确认磁盘空间充足后重新点「安装」强制重装")
+        return False
+    log(f"✅ torch {(r2.stdout or '').strip()} 安装完成并通过导入自检")
+    return True
 
 
 def install_comfyui_requirements(python_exe: str, comfyui_path: str, log=print,
@@ -797,16 +863,25 @@ def _len_marks(r):
 
 
 def detect_torch_step(python_exe):
-    """步骤4 检测：torch 是否安装 / CUDA / CPU / 版本"""
+    """步骤4 检测：torch 是否安装 / CUDA / CPU / 版本
+    status 额外支持 "broken"：torch 已安装但无法 import（安装损坏，
+    如磁盘满导致 0 字节 DLL / WinError 193）→ 引导强制重装而非"未安装"重装"""
     if not python_exe:
         return "missing", "缺少 Python，无法检测 torch", {}
     try:
         r = run([python_exe, "-c",
                  "import torch;print(torch.__version__);"
                  "print(getattr(torch.version,'cuda') or 'cpu')"],
-                capture_output=True, text=True, timeout=180)
+                capture_output=True, text=True, timeout=300)
         if r.returncode != 0:
-            return "missing", "未检测到 torch", {}
+            err = (r.stderr or "") + (r.stdout or "")
+            if "ModuleNotFoundError" in err and "torch" in err:
+                return "missing", "未检测到 torch", {}
+            # import 崩了但不是"没装" → 安装损坏
+            tail = (err.strip().splitlines() or ["未知错误"])[-1]
+            return ("broken",
+                    f"torch 已安装但无法加载（安装损坏）：{tail[:120]}"
+                    " —— 点「强制重装」修复", {})
         lines = (r.stdout or "").strip().splitlines()
         ver = lines[0].strip() if lines else "?"
         cuda = lines[1].strip() if len(lines) > 1 else "cpu"
