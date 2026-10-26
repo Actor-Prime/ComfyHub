@@ -112,10 +112,13 @@ def parse_hf_ref(ref):
 def cmd_hf(args):
     repo, file_in_url = parse_hf_ref(args.ref)
     file = args.file or file_in_url
+    # 提前算好 url，避免列文件分支抛 HTTPError 时 except 里引用未定义变量
+    url = (f"{HF_MIRROR}/{repo}/resolve/main/{file}" if file
+           else f"{HF_MIRROR}/api/models/{repo}")
     try:
         if not file:
             # 列文件
-            data = _get_json(f"{HF_MIRROR}/api/models/{repo}")
+            data = _get_json(url)
             sibs = [s["rfilename"] for s in data.get("siblings", [])]
             if not sibs:
                 _err(f"仓库 {repo} 无文件或不存在")
@@ -124,7 +127,6 @@ def cmd_hf(args):
                 print(f"  {f}")
             return
         # 下载
-        url = f"{HF_MIRROR}/{repo}/resolve/main/{file}"
         out = args.output or os.path.basename(file)
         print(f"[HF镜像] {repo}/{file} -> {out}")
         with _open(url, timeout=120) as r:

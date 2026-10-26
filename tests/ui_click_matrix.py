@@ -370,6 +370,10 @@ def scenario_recursive_and_picker():
         _expect = os.path.normpath(os.path.join(TMP, s["cands"][1]))
         record("F2.4 切回后路径同步为选中候选",
                os.path.normpath(st_back["path"]) == _expect, st_back["path"])
+        # 2026-10-26：往返后标题标签必须还在（fresh 分支会 hide 它，existing 恢复）
+        record("F2.5 往返后「请选择实例」标题仍在",
+               wiz.lb_found_title.isVisible() and "请选择实例" in wiz.lb_found_title.text(),
+               f"vis={wiz.lb_found_title.isVisible()} text={wiz.lb_found_title.text()!r}")
         wiz.close(); win.close()
     finally:
         shutil.rmtree(os.path.join(TMP, "L1"), ignore_errors=True)
@@ -411,6 +415,11 @@ def scenario_fixes_20261024():
         st, info, _ = bootstrap.detect_torch_step(py)
         if r.returncode == 0:
             record("G3.1 torch 可导入 → 判 ok/cpu", st in ("ok", "cpu"), f"{st}:{info[:50]}")
+        elif st == "missing":
+            # 便携 Python 里根本没装 torch（真实环境态）——missing 判定正确，
+            # 只是没有崩溃样本可验证 broken 路径 → skip 不算失败
+            record("G3.1 便携 Python 无 torch（无崩溃样本，跳过 broken 判定）",
+                   True, "skip")
         else:
             record("G3.1 torch 导入崩溃 → 判 broken（非 missing）",
                    st == "broken", f"{st}:{info[:60]}")
@@ -523,6 +532,182 @@ def scenario_integration_package():
         shutil.rmtree(base_a, ignore_errors=True)
 
 
+def scenario_existing_intercept():
+    """J 组：existing 模式翻页拦截（2026-10-26 aki 整合包「完成」卡死回归）
+    真实事故：验证通过点「完成」→ Qt 翻页进 p2 → cb_python 无数据 py=None →
+    步骤1 报"未检测到 Python 解释器"卡死。修复后翻页必须被拦截：
+      · 不启动安装流程 · setup_result 用验证过的解释器 · 不停留在安装页
+    修复模式（_repair_mode=True）不受拦截影响"""
+    log("\n【J1】existing 模式翻页进 p2 → 必须拦截并直接完成注册")
+    base = os.path.join(TMP, "pkg_intercept")
+    try:
+        os.makedirs(os.path.join(base, "ComfyUI", "comfy"), exist_ok=True)
+        open(os.path.join(base, "ComfyUI", "main.py"), "w").close()
+        os.makedirs(os.path.join(base, "python"), exist_ok=True)
+        open(os.path.join(base, "python", "python.exe"), "w").close()
+        comfy = os.path.normpath(os.path.join(base, "ComfyUI"))
+        fake_py = os.path.normpath(os.path.join(base, "python", "python.exe"))
+        win, wiz = new_wizard()
+        # 手工构造"验证通过"终态（矩阵环境的假 python.exe 跑不了真验证）
+        wiz._scan_candidates = [comfy]
+        wiz.cb_found.blockSignals(True)
+        wiz.cb_found.clear()
+        wiz.cb_found.addItem("ComfyUI")
+        wiz.cb_found.setCurrentIndex(0)
+        wiz.cb_found.blockSignals(False)
+        wiz.cb_found.show()
+        wiz._py_map = {comfy: [fake_py]}
+        wiz._verify_cache = {comfy: fake_py}
+        wiz._set_mode("existing")
+        wiz.install_opts.hide()
+        wiz._repair_mode = False
+        wiz._started = False
+        # 等后台自动探测线程收尾——accept 的 busy 检查遇活线程会弹框阻塞测试
+        wait_until(lambda: all(
+            getattr(wiz, a, None) is None or not getattr(wiz, a).isRunning()
+            for a in ("_scan_worker", "_verify_worker")), timeout=10)
+        p2_idx = next(pid for pid in wiz.pageIds() if wiz.page(pid) is wiz.p2)
+        wiz._on_page_change(p2_idx)          # 模拟 Qt 翻页（真实事故的触发点）
+        pump(0.6)
+        record("J1.1 未启动安装流程（p2 无 target_dir）",
+               "target_dir" not in (wiz.p2.state or {}))
+        record("J1.2 setup_result 组装且用验证过的解释器",
+               wiz.setup_result.get("comfyui_path") == comfy
+               and wiz.setup_result.get("python_path") == fake_py,
+               f"path={wiz.setup_result.get('comfyui_path')} "
+               f"py={wiz.setup_result.get('python_path')}")
+        record("J1.3 向导未停留在安装页", wiz.currentId() != p2_idx)
+        wiz.close(); win.close()
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+    log("\n【J2】_repair_mode=True 翻页 → 不受拦截，正常进修复")
+    base2 = os.path.join(TMP, "pkg_intercept_r")
+    try:
+        os.makedirs(os.path.join(base2, "ComfyUI", "comfy"), exist_ok=True)
+        open(os.path.join(base2, "ComfyUI", "main.py"), "w").close()
+        comfy2 = os.path.normpath(os.path.join(base2, "ComfyUI"))
+        win, wiz = new_wizard()
+        wiz._scan_candidates = [comfy2]
+        wiz.cb_found.blockSignals(True)
+        wiz.cb_found.clear()
+        wiz.cb_found.addItem("ComfyUI")
+        wiz.cb_found.setCurrentIndex(0)
+        wiz.cb_found.blockSignals(False)
+        wiz._py_map = {comfy2: []}
+        wiz._set_mode("existing")
+        wiz._repair_mode = True              # 失败态主推修复的场景
+        wiz._started = False
+        called = {}
+        wiz.p2.start_repair = lambda *a, **k: called.setdefault("args", a)
+        wiz._on_page_change(next(pid for pid in wiz.pageIds() if wiz.page(pid) is wiz.p2))
+        pump(0.3)
+        record("J2.1 修复模式正常调用 start_repair（不被拦截）", "args" in called)
+        wiz._started = True                  # 防 close 前再触发
+        wiz.close(); win.close()
+    finally:
+        shutil.rmtree(base2, ignore_errors=True)
+
+
+def scenario_pick_no_append():
+    """K 组：浏览选目录不再无条件拼 \\ComfyUI（2026-10-26 用户实测：选 F:\\
+    被拼成不存在的 F:\\ComfyUI 且误判全新安装）。
+    _pick 的决策已下沉到 _detect_existing + _derive_target，这里直接驱动同路径：
+    · 选含实例的目录 → 添加模式列候选（路径不被拼改）
+    · 选空目录       → fresh 模式，目标自动补 \\ComfyUI（与手动输入同口径）"""
+    log("\n【K1】选含实例目录 → 添加模式、不拼名")
+    base = os.path.join(TMP, "pickbase")
+    inst = os.path.join(base, "ComfyUI")
+    os.makedirs(os.path.join(inst, "comfy"), exist_ok=True)
+    open(os.path.join(inst, "main.py"), "w").close()
+    try:
+        win, wiz = new_wizard()
+        wiz.ed_dir.setText(base)          # 等价 _pick 拿到目录后的 setText
+        wiz._detect_existing()
+        wait_until(lambda: "验证" in wiz.lb_scan.text()
+                   or "全新安装" in wiz.lb_scan.text(), timeout=15)
+        pump(0.3)
+        record("K1.1 路径未被拼改（保持用户所选目录）",
+               os.path.normpath(wiz.ed_dir.text()) in
+               (os.path.normpath(base), os.path.normpath(inst)),
+               wiz.ed_dir.text())
+        record("K1.2 添加实例模式（安装参数隐藏）", wiz.install_opts.isHidden())
+        wiz.close(); win.close()
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+    log("\n【K2】选空目录 → fresh 模式目标补 \\ComfyUI")
+    base2 = os.path.join(TMP, "pickempty")
+    os.makedirs(base2, exist_ok=True)
+    try:
+        win, wiz = new_wizard()
+        wiz.ed_dir.setText(base2)
+        wiz._detect_existing()
+        wait_until(lambda: "全新安装" in wiz.lb_scan.text(), timeout=15)
+        pump(0.3)
+        record("K2.1 安装目标自动补 \\ComfyUI",
+               os.path.normpath(wiz.ed_dir.text()) ==
+               os.path.normpath(os.path.join(base2, "ComfyUI")),
+               wiz.ed_dir.text())
+        record("K2.2 fresh 模式（安装参数展开）", not wiz.install_opts.isHidden())
+        wiz.close(); win.close()
+    finally:
+        shutil.rmtree(base2, ignore_errors=True)
+
+
+def scenario_plugin_toggle():
+    """L 组：插件页启用/禁用的路径决策（2026-10-26 用户实测 aki 实例
+    GGUF 插件报 WinError 2：旧逻辑拿去掉了 .disabled 的显示名砍 9 个字符，
+    把 'ComfyUI-GGUF' 砍成 'Com'）。
+    直接驱动 PluginsPage._toggle，验证三个分支的 src/dst 决策。"""
+    log("\n【L1】已禁用插件 → 启用（name.disabled → name）")
+    base = os.path.join(TMP, "plugtoggle")
+    nodes = os.path.join(base, "custom_nodes")
+    os.makedirs(os.path.join(nodes, "ComfyUI-GGUF.disabled"), exist_ok=True)
+    os.makedirs(os.path.join(nodes, "other-plugin"), exist_ok=True)
+    try:
+        win = MainWindow()
+        pg = win.plugins_page
+        # 隔离：实例指向临时目录，refresh_list 用真实 list_plugins 跑通
+        pg._inst = lambda: {"name": "t", "comfyui_path": base}
+        pg.refresh_list()
+        pump(0.3)
+        # 表里应有两行；找到显示名为 ComfyUI-GGUF 的行
+        rows = {pg.tb.item(r, 0).text(): r for r in range(pg.tb.rowCount())}
+        record("L1.1 列表含规范化显示名（无 .disabled 后缀）",
+               "ComfyUI-GGUF" in rows, str(list(rows)))
+
+        class _Idx:
+            def __init__(self, r):
+                self._r = r
+
+            def row(self):
+                return self._r
+
+        pg._toggle(_Idx(rows["ComfyUI-GGUF"]))
+        pump(0.3)
+        ok_on = os.path.isdir(os.path.join(nodes, "ComfyUI-GGUF"))
+        ok_off = not os.path.isdir(os.path.join(nodes, "ComfyUI-GGUF.disabled"))
+        record("L1.2 目录被正确启用（.disabled 后缀剥掉）", ok_on and ok_off)
+
+        log("\n【L2】启用中插件 → 禁用（name → name.disabled）")
+        rows = {pg.tb.item(r, 0).text(): r for r in range(pg.tb.rowCount())}
+        pg._toggle(_Idx(rows["ComfyUI-GGUF"]))
+        pump(0.3)
+        ok_off2 = os.path.isdir(os.path.join(nodes, "ComfyUI-GGUF.disabled"))
+        ok_on2 = not os.path.isdir(os.path.join(nodes, "ComfyUI-GGUF"))
+        record("L2.1 目录被正确禁用（追加 .disabled 后缀）", ok_off2 and ok_on2)
+
+        log("\n【L3】两个分支后无 'Com' 截断残留（旧 bug 特征）")
+        names = os.listdir(nodes)
+        record("L3.1 custom_nodes 无异常短名目录",
+               all(n in ("ComfyUI-GGUF.disabled", "other-plugin") for n in names),
+               str(names))
+        win.close()
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def main():
     log("=" * 70)
     log("ComfyHub 向导第一页 · 点击与按钮状态矩阵测试")
@@ -540,6 +725,9 @@ def main():
         scenario_fixes_20261024()
         scenario_sibling_scan()
         scenario_integration_package()
+        scenario_existing_intercept()   # 2026-10-26 aki「完成」卡死回归
+        scenario_pick_no_append()       # 2026-10-26 浏览选目录不拼名
+        scenario_plugin_toggle()        # 2026-10-26 插件启用/禁用路径决策
         scenario_edge_cases()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)

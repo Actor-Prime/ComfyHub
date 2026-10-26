@@ -151,7 +151,7 @@ class ComfyuiPage(QWidget):
         t1v.addWidget(lb1)
 
         self.ed_name = QLineEdit()
-        t1v.addWidget(_Row("整合包名称", "实例显示名称", self.ed_name))
+        t1v.addWidget(_Row("实例名称", "实例显示名称", self.ed_name))
 
         h_dir = QHBoxLayout()
         self.ed_path = QLineEdit();  self.ed_path.setReadOnly(True)
@@ -259,16 +259,11 @@ class ComfyuiPage(QWidget):
         self.b_kupdate.clicked.connect(self._update_stable)
         b_krefresh = QPushButton("刷新版本")
         b_krefresh.clicked.connect(self._refresh_versions)
-        self.ed_ksearch = QLineEdit()
-        self.ed_ksearch.setPlaceholderText("按版本 ID 搜索")
-        self.ed_ksearch.setFixedWidth(150)
-        self.ed_ksearch.textChanged.connect(lambda _t: self._filter_versions())
         self.cb_kkind = QComboBox()
-        self.cb_kkind.addItems(["全部", "稳定版", "开发版"])
+        self.cb_kkind.addItems(["稳定版", "开发版", "全部"])   # 默认停在稳定版，全部放最后
         self.cb_kkind.currentIndexChanged.connect(lambda _i: self._filter_versions())
         h_k.addWidget(self.b_kupdate)
         h_k.addWidget(b_krefresh)
-        h_k.addWidget(self.ed_ksearch)
         h_k.addWidget(self.cb_kkind)
         wrap_k = QWidget(); wrap_k.setLayout(h_k)
         t2v.addWidget(_Row("内核版本管理", "一键更新到最新稳定版，或按版本回滚（切换后自动安装配套依赖）", wrap_k))
@@ -382,11 +377,9 @@ class ComfyuiPage(QWidget):
         self.lb_kver.setText(self.lb_kver.text() + f"　·　{len(versions)} 个版本")
 
     def _filter_versions(self):
-        kw = self.ed_ksearch.text().strip().lower()
         kind = self.cb_kkind.currentText()
         rows = [v for v in getattr(self, "_all_versions", [])
-                if (kind == "全部" or v["kind"] == kind)
-                and (not kw or kw in v["version"].lower() or kw in v["hash"].lower())]
+                if kind == "全部" or v["kind"] == kind]
         self.tb_kver.setRowCount(len(rows))
         for i, v in enumerate(rows):
             self.tb_kver.setItem(i, 0, QTableWidgetItem(v["version"]))

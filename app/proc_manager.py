@@ -29,6 +29,11 @@ class ProcManager:
         p = self._procs.get(inst["id"])
         return bool(p and p.is_running)
 
+    def running_pids(self) -> set:
+        """本管理器启动且仍在运行的实例 PID 集合（孤儿检测排除用）"""
+        return {p.pid for p in self._procs.values()
+                if p.is_running and p.pid}
+
     def stop_all(self):
         for p in self._procs.values():
             if p.is_running:

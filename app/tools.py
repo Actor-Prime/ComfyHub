@@ -72,41 +72,51 @@ class KernelManager:
             return False, str(e)
 
     def list_versions(self, limit=50) -> list:
-        """版本列表（tag=稳定版优先）：[{version, hash, date, kind}]"""
+        """版本列表（tag=稳定版优先）：[{version, hash, date, kind}]
+
+        2026-10-26 修复：原来 tag 与提交共用一个 limit 且最后统一 out[:limit]，
+        tag 超过 limit 时提交（开发版）会被整段截掉 →「开发版」筛选恒为空。
+        现在两类各自取 limit，互不挤占。
+        """
         if not self.is_git_repo:
             return []
-        out = []
+        tags, devs = [], []
+        tag_hashes = set()      # tag 对象哈希 + peel 出的 commit 哈希（开发版去重用）
         try:
-            # tag（稳定版）：名字|短hash|日期
+            # tag（稳定版）：名字|tag对象短hash|指向commit短hash|日期
+            # %(*objectname:short) = annotated tag peel 出的 commit 哈希
+            #（lightweight tag 此列为空，去重时回退用 tag 对象哈希）
             r = run([self.git, "-C", self.path, "for-each-ref",
                      "refs/tags", "--sort=-creatordate",
-                     "--format=%(refname:short)|%(objectname:short)|%(creatordate:short)"],
+                     "--format=%(refname:short)|%(objectname:short)"
+                     "|%(*objectname:short)|%(creatordate:short)"],
                     capture_output=True, text=True, timeout=60,
                     encoding="utf-8", errors="replace")
             for line in (r.stdout or "").splitlines():
                 parts = line.split("|")
-                if len(parts) == 3:
-                    out.append({"version": parts[0], "hash": parts[1],
-                                "date": parts[2], "kind": "稳定版"})
+                if len(parts) == 4:
+                    tags.append({"version": parts[0], "hash": parts[2] or parts[1],
+                                 "date": parts[3], "kind": "稳定版"})
+                    tag_hashes.add(parts[1])
+                    if parts[2]:
+                        tag_hashes.add(parts[2])
         except Exception:
             pass
         try:
-            # 最近提交（开发版）
+            # 最近提交（开发版）；与 tag 同 hash 的提交视为已被 tag 覆盖，跳过
             r = run([self.git, "-C", self.path, "log", f"-{limit}",
                      "--format=%h|%cd|%s", "--date=short"],
                     capture_output=True, text=True, timeout=60,
                     encoding="utf-8", errors="replace")
             for line in (r.stdout or "").splitlines():
                 parts = line.split("|", 2)
-                if len(parts) == 3:
-                    tag_names = {v["hash"] for v in out}
-                    if parts[0] not in tag_names:
-                        out.append({"version": parts[2][:40] or parts[0],
-                                    "hash": parts[0], "date": parts[1],
-                                    "kind": "开发版"})
+                if len(parts) == 3 and parts[0] not in tag_hashes:
+                    devs.append({"version": parts[2][:40] or parts[0],
+                                 "hash": parts[0], "date": parts[1],
+                                 "kind": "开发版"})
         except Exception:
             pass
-        return out[:limit]
+        return tags[:limit] + devs[:limit]
 
 
     def switch_to(self, tag: str) -> tuple:

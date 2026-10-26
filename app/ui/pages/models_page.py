@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from app.tools import ModelDownloader
 from app import instance as inst_lib
+from app.workers import swap_worker
 from app.ui.pages.model_market_widget import ModelMarketWidget
 from app.ui.download_center import DownloadCenter
 
@@ -304,9 +305,10 @@ class ModelsPage(QWidget):
         if not url.startswith(("http://", "https://")):
             self._log("❌ 请填写有效 URL")
             return
-        self._worker = DlWorker(ModelDownloader(inst["comfyui_path"]), url,
-                                self.cb_sub.currentText(), "")
-        self._worker.sig_log.connect(self._log)
+        w = DlWorker(ModelDownloader(inst["comfyui_path"]), url,
+                     self.cb_sub.currentText(), "")
+        swap_worker(self, "_worker", w)
+        w.sig_log.connect(self._log)
         self._worker.sig_done.connect(
             lambda ok: (self._log("✅ 下载完成" if ok else "❌ 下载失败"),
                         self.refresh_stats()))

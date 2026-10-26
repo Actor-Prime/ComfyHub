@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 from app.tools import EnvBackup, Rescue
 from app.bootstrap import find_git
 from app.winsub import run as sub_run
+from app.workers import swap_worker
 
 
 # ---------------- 检测线程 ----------------
@@ -177,11 +178,12 @@ class EnvPage(QWidget):
             st.setProperty("state", "pend")
             st.style().unpolish(st)
             st.style().polish(st)
-        self._worker = DetectWorker(inst)
-        self._worker.sig_item.connect(self._set_state)
-        self._worker.sig_done.connect(lambda: self.lb_inst.setText(
+        w = DetectWorker(inst)
+        w.sig_item.connect(self._set_state)
+        w.sig_done.connect(lambda: self.lb_inst.setText(
             f"实例: {inst.get('name')} — 检测完成 ✅"))
-        self._worker.start()
+        swap_worker(self, "_worker", w)
+        w.start()
 
     def on_show(self):
         self.lb_inst.setText(
@@ -356,9 +358,10 @@ class EnvPage(QWidget):
             QMessageBox.information(self, "ComfyHub", "请先选择实例")
             return
         self._deps_log("正在检测已装依赖（pip list）…")
-        self._pip_list_worker = PipListWorker(inst)
-        self._pip_list_worker.sig_done.connect(self._deps_fill)
-        self._pip_list_worker.start()
+        w = PipListWorker(inst)
+        w.sig_done.connect(self._deps_fill)
+        swap_worker(self, "_pip_list_worker", w)
+        w.start()
 
     def _deps_fill(self, pkgs, err):
         if err:
@@ -399,13 +402,13 @@ class EnvPage(QWidget):
         if r != QMessageBox.Yes:
             return
         self._deps_log(f"卸载 {name} …")
-        self._deps_op_worker = PipOpWorker(inst["python_path"],
-                                           ["uninstall", "-y", name])
-        self._deps_op_worker.sig_log.connect(self._deps_log)
-        self._deps_op_worker.sig_done.connect(
+        w = PipOpWorker(inst["python_path"], ["uninstall", "-y", name])
+        w.sig_log.connect(self._deps_log)
+        w.sig_done.connect(
             lambda ok: (self._deps_log("✅ 卸载完成" if ok else "❌ 卸载失败"),
                         self._deps_detect()))
-        self._deps_op_worker.start()
+        swap_worker(self, "_deps_op_worker", w)
+        w.start()
 
     def _deps_install(self):
         inst = self._inst()
@@ -422,24 +425,24 @@ class EnvPage(QWidget):
             # 通过 Python 文件安装（运行脚本）
             script = args[1]
             self._deps_log(f"运行脚本 {script} …")
-            self._deps_op_worker = PipOpWorker(inst["python_path"],
-                                               ["__RUN_PY__", script])
             # 直接 run python 脚本
-            self._deps_op_worker = _RunTask(
+            w = _RunTask(
                 lambda: sub_run([inst["python_path"], script],
                                 capture_output=True, text=True,
                                 encoding="utf-8", errors="replace", timeout=3600))
-            self._deps_op_worker.sig_done.connect(
+            w.sig_done.connect(
                 lambda r: self._deps_log("脚本输出尾: "
                                          + ((r.stdout or r.stderr or "")[-300:] if hasattr(r, "stdout") else str(r))))
-            self._deps_op_worker.start()
+            swap_worker(self, "_deps_op_worker", w)
+            w.start()
             return
-        self._deps_op_worker = PipOpWorker(inst["python_path"], args)
-        self._deps_op_worker.sig_log.connect(self._deps_log)
-        self._deps_op_worker.sig_done.connect(
+        w = PipOpWorker(inst["python_path"], args)
+        w.sig_log.connect(self._deps_log)
+        w.sig_done.connect(
             lambda ok: (self._deps_log("✅ 安装完成" if ok else "❌ 安装失败"),
                         self._deps_detect()))
-        self._deps_op_worker.start()
+        swap_worker(self, "_deps_op_worker", w)
+        w.start()
 
 class PipListWorker(QThread):
     """pip list 后台检测"""

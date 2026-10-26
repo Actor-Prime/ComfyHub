@@ -17,8 +17,27 @@ JOURNAL_NAME = ".comfyhub_profile_journal.json"
 
 
 # ---------------------------------------------------------------- 基础查询
+def _git_remote_url(repo_dir: str) -> str:
+    """读 .git/config 里 [remote "origin"] 的 url（纯文本解析，不调 git 命令）"""
+    cfg = os.path.join(repo_dir, ".git", "config")
+    try:
+        with open(cfg, "r", encoding="utf-8", errors="replace") as f:
+            in_origin = False
+            for line in f:
+                s = line.strip()
+                if s.startswith("["):
+                    in_origin = s in ('[remote "origin"]', "[remote \"origin\" ]")
+                    continue
+                if in_origin and s.startswith("url"):
+                    _, _, v = s.partition("=")
+                    return v.strip()
+    except OSError:
+        pass
+    return ""
+
+
 def list_plugins(comfyui_path: str) -> list:
-    """[{name, enabled, git, dir}] —— name 为去掉 .disabled 的插件名"""
+    """[{name, enabled, git, dir, url}] —— name 为去掉 .disabled 的插件名"""
     nodes_dir = os.path.join(comfyui_path, "custom_nodes")
     out = []
     if not os.path.isdir(nodes_dir):
@@ -29,11 +48,13 @@ def list_plugins(comfyui_path: str) -> list:
             continue
         disabled = entry.endswith(".disabled")
         name = entry[:-len(".disabled")] if disabled else entry
+        is_git = os.path.isdir(os.path.join(p, ".git"))
         out.append({
             "name": name,
             "enabled": not disabled,
-            "git": os.path.isdir(os.path.join(p, ".git")),
+            "git": is_git,
             "dir": p,
+            "url": _git_remote_url(p) if is_git else "",
         })
     return out
 
