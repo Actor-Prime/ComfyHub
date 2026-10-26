@@ -81,6 +81,80 @@ def git_clone(url: str, dest: str) -> tuple:
         return False, str(e)
 
 
+def git_repo_info(repo_path: str) -> dict:
+    """读取仓库当前分支 / 短 commit / 最近提交时间（纯本地，不联网）"""
+    info = {"branch": "", "commit": "", "date": ""}
+    git = _find_git()
+    if not git:
+        return info
+    try:
+        r = run([git, "-C", repo_path, "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True, timeout=15, text=True,
+                encoding="utf-8", errors="replace")
+        info["branch"] = (r.stdout or "").strip() if r.returncode == 0 else ""
+        r = run([git, "-C", repo_path, "log", "-1", "--format=%h|%cd",
+                 "--date=format:%Y-%m-%d %H:%M"],
+                capture_output=True, timeout=15, text=True,
+                encoding="utf-8", errors="replace")
+        out = (r.stdout or "").strip()
+        if r.returncode == 0 and "|" in out:
+            info["commit"], info["date"] = out.split("|", 1)
+    except Exception:
+        pass
+    return info
+
+
+def git_remote_refs(url: str) -> tuple:
+    """ls-remote 列出远端分支和 tag（联网）
+    返回 (refs: [(显示名, 短commit)], 错误信息)；显示名形如 branch:main / tag:v1.2"""
+    git = _find_git()
+    if not git:
+        return [], "未找到 git.exe"
+    try:
+        r = run([git, "ls-remote", "--heads", "--tags", url],
+                capture_output=True, timeout=60, text=True,
+                encoding="utf-8", errors="replace")
+        if r.returncode != 0:
+            return [], ((r.stderr or "").strip() or "ls-remote 失败")[:200]
+        refs = []
+        for line in (r.stdout or "").splitlines():
+            parts = line.split()
+            if len(parts) != 2:
+                continue
+            sha, ref = parts
+            if ref.startswith("refs/tags/"):
+                # ^{} 是 annotated tag 的解引用条目，跳过避免重复
+                t = ref[len("refs/tags/"):]
+                if t.endswith("^{}"):
+                    continue
+                refs.append(("tag:" + t, sha[:8]))
+            elif ref.startswith("refs/heads/"):
+                refs.append(("branch:" + ref[len("refs/heads/"):], sha[:8]))
+        return refs, ""
+    except Exception as e:
+        return [], str(e)
+
+
+def git_checkout_ref(repo_path: str, ref: str) -> tuple:
+    """fetch 后切换到指定分支/tag。ref 形如 'main' / 'v1.2'"""
+    git = _find_git()
+    if not git:
+        return False, "未找到 git.exe"
+    try:
+        r = run([git, "-C", repo_path, "fetch", "--tags", "origin"],
+                capture_output=True, timeout=300, text=True,
+                encoding="utf-8", errors="replace")
+        if r.returncode != 0:
+            return False, "拉取远端失败: " + ((r.stderr or "").strip())[:200]
+        r = run([git, "-C", repo_path, "checkout", ref],
+                capture_output=True, timeout=60, text=True,
+                encoding="utf-8", errors="replace")
+        out = ((r.stdout or "") + (r.stderr or "")).strip()
+        return r.returncode == 0, out[:200]
+    except Exception as e:
+        return False, str(e)
+
+
 def _find_git() -> str | None:
     # 优先系统 Git，其次 ComfyHub 便携 MinGit（bootstrap 统一管理）
     try:

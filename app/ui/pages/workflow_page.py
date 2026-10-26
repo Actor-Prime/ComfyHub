@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
 
 from app import workflow_scan, installer
 from app.installer import PlanExecutor
+from app.workers import swap_worker
 
 
 class ScanWorker(QThread):
@@ -198,10 +199,11 @@ class WorkflowPage(QWidget):
             QMessageBox.warning(self, "ComfyHub", "请选择工作流文件")
             return
         self._log(f"── 扫描 {os.path.basename(self.ed_wf.text())} ──")
-        self._worker = ScanWorker(inst["comfyui_path"], self.ed_wf.text().strip())
-        self._worker.sig_log.connect(self._log)
-        self._worker.sig_done.connect(self._on_scan)
-        self._worker.start()
+        w = ScanWorker(inst["comfyui_path"], self.ed_wf.text().strip())
+        w.sig_log.connect(self._log)
+        w.sig_done.connect(self._on_scan)
+        swap_worker(self, "_worker", w)
+        w.start()
 
     def _on_scan(self, res):
         if not res:

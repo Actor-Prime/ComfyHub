@@ -16,7 +16,11 @@ from app.config import load_config, save_config
 from app.proc_manager import ProcManager
 
 # (emoji, 文字) —— 窄条导航：图标上、文字下
-ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
+# 上溯三层：开发环境 = 项目根/app/ui -> 项目根；打包后 = _internal/app/ui -> _internal
+# （assets 在 _internal/assets，spec datas=('F:/ComfyHub/assets', 'assets')）
+# 只上溯两层会在打包后指向 _internal/app/assets → 托盘图标加载失败（2026-10-26 修复）
+ASSETS_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "assets")
 
 NAV_ITEMS = [
     ("🏠", "工作台"),
@@ -161,6 +165,7 @@ class MainWindow(QMainWindow):
 
         self._sync_instances()
         self.nav.setCurrentRow(0)
+        self._init_orphan_check()
 
     # ---------- 系统托盘 ----------
     def _init_tray(self):
@@ -378,6 +383,47 @@ class MainWindow(QMainWindow):
         while port in used or port_in_use(port):
             port += 1
         return port
+
+    # ---------- 启动孤儿检测 ----------
+    def _init_orphan_check(self):
+        """启动 0.8 秒后扫一次残留：上次会话崩溃/被强杀时 closeEvent 没机会跑，
+        ComfyUI 会留在后台。新启动的实例已绑 kill-on-close Job（防新增），
+        这里负责清理历史残留（防已存在的）。"""
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(800, self._check_orphans)
+
+    def _check_orphans(self):
+        if not self.isVisible():    # 未显示（自动化测试等）不弹窗
+            return
+        try:
+            from app.process import scan_orphans, kill_tree
+            orphans = scan_orphans(
+                self.cfg.get("instances") or [],
+                exclude_pids=self.procs.running_pids())
+            if not orphans:
+                return
+            lines = [f"· {o['inst'].get('name') or '实例'}"
+                     f"（端口 {o['inst'].get('port')}，PID {o['pid']}）"
+                     for o in orphans]
+            r = QMessageBox.question(
+                self, "发现残留的 ComfyUI",
+                "检测到以下实例正在运行，但不是本次 ComfyHub 启动的：\n\n"
+                + "\n".join(lines) + "\n\n"
+                "这通常是上次 ComfyHub 异常退出（崩溃/被强制结束）留下的残留。\n"
+                "是否立即结束它们？若它们是你手动启动的，请选择「否」保留。",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+            if r != QMessageBox.Yes:
+                return
+            for o in orphans:
+                kill_tree(o["pid"])
+                self.console_page.append_line(
+                    f"[清理] 已结束残留实例"
+                    f"「{o['inst'].get('name') or '实例'}」(PID {o['pid']})")
+            self._notify("残留进程已清理",
+                         f"已结束 {len(orphans)} 个残留 ComfyUI")
+        except Exception as e:
+            from app.log import log_exc
+            log_exc(f"_check_orphans: {e}")
 
     # ---------- 关闭 ----------
     def closeEvent(self, event):

@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from app import model_store as ms
+from app.workers import swap_worker
 
 
 class _QueueWorker(QThread):
@@ -155,12 +156,13 @@ class DownloadCenter(QToolButton):
             return
         if not self._pending:
             return
-        self._worker = _QueueWorker(self._pending)
+        w = _QueueWorker(self._pending)
         self._pending = []
-        self._worker.sig_progress.connect(self._on_progress)
-        self._worker.sig_state.connect(self._on_state)
-        self._worker.sig_queue_done.connect(self._on_queue_done)
-        self._worker.start()
+        w.sig_progress.connect(self._on_progress)
+        w.sig_state.connect(self._on_state)
+        w.sig_queue_done.connect(self._on_queue_done)
+        swap_worker(self, "_worker", w)
+        w.start()
 
     # -------------------------------------------------- 队列信号
     def _on_progress(self, task_id, done, total):

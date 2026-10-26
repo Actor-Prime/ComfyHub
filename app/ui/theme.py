@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """QSS 主题：深色现代管理软件风格（对标管理大师的视觉调性）"""
 
+import os as _os
+
 DARK_QSS = """
 QWidget {
     background-color: #1e2229;
@@ -362,3 +364,17 @@ QPushButton#DeleteBtn {
 }
 QPushButton#DeleteBtn:hover { background: #e46e6e; }
 """
+
+
+# ===== 下拉箭头（全 ComboBox 统一）=====
+# 暗色 QSS 下 ::drop-down 只留了 22px 空位没画箭头（2026-10-26 用户反馈
+# "稳定版/开发版筛选看不出是下拉"），这里显式指定箭头图标。
+# 路径：theme.py 在 app/ui/ 下，资源在项目根 assets/（打包后同构：
+# _internal/app/ui/theme.py → _internal/assets/，与 main.py 取 icon 同口径）
+_ARROW = _os.path.join(
+    _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))),
+    "assets", "arrow_down.png")
+if _os.path.isfile(_ARROW):
+    DARK_QSS += """
+QComboBox::down-arrow { image: url("%s"); width: 12px; height: 12px; }
+""" % (_ARROW.replace("\\", "/"))

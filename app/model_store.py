@@ -109,6 +109,48 @@ def list_weight_files(repo_id: str) -> list:
     return out
 
 
+# -------------------------------------------------- CivitAI（civitai.red 国内镜像）
+# 元数据/搜索可用；直链下载 307→b2.civitai.com 被墙，文件走 HF 镜像同步仓库兜底
+CIVITAI = "https://civitai.red"
+
+
+def search_civitai(keyword: str, limit=20) -> list:
+    """CivitAI 镜像搜索。返回 [{id, name, type, downloads, likes}]"""
+    kw = urllib.parse.quote(keyword.strip())
+    url = (f"{CIVITAI}/api/v1/models?query={kw}&limit={limit}"
+           f"&sort=Most%20Downloaded")
+    raw = _get(url)
+    items = (raw.get("items") or []) if isinstance(raw, dict) else (raw or [])
+    out = []
+    for m in items:
+        st = m.get("stats") or {}
+        out.append({
+            "id": str(m.get("id") or ""),
+            "name": m.get("name") or "",
+            "type": m.get("type") or "",
+            "downloads": int(st.get("downloadCount") or 0),
+            "likes": int(st.get("favoriteCount") or 0),
+        })
+    return out
+
+
+def civitai_files(model_id: str) -> tuple:
+    """CivitAI 模型最新版本的文件列表（仅元数据）。
+    返回 (files: [{name, size_mb, type}], 模型名)"""
+    data = _get(f"{CIVITAI}/api/v1/models/{model_id}")
+    vers = data.get("modelVersions") or []
+    if not vers:
+        return [], data.get("name") or ""
+    files = []
+    for f in (vers[0].get("files") or []):
+        files.append({
+            "name": f.get("name") or "",
+            "size_mb": (f.get("sizeKB") or 0) / 1024,
+            "type": f.get("type") or "",
+        })
+    return files, data.get("name") or ""
+
+
 def download_url(repo_id: str, file_path: str) -> str:
     return f"{base_url()}/{repo_id}/resolve/main/{file_path}"
 

@@ -424,10 +424,11 @@ class _LogPage(QWizardPage):
         from app import bootstrap
         py = self.state.get("python_path") or ""
         cp = self.state.get("comfyui_path") or self.state.get("target_dir")
-        self._verify_worker = StepWorker(
+        w = StepWorker(
             lambda: bootstrap.verify_comfyui_runnable(py, cp))
-        self._verify_worker.sig_done.connect(self._on_final_verify)
-        self._verify_worker.start()
+        w.sig_done.connect(self._on_final_verify)
+        swap_worker(self, "_verify_worker", w)
+        w.start()
 
     def _on_final_verify(self, ok, res, err):
         if not ok:
@@ -490,6 +491,15 @@ class _LogPage(QWizardPage):
 
     def _on_log(self, msg):
         import html as _html
+        # ★ 落盘（2026-10-26 修：此前只写 UI，install/repair 日志文件只有头部没有正文，
+        #   出问题时无从排查）——追加写入本次安装/修复日志文件
+        _path = getattr(self, "_install_log_path", "")
+        if _path:
+            try:
+                with open(_path, "a", encoding="utf-8") as _f:
+                    _f.write(msg.rstrip() + "\n")
+            except OSError:
+                pass
         _color, _bold = self._log_css(msg)
         _w = "font-weight:bold;" if _bold else ""
         self.log.appendHtml(
@@ -827,6 +837,12 @@ class SetupWizard(QWizard):
                 if not _next.isEnabled():
                     _next.setEnabled(True)
             else:
+                # 添加实例模式：Finish 必须藏掉（它和改文案的 Next「完成」并存
+                # 会出现两个「完成」——2026-10-26 用户截图实测）
+                try:
+                    self.button(QWizard.FinishButton).hide()
+                except Exception:
+                    pass
                 _txt = self.lb_scan.text()
                 # 用 in 而非 startswith——文案现在带"🔍 已扫描…"scope 前缀行
                 if "❌ 没有可用的 Python" in _txt or "❌ 该目录不是" in _txt:
@@ -864,6 +880,13 @@ class SetupWizard(QWizard):
         """
         if mode == "existing":
             self.install_opts.hide()          # 添加已有实例不需要安装参数
+            # ★ 恢复候选下拉左侧标题（2026-10-26 用户实测：下拉切过「新建新实例」后
+            #   fresh 分支把 lb_found_title hide 了，切回实例却没人恢复 → 标题永久消失）
+            if hasattr(self, "lb_found_title") and getattr(self, "_scan_candidates", None):
+                _n = len(self._scan_candidates)
+                self.lb_found_title.setText(
+                    f"请选择实例（共 {_n} 个）:" if _n > 1 else "请选择实例:")
+                self.lb_found_title.show()
             if hasattr(self, "lb_mode"):
                 self.lb_mode.setStyleSheet("color:#4cd47c; font-weight:600;")
                 self.lb_mode.setText(
@@ -1126,11 +1149,11 @@ class SetupWizard(QWizard):
             # 恒可点（至少有"新建 + 1 个实例"两项）
             self.cb_found.setEnabled(True)
             self.cb_found.show()
-            # 明确告知找到几个实例（多个时提醒可下拉切换），否则单看下拉框容易误以为只有一个
+            # 明确提示可下拉选择（多个时带数量），否则单看下拉框不知道还能切
             if len(candidates) > 1:
-                self.lb_found_title.setText(f"已找到 {len(candidates)} 个实例:")
+                self.lb_found_title.setText(f"请选择实例（共 {len(candidates)} 个）:")
             else:
-                self.lb_found_title.setText("检测到:")
+                self.lb_found_title.setText("请选择实例:")
             self.lb_found_title.show()
             self._set_mode("existing")
             def _on_candidate_changed(_i):
@@ -1252,6 +1275,7 @@ class SetupWizard(QWizard):
             self.setButtonText(QWizard.NextButton, "完成")
             self.button(QWizard.NextButton).setEnabled(True)
             self.button(QWizard.FinishButton).hide()
+            self._repair_mode = False          # ★ 验证通过必须清掉失败态残留的修复标记
             self._lock_inputs(False)
             return
         self.button(QWizard.FinishButton).setEnabled(False)
@@ -1457,9 +1481,17 @@ class SetupWizard(QWizard):
         """组装 setup_result：扫描分支（检测直接注册）在此组装；
         安装分支的 setup_result 已由 _on_done 设置，这里不动它"""
         comfy = self._selected_candidate()
-        if comfy and self.cb_found.isVisible():
-            pyv = self._py_map.get(comfy) or self._py_map.get(os.path.normpath(comfy)) or ""
-            python_exe = pyv[0] if isinstance(pyv, list) else pyv
+        # ★ 不能用 cb_found.isVisible() 做守卫（2026-10-26 修）：本函数会在
+        #   currentIdChanged 换页信号里被调用，此时 Qt 已 hide 第 0 页 →
+        #   所有子控件 isVisible()=False → 组装不出结果 → 点「完成」无反应。
+        #   _selected_candidate() 非 None 已说明选中了实例候选，足够判据。
+        if comfy:
+            # ★ 优先用「验证通过」的解释器（_verify_cache）——_py_map[0] 是共享便携
+            #   排序位，未必是实际验证过的那一个
+            python_exe = self._verify_cache.get(comfy) or ""
+            if not (python_exe and os.path.isfile(python_exe)):
+                pyv = self._py_map.get(comfy) or self._py_map.get(os.path.normpath(comfy)) or ""
+                python_exe = pyv[0] if isinstance(pyv, list) else pyv
             # 无配套 Python 也允许添加（python_path 留空）：
             # 与「仍要添加」的承诺一致——先加进列表，之后在实例设置里再指定解释器
             self.setup_result = {
@@ -1510,12 +1542,30 @@ class SetupWizard(QWizard):
     def _pick(self):
         d = QFileDialog.getExistingDirectory(self, "选择安装位置", self.ed_dir.text())
         if d:
-            self.ed_dir.setText(os.path.join(d, "ComfyUI"))
+            # ★ 不再无条件拼 \\ComfyUI（2026-10-26 修：选 F:\\ 会被拼成不存在的
+            #   F:\\ComfyUI，且把「添加实例」误判成「全新安装」）。原样填入选中目录，
+            #   交给 _detect_existing 统一决策：全深度扫描有实例 → 添加模式列候选；
+            #   没有 → _derive_target 推导安装目标（盘根/普通目录补 \\ComfyUI、
+            #   目录名含 comfyui 则原样——与手动输入框同一口径）
+            self.ed_dir.setText(d)
             self._detect_existing()   # 每次选择文件夹自动扫描
 
     def _on_page_change(self, page_id: int):
         # 进入进度页时自动开跑（page_id 是 int，必须换算成页对象再比）
         if self.page(page_id) is self.p2 and not self._started:
+            # ★★★ 添加已有实例模式绝不允许进安装页（2026-10-26 用户实测踩到：
+            #   aki 整合包验证通过点「完成」，Qt 却翻页到安装页，cb_python 无数据
+            #   → py=None 跑全新安装步骤1 → 报"未检测到 Python 解释器"卡死）。
+            #   existing 模式下「完成」的语义 = 注册实例并关闭向导。
+            if (not getattr(self, "_repair_mode", False)
+                    and self.install_opts.isHidden()):
+                self._prepare_result()
+                if self.setup_result and self.setup_result.get("comfyui_path"):
+                    QTimer.singleShot(0, self.accept)   # 直接完成，不启动安装
+                else:
+                    # 兜底：结果没组装出来（理论不可达）——回第一页，别卡在安装页
+                    self.setCurrentId(0)
+                return
             self._started = True
             # ★ 修复模式分流：失败态点「下一步：修复」→ 跑修复计划（补依赖/装 Python），
             #   而不是全新安装（否则会把用户已选路径当成安装目标去拉源码）
