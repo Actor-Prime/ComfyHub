@@ -4,6 +4,7 @@ import os
 import json
 import shutil
 import time
+import hashlib
 import subprocess
 
 from app.winsub import run
@@ -175,6 +176,15 @@ class ModelDownloader:
 
 
 # ================= 环境备份 =================
+def _inst_dirname(comfyui_path: str) -> str:
+    """实例存储目录名：basename + 路径哈希 8 位。
+    只用 basename 会让不同盘/不同父目录下的同名 ComfyUI
+    （如 F:\\ComfyUI 与 G:\\ComfyUI）共用备份/快照目录、互相污染。"""
+    base = os.path.basename(comfyui_path.rstrip("\\/")) or "instance"
+    key = os.path.normcase(os.path.normpath(os.path.abspath(comfyui_path)))
+    return f"{base}_{hashlib.md5(key.encode('utf-8')).hexdigest()[:8]}"
+
+
 class EnvBackup:
     """Python 环境（pip freeze）+ 插件清单快照的备份与还原"""
 
@@ -183,7 +193,7 @@ class EnvBackup:
         self.python_path = python_path
         base = os.environ.get("APPDATA") or os.path.expanduser("~")
         self.backup_dir = os.path.join(base, "ComfyHub", "backups",
-                                       os.path.basename(comfyui_path.rstrip("\\/")))
+                                       _inst_dirname(comfyui_path))
         os.makedirs(self.backup_dir, exist_ok=True)
 
     def create(self, label: str = "", log=print) -> str:
@@ -202,9 +212,13 @@ class EnvBackup:
             open(req, "w", encoding="utf-8").write(r.stdout or "")
         except Exception as e:
             log(f"pip freeze 失败: {e}")
-        # 2) 插件清单
+        # 2) 插件清单（名称规范化：剥离 .disabled，与 Rescue 快照口径一致）
         nodes = inst_lib.list_custom_nodes(self.comfyui_path)
-        json.dump([{"name": n, "git": g, "enabled": en} for n, g, en in nodes],
+        state = []
+        for n, g, en in nodes:
+            base = n[:-len(".disabled")] if n.endswith(".disabled") else n
+            state.append({"name": base, "git": g, "enabled": en})
+        json.dump(state,
                   open(os.path.join(bdir, "custom_nodes.json"), "w", encoding="utf-8"),
                   ensure_ascii=False, indent=2)
         log(f"备份完成: {name}")
@@ -240,17 +254,24 @@ class Rescue:
     """插件安装前快照 → 出问题一键回滚（目录级，轻量可靠）"""
 
     def __init__(self, comfyui_path: str):
+        self.comfyui_path = comfyui_path
         self.nodes_dir = os.path.join(comfyui_path, "custom_nodes")
         base = os.environ.get("APPDATA") or os.path.expanduser("~")
         self.snap_dir = os.path.join(base, "ComfyHub", "rescue",
-                                     os.path.basename(comfyui_path.rstrip("\\/")))
+                                     _inst_dirname(comfyui_path))
         os.makedirs(self.snap_dir, exist_ok=True)
 
     def snapshot(self, log=print) -> str:
         """记录当前插件状态（名称+启停+git地址），不动文件"""
         ts = time.strftime("%Y%m%d_%H%M%S")
-        nodes = inst_lib.list_custom_nodes(self.nodes_dir)
-        state = [{"name": n, "enabled": en} for n, _g, en in nodes]
+        # ⚠️ 传 comfyui_path 而非 nodes_dir（list_custom_nodes 内部会再拼 custom_nodes）
+        nodes = inst_lib.list_custom_nodes(self.comfyui_path)
+        # 名称规范化：剥离 .disabled 后缀，启停用 enabled 字段表达，
+        # 否则回滚时会把 plugB.disabled 改名成 plugB.disabled.disabled（双重禁用）
+        state = []
+        for n, _g, en in nodes:
+            base = n[:-len(".disabled")] if n.endswith(".disabled") else n
+            state.append({"name": base, "enabled": en})
         path = os.path.join(self.snap_dir, f"{ts}.json")
         json.dump(state, open(path, "w", encoding="utf-8"),
                   ensure_ascii=False, indent=2)
@@ -269,33 +290,52 @@ class Rescue:
         if not os.path.isfile(path):
             return False, "快照不存在"
         state = json.load(open(path, encoding="utf-8"))
-        want = {s["name"]: s["enabled"] for s in state}
-        now = inst_lib.list_custom_nodes(self.nodes_dir)
+        # 防御旧格式快照：加载时也剥离 .disabled 后缀
+        want = {}
+        for s in state:
+            n = s["name"]
+            if n.endswith(".disabled"):
+                n = n[:-len(".disabled")]
+            want[n] = s["enabled"]
+        # ⚠️ 传 comfyui_path（内部拼 custom_nodes）；并按基名规范化：
+        # cur[基名] = (实际目录名, 当前是否启用)
+        now = inst_lib.list_custom_nodes(self.comfyui_path)
+        cur = {}
+        for n, _g, en in now:
+            base = n[:-len(".disabled")] if n.endswith(".disabled") else n
+            if base not in cur:  # foo 与 foo.disabled 并存的异常态只取首个
+                cur[base] = (n, en)
         actions = []
         # 1) 快照里没有的现插件 → 禁用（救援核心：新装插件导致崩溃时回滚）
-        for name, _g, enabled in now:
-            if name not in want and enabled:
-                src = os.path.join(self.nodes_dir, name)
+        for base, (actual, enabled) in cur.items():
+            if base not in want and enabled:
+                src = os.path.join(self.nodes_dir, actual)
                 dst = src + ".disabled"
                 try:
                     os.rename(src, dst)
-                    actions.append(f"禁用新增: {name}")
+                    actions.append(f"禁用新增: {base}")
                 except OSError as e:
-                    actions.append(f"禁用失败 {name}: {e}")
-        # 2) 恢复快照里的启停状态
-        for name, enabled in want.items():
-            src = os.path.join(self.nodes_dir, name)
-            dis = src + ".disabled"
-            if enabled and os.path.isdir(dis):
+                    actions.append(f"禁用失败 {base}: {e}")
+        # 2) 恢复快照里的启停状态（按基名比较，rename 目标用基名拼，
+        #    避免出现 xxx.disabled.disabled）
+        for base, enabled in want.items():
+            hit = cur.get(base)
+            if hit is None:
+                continue  # 插件已不存在，跳过
+            actual, cur_en = hit
+            src = os.path.join(self.nodes_dir, actual)
+            if enabled and not cur_en:
+                dst = os.path.join(self.nodes_dir, base)
                 try:
-                    os.rename(dis, src)
-                    actions.append(f"恢复启用: {name}")
+                    os.rename(src, dst)
+                    actions.append(f"恢复启用: {base}")
                 except OSError:
                     pass
-            elif (not enabled) and os.path.isdir(src):
+            elif (not enabled) and cur_en:
+                dst = os.path.join(self.nodes_dir, base + ".disabled")
                 try:
-                    os.rename(src, dis)
-                    actions.append(f"恢复禁用: {name}")
+                    os.rename(src, dst)
+                    actions.append(f"恢复禁用: {base}")
                 except OSError:
                     pass
         msg = "；".join(actions) if actions else "状态一致，无需回滚"
