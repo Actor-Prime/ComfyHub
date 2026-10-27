@@ -29,6 +29,18 @@ class ProcManager:
         p = self._procs.get(inst["id"])
         return bool(p and p.is_running)
 
+    def actual_port(self, inst: dict) -> "int | None":
+        """实例进程实际监听的 HTTP 端口；未运行/探测失败返回 None
+
+        启动时配置端口被占会自动顺延（见 ComfyProcess.start），
+        打开网页等入口必须用本方法拿真实端口，而不是 inst["port"]。
+        """
+        from app.process import actual_port_for_pid
+        p = self._procs.get(inst["id"])
+        if not (p and p.is_running and p.pid):
+            return None
+        return actual_port_for_pid(int(p.pid), inst.get("port"))
+
     def running_pids(self) -> set:
         """本管理器启动且仍在运行的实例 PID 集合（孤儿检测排除用）"""
         return {p.pid for p in self._procs.values()

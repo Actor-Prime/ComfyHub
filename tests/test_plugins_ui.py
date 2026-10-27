@@ -93,9 +93,11 @@ try:
     check("冲突映射含 plugA/plugB",
           "plugA" in p._conflict_map and "plugB" in p._conflict_map,
           str(p._conflict_map))
-    check("表格第4列显示冲突",
-          "SharedNode" in (p.tb.item(0, 3).text() or ""),
-          p.tb.item(0, 3).text())
+    # 2026-10-26 起「节点冲突」列已合并进状态列（col5 cellWidget 的悬停提示）
+    _sw = p.tb.cellWidget(0, 5)
+    check("表格状态列显示冲突（合并列后的现行布局）",
+          "SharedNode" in ((_sw.toolTip() if _sw else "") or ""),
+          (_sw.toolTip() if _sw else None))
 
     print("\n=== 3. 切到「只A」并应用 ===")
     idx = p.cb_profile.findText("只A")

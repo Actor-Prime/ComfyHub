@@ -219,6 +219,8 @@ class CivitaiDialog(QDialog):
             sz.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             self.tb_files.setItem(i, 1, sz)
             self.tb_files.setItem(i, 2, QTableWidgetItem(f["type"]))
+        from app.ui.theme import fit_table
+        fit_table(self.tb_files)   # 对话框懒创建，主窗扫描覆盖不到，就地统一行高
         v1.addWidget(self.tb_files)
         root.addWidget(g1, 1)
 
@@ -236,6 +238,7 @@ class CivitaiDialog(QDialog):
         self.tb_hf.setColumnWidth(2, 100)
         self.tb_hf.setEditTriggers(QTableWidget.NoEditTriggers)
         self.tb_hf.verticalHeader().setVisible(False)
+        fit_table(self.tb_hf)
         v2.addWidget(self.tb_hf)
         root.addWidget(g2, 1)
 

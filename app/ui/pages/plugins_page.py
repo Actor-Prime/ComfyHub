@@ -7,8 +7,8 @@
 """
 import os
 
-from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import Qt, QThread, Signal, QUrl
+from PySide6.QtGui import QIcon, QColor, QFont, QDesktopServices
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTableWidget,
     QTableWidgetItem, QHeaderView, QMessageBox, QInputDialog, QComboBox,
@@ -274,9 +274,13 @@ class PluginsPage(QWidget):
         hh.setSectionResizeMode(4, QHeaderView.ResizeToContents)
         hh.setSectionResizeMode(5, QHeaderView.Fixed)         # 状态列：文字+⚠ 图标
         hh.setSectionResizeMode(6, QHeaderView.Fixed)
-        self.tb.setColumnWidth(1, 300)
-        self.tb.setColumnWidth(5, 110)
-        self.tb.setColumnWidth(6, 232)
+        # 列宽预算（2026-10-28 用户要求「插件名尽量显示全，链接可截断」）：
+        # 地址 300→160（截断靠 tooltip 看全文）、状态 110→96、操作 232→210
+        # （4 按钮实需 184+item padding 12=196，210 留 14px 余量），
+        # 省出 ~76px 全给 Stretch 的插件名列
+        self.tb.setColumnWidth(1, 160)
+        self.tb.setColumnWidth(5, 96)
+        self.tb.setColumnWidth(6, 210)
         self.tb.horizontalHeaderItem(3).setToolTip(
             "当前 commit 短哈希；点「版本」可切换分支/tag")
         self.tb.horizontalHeaderItem(5).setToolTip(
@@ -284,6 +288,8 @@ class PluginsPage(QWidget):
         self.tb.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tb.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tb.setAlternatingRowColors(True)
+        # 双击 Git 地址列 → 浏览器打开仓库页（单击只选中；2026-10-27 用户定）
+        self.tb.cellDoubleClicked.connect(self._on_installed_click)
         self.tb.doubleClicked.connect(self._toggle)
         root.addWidget(self.tb, 1)
 
@@ -354,12 +360,15 @@ class PluginsPage(QWidget):
         self.tb_market.horizontalHeaderItem(1).setToolTip(
             "ComfyUI 官方 Registry 统计的下载量（万 = 10,000 次）\n"
             "无下载量数据的插件显示 GitHub 星数（⭐）或 —")
-        self.tb_market.horizontalHeaderItem(0).setToolTip("点击行可查看仓库地址")
+        self.tb_market.horizontalHeaderItem(0).setToolTip("双击插件名可在浏览器打开仓库页面（单击仅选中）")
         self.tb_market.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tb_market.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tb_market.setAlternatingRowColors(True)
         self.tb_market.setWordWrap(False)          # 说明列单行，超长用省略号
         self.tb_market.verticalHeader().setDefaultSectionSize(30)
+        # 双击插件名 → 系统默认浏览器打开仓库页面（2026-10-27 用户定：单击只选中，
+        # 双击才跳转，避免误开）
+        self.tb_market.cellDoubleClicked.connect(self._on_market_click)
         root.addWidget(self.tb_market, 1)
 
         tip = QLabel("数据来源：ComfyUI-Manager 官方插件清单（6000+）。安装走 git clone，"
@@ -408,15 +417,23 @@ class PluginsPage(QWidget):
         for i, p in enumerate(rows):
             name = p["name"]
             item = QTableWidgetItem(name)
+            # 悬停显示完整插件名：列被压窄时文字会省略号截断，tooltip 补全
+            item.setToolTip(name)
             if pr is not None and (name in want) != p["enabled"]:
                 item.setForeground(Qt.gray)
-                item.setToolTip("与当前模式不一致，点「▶ 应用」同步")
+                item.setToolTip(name + "\n与当前模式不一致，点「▶ 应用」同步")
             self.tb.setItem(i, 0, item)
             url = (p.get("url") or "").rstrip("/").removesuffix(".git")
             it_url = QTableWidgetItem(url)
             if url:
                 it_url.setForeground(Qt.cyan)
-                it_url.setToolTip(url + "\n（双击行切换启用/禁用）")
+                f = it_url.font()
+                f.setUnderline(True)            # 链接语义：点地址开网页
+                it_url.setFont(f)
+                # tooltip 给原始完整 URL（列截断时悬停可读全文）+ 打开提示
+                it_url.setToolTip(url + "\n双击在浏览器打开：" + store.web_url({"reference": url}))
+            else:
+                it_url.setToolTip("该插件无 Git 地址（本地/手工安装）")
             self.tb.setItem(i, 1, it_url)
             # 分支/版本/更新时间先占位，后台 git 信息线程回来再填
             for col in (2, 3, 4):
@@ -488,7 +505,8 @@ class PluginsPage(QWidget):
 
         def mk(text, cb, danger=False):
             b = QPushButton(text)
-            b.setFixedHeight(24)
+            # 22px：cellWidget 可用高 23px（行32-item padding 8），24 会溢出 1px 被裁
+            b.setFixedHeight(22)
             if danger:
                 b.setStyleSheet("color:#e06c75;")
             b.clicked.connect(lambda _c=False, r=row: cb(r))
@@ -782,7 +800,16 @@ class PluginsPage(QWidget):
         for i, n in enumerate(rows):
             name = store.display_name(n)
             t = QTableWidgetItem(name)
-            t.setToolTip(store.install_url(n))
+            # 链接样式：蓝色+下划线，提示可点开仓库页面
+            web = store.web_url(n)
+            if web:
+                t.setForeground(QColor("#6fb3ff"))
+                f = QFont(t.font())
+                f.setUnderline(True)
+                t.setFont(f)
+                t.setToolTip(f"双击在浏览器打开：{web}")
+            else:
+                t.setToolTip(store.install_url(n) or "（无仓库地址）")
             self.tb_market.setItem(i, 0, t)
             # 热度：下载量优先，其次 GitHub 星数
             hot = QTableWidgetItem(store.hot_text(n))
@@ -814,13 +841,25 @@ class PluginsPage(QWidget):
             else:
                 btn = QPushButton("安装")
                 btn.setProperty("success", True)
-                btn.setFixedSize(80, 26)          # 固定尺寸，防止列宽变化时文字换行
+                btn.setFixedSize(80, 22)          # 固定尺寸防列宽变化换行；22 ≤ cell 可用高 23
                 btn.clicked.connect(lambda _c=False, node=n: self._install_from_store(node))
                 holder = QWidget()
                 hl = QHBoxLayout(holder)
                 hl.setContentsMargins(0, 0, 0, 0)
                 hl.addWidget(btn, 0, Qt.AlignCenter)
                 self.tb_market.setCellWidget(i, 4, holder)
+
+    def _on_market_click(self, row, col):
+        """双击插件市场第 0 列（名称）→ 系统默认浏览器打开仓库页面；
+        单击仅选中（cellClicked 未接槽），双击其他列不动作"""
+        if col != 0:
+            return
+        rows = self._last_market_rows
+        if not (0 <= row < len(rows)):
+            return
+        u = store.web_url(rows[row])
+        if u:
+            QDesktopServices.openUrl(QUrl(u))
 
     def _install_from_store(self, node):
         inst = self._inst()
@@ -866,7 +905,22 @@ class PluginsPage(QWidget):
         inst = self._inst()
         return os.path.join(inst["comfyui_path"], "custom_nodes") if inst else ""
 
+    def _on_installed_click(self, row, col):
+        """已安装页：双击 Git 地址列（col 1）→ 系统默认浏览器打开仓库页面；
+        单击仅选中；双击地址列由 _toggle 的列守卫跳过启用/禁用"""
+        if col != 1:
+            return
+        rows = getattr(self, "_rows_data", [])
+        if not (0 <= row < len(rows)):
+            return
+        u = store.web_url({"reference": rows[row].get("url") or ""})
+        if u:
+            QDesktopServices.openUrl(QUrl(u))
+
     def _toggle(self, index):
+        # 双击 Git 地址列 = 开网页（单击已触发），不切启用/禁用
+        if index.column() == 1:
+            return
         inst = self._inst()
         if not inst:
             return

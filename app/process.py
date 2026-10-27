@@ -146,8 +146,9 @@ def assign_to_kill_job(pid: int) -> bool:
 
 # ==================== 孤儿实例检测（启动时清理历史残留） ====================
 
-def pid_listening_on(port: int) -> list:
-    """返回正在 LISTENING 指定 TCP 端口的 PID 列表（netstat -ano -p TCP 解析）"""
+def _netstat_listening() -> list:
+    """返回 [(pid, local_port)]：netstat -ano -p TCP 全部 LISTENING 行解析
+    （GBK 解码；孤儿检测与实际端口识别共用）"""
     if os.name != "nt":
         return []
     try:
@@ -158,13 +159,41 @@ def pid_listening_on(port: int) -> list:
             else (raw or "")
     except Exception:
         return []
-    pat = re.compile(rf"^\s+TCP\s+\S+:{port}\s+\S+\s+LISTENING\s+(\d+)\s*$")
-    pids = []
+    pat = re.compile(r"^\s+TCP\s+\S+:(\d+)\s+\S+\s+LISTENING\s+(\d+)\s*$")
+    res = []
     for line in text.splitlines():
         m = pat.match(line)
-        if m and int(m.group(1)) not in pids:
-            pids.append(int(m.group(1)))
+        if m:
+            res.append((int(m.group(2)), int(m.group(1))))
+    return res
+
+
+def pid_listening_on(port: int) -> list:
+    """返回正在 LISTENING 指定 TCP 端口的 PID 列表"""
+    pids = []
+    for pid, p in _netstat_listening():
+        if p == port and pid not in pids:
+            pids.append(pid)
     return pids
+
+
+def listening_ports(pid: int) -> list:
+    """返回指定 PID 正在 LISTENING 的本地端口（升序去重）"""
+    return sorted({p for p_, p in _netstat_listening() if p_ == int(pid)})
+
+
+def actual_port_for_pid(pid: int, prefer_port=None) -> "int | None":
+    """该进程实际对外服务的 HTTP 端口（启动端口被占顺延后 ≠ 配置端口时用它）
+
+    判定：配置端口在监听列表 → 用它；否则列表唯一 → 用它；
+    多端口 → 取最小（保守猜测）；无监听 → None
+    """
+    ports = listening_ports(pid)
+    if not ports:
+        return None
+    if prefer_port and int(prefer_port) in ports:
+        return int(prefer_port)
+    return ports[0]
 
 
 def process_image_name(pid: int) -> str:
@@ -226,8 +255,10 @@ def _global_launch() -> dict:
     return {}
 
 
-def build_command(inst: dict) -> list:
+def build_command(inst: dict, port: int | None = None) -> list:
     """根据实例配置构造启动命令行（含高级设置字段）
+
+    port: 覆盖实例配置端口（启动时配置端口被占、自动顺延后传实际端口）。
 
     合并规则（2026-10-26 专家模式全局参数）：
       实例单独设置 > 全局设置 —— 实例的显存/注意力留「自动」时才吃全局值，
@@ -246,8 +277,9 @@ def build_command(inst: dict) -> list:
     # 生成设备
     if inst.get("device") == "cpu":
         cmd.append("--cpu")
-    # 端口
-    port = int(inst.get("port") or 8188)
+    # 端口（start() 自动顺延后会传入实际端口覆盖配置值）
+    if port is None:
+        port = int(inst.get("port") or 8188)
     listen_all = bool(inst.get("lan_access"))
     cmd += ["--listen", "0.0.0.0" if listen_all else "127.0.0.1",
             "--port", str(port)]
@@ -361,17 +393,27 @@ class ComfyProcess(QObject):
                             f"[ComfyHub] ⚠️ 插件方案应用失败：{out.get('errors')}")
         except Exception as e:
             self.log_line.emit(f"[ComfyHub] 插件方案处理异常（不影响启动）：{e}")
-        cmd = build_command(inst)
-        self._port = int(inst.get("port") or 8188)
+        # ★ 端口被占用 → 自动顺延下一个空闲端口（最多顺延 10 个）
+        #   ComfyUI 本体遇到占用是直接崩退出、不会跳（server.py TCPSite 绑定异常），
+        #   由管理器在启动前替它选好空闲端口；打开网页/就绪提示按实际端口走
+        port = int(inst.get("port") or 8188)
+        if port_in_use(port):
+            orig = port
+            holder = ",".join(str(x) for x in pid_listening_on(orig)) or "?"
+            port = next((p for p in range(orig + 1, orig + 11)
+                         if not port_in_use(p)), None)
+            if port is None:
+                self.log_line.emit(
+                    f"[ComfyHub] ❌ 端口 {orig} 起连续 10 个均被占用，"
+                    "请手动更换启动端口。")
+                return
+            self.log_line.emit(
+                f"[ComfyHub] ⚠️ 配置端口 {orig} 已被占用（PID {holder}），"
+                f"已自动顺延到 {port}；打开网页将按实际端口 {port} 走。")
+        self._port = port
         self._ready_announced = False
         self._browser_on_ready = bool(inst.get("auto_open_browser", True))
-
-        port = self._port
-        if port_in_use(port):
-            self.log_line.emit(
-                f"[ComfyHub] 端口 {port} 已被占用。若已有一个 ComfyUI 在跑，可直接用浏览器打开；"
-                f"否则请更换端口后重试。")
-            return
+        cmd = build_command(inst, port=port)
 
         workdir = inst["comfyui_path"]
         env = QProcessEnvironment.systemEnvironment()
