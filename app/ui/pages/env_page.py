@@ -94,6 +94,10 @@ class DetectWorker(QThread):
 
 
 class EnvPage(QWidget):
+    # 线程安全日志：bk.create/restore 在工作线程里直接调 log，
+    # QWidget 不能跨线程碰 → 经信号回主线程（auto connection 自动 queued）
+    sig_log = Signal(str)
+
     def __init__(self, cfg, mainwin):
         super().__init__()
         self.cfg = cfg
@@ -227,11 +231,12 @@ class EnvPage(QWidget):
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setObjectName("LogConsole")
+        self.sig_log.connect(self.log.appendPlainText)
         v.addWidget(self.log, 1)
         return w
 
     def _log(self, m):
-        self.log.appendPlainText(str(m))
+        self.sig_log.emit(str(m))
 
     def _refresh_snapshots(self):
         inst = self._inst()
@@ -263,8 +268,10 @@ class EnvPage(QWidget):
         bk = EnvBackup(inst["comfyui_path"], inst["python_path"])
         self._task = _RunTask(lambda: bk.create(self.ed_label.text().strip(),
                                                 log=self._log))
-        self._task.sig_done.connect(lambda name: (self._log(f"备份完成: {name}"),
-                                                  self._refresh_snapshots()))
+        # create 内部已 log"备份完成"，此处只刷新列表
+        self._task.sig_done.connect(lambda name: self._refresh_snapshots())
+        self._task.sig_err.connect(lambda e: (self._log(f"备份失败: {e}"),
+                                              self._refresh_snapshots()))
         self._task.start()
 
     def _snapshot(self):
@@ -288,6 +295,9 @@ class EnvPage(QWidget):
         self._task.sig_done.connect(lambda ok: (
             self._log(f"还原{'成功' if ok else '失败'}: {name}"),
             QMessageBox.information(self, "ComfyHub", "还原完成" if ok else "还原失败")))
+        self._task.sig_err.connect(lambda e: (
+            self._log(f"还原失败: {e}"),
+            QMessageBox.information(self, "ComfyHub", f"还原失败: {e}")))
         self._task.start()
 
     def _rollback(self):
@@ -433,6 +443,7 @@ class EnvPage(QWidget):
             w.sig_done.connect(
                 lambda r: self._deps_log("脚本输出尾: "
                                          + ((r.stdout or r.stderr or "")[-300:] if hasattr(r, "stdout") else str(r))))
+            w.sig_err.connect(lambda e: self._deps_log(f"❌ 脚本执行失败: {e}"))
             swap_worker(self, "_deps_op_worker", w)
             w.start()
             return
@@ -447,6 +458,11 @@ class EnvPage(QWidget):
 class PipListWorker(QThread):
     """pip list 后台检测"""
     sig_done = Signal(list, str)
+
+    def __init__(self, inst, parent=None):
+        # ⚠️ 必须显式收 inst：QThread.__init__(dict) 会直接 TypeError
+        super().__init__(parent)
+        self._inst = inst
 
     def run(self):
         inst = self._inst_ref()
@@ -644,6 +660,7 @@ from PySide6.QtCore import QThread as _QThread, Signal as _Signal
 
 class _RunTask(_QThread):
     sig_done = _Signal(object)
+    sig_err = _Signal(str)   # 异常独立通道：不再伪装成返回值（曾导致"失败"被当成功）
 
     def __init__(self, fn):
         super().__init__()
@@ -653,4 +670,4 @@ class _RunTask(_QThread):
         try:
             self.sig_done.emit(self.fn())
         except Exception as e:
-            self.sig_done.emit(f"失败: {e}")
+            self.sig_err.emit(str(e))
