@@ -262,8 +262,13 @@ class ComfyuiPage(QWidget):
         self.cb_kkind = QComboBox()
         self.cb_kkind.addItems(["稳定版", "开发版", "全部"])   # 默认停在稳定版，全部放最后
         self.cb_kkind.currentIndexChanged.connect(lambda _i: self._filter_versions())
+        # 筛选计数反馈：切筛选时行数变化直接可见（稳定版排最前，切「全部」顶部行不变，
+        # 没有计数用户会以为点了没反应——2026-10-27 报障）
+        self.lb_kcount = QLabel("")
+        self.lb_kcount.setStyleSheet("color:#9fb0c8;")
         h_k.addWidget(self.b_kupdate)
         h_k.addWidget(b_krefresh)
+        h_k.addWidget(self.lb_kcount)
         h_k.addWidget(self.cb_kkind)
         wrap_k = QWidget(); wrap_k.setLayout(h_k)
         t2v.addWidget(_Row("内核版本管理", "一键更新到最新稳定版，或按版本回滚（切换后自动安装配套依赖）", wrap_k))
@@ -279,9 +284,8 @@ class ComfyuiPage(QWidget):
         self.tb_kver.setColumnWidth(3, 150)
         self.tb_kver.setEditTriggers(QTableWidget.NoEditTriggers)
         self.tb_kver.setSelectionBehavior(QTableWidget.SelectRows)
-        self.tb_kver.setMaximumHeight(240)
-        t2v.addWidget(self.tb_kver)
-        t2v.addStretch()
+        # 不再设最大高度：列表向下撑满到窗口底部操作栏（2026-10-27 报障改）
+        t2v.addWidget(self.tb_kver, 1)
         self.tabs.addTab(t2, "🧬 内核版本")
 
         # ---- 底部：保存 / 删除（全局）----
@@ -378,7 +382,8 @@ class ComfyuiPage(QWidget):
 
     def _filter_versions(self):
         kind = self.cb_kkind.currentText()
-        rows = [v for v in getattr(self, "_all_versions", [])
+        allv = getattr(self, "_all_versions", [])
+        rows = [v for v in allv
                 if kind == "全部" or v["kind"] == kind]
         self.tb_kver.setRowCount(len(rows))
         for i, v in enumerate(rows):
@@ -390,6 +395,9 @@ class ComfyuiPage(QWidget):
             b = QPushButton("切换并装依赖")
             b.clicked.connect(lambda _c=False, tag=v["version"]: self._switch_kernel(tag))
             self.tb_kver.setCellWidget(i, 3, b)
+        # 计数反馈：让用户看见筛选生效（显示 X / 共 Y）
+        self.lb_kcount.setText(f"显示 {len(rows)} / 共 {len(allv)}" if allv else "")
+        self.tb_kver.verticalScrollBar().setValue(0)
 
     def _update_stable(self):
         inst = self.mainwin.current_inst()
@@ -460,6 +468,10 @@ class ComfyuiPage(QWidget):
         running = bool(inst and self.mainwin.procs.is_running(inst))
         self.b_start.setEnabled(bool(inst) and not running)
         self.b_stop.setEnabled(running)
+        # 未启动不能打开网页（用户定）；运行中按实际端口打开
+        self.b_web.setEnabled(running)
+        self.b_web.setToolTip("打开当前实例网页（自动识别实际端口）"
+                              if running else "实例启动后可用")
         self.lb_state.setText("● 运行中" if running else "未运行")
         self.lb_state.setObjectName("StatusRun" if running else "StatusStop")
         # QSS objectName 变更后需重刷样式
@@ -720,7 +732,19 @@ class ComfyuiPage(QWidget):
             self._update_state()
 
     def open_browser(self):
+        """打开当前实例网页：未启动不打开；启动时按实际监听端口
+        （配置端口被占、自动顺延后实际端口可能 ≠ 配置端口）"""
         import webbrowser
         inst = self._current_inst()
-        if inst:
-            webbrowser.open(f"http://127.0.0.1:{int(inst.get('port') or 8188)}")
+        if not inst:
+            return
+        if not self.mainwin.procs.is_running(inst):
+            self.mainwin.console_page.append_line(
+                "[ComfyHub] 实例未启动，无法打开网页。")
+            return
+        cfg = int(inst.get("port") or 8188)
+        port = self.mainwin.procs.actual_port(inst) or cfg
+        if port != cfg:
+            self.mainwin.console_page.append_line(
+                f"[ComfyHub] 实际端口 {port}（配置 {cfg}），已按实际端口打开")
+        webbrowser.open(f"http://127.0.0.1:{port}")

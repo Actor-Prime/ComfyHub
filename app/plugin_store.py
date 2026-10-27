@@ -155,6 +155,28 @@ def is_git_installable(node: dict) -> bool:
 def display_name(node: dict) -> str:
     return (node.get("title") or node.get("reference") or "（未命名）").strip()
 
+
+def web_url(node: dict) -> str:
+    """git clone 地址 → 浏览器可打开的网页地址（点击插件名跳转用）
+
+    - 去掉尾部 .git
+    - git@host:path / ssh://git@ 统一转 https
+    - 非 http(s) 或空 → 返回 ""（UI 不可点）
+    """
+    u = install_url(node).strip()
+    if not u:
+        return ""
+    if u.startswith("git@"):                      # git@github.com:owner/repo.git
+        host, _, path = u[4:].partition(":")
+        u = f"https://{host}/{path}" if path else u
+    elif u.startswith("ssh://git@"):              # ssh://git@github.com/owner/repo.git
+        u = "https://" + u[len("ssh://git@"):]
+    if not u.startswith(("http://", "https://")):
+        return ""
+    if u.endswith(".git"):
+        u = u[:-4]
+    return u
+
 # ============================================================ 热度数据（官方 Registry）
 REGISTRY_API = "https://api.comfy.org/nodes"
 STATS_CACHE_TTL = 12 * 3600

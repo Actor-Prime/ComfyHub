@@ -155,7 +155,15 @@ QHeaderView::section {
     font-weight: bold;
 }
 QTableWidget::item { padding: 4px 6px; }
-QTableWidget::item:selected { background: #2f4a75; }
+/* 选中/焦点态必须显式给 color：只写 background 时 Qt 会丢掉 item 自设前景，
+   回落默认黑字 → 蓝底黑字看不清（2026-10-27 用户实测） */
+QTableWidget::item:selected { background: #2f4a75; color: #ffffff; }
+QTableWidget::item:focus { background: #2f4a75; color: #ffffff; border: none; }
+/* 表格内嵌按钮紧凑 padding（2026-10-27 用户报障「框住的字显示不全」）：
+   item 的 4px padding 会把 cellWidget 一起挤小 —— 32px 行高落到按钮只剩 23px，
+   而基础按钮 padding 6px 需要 26px 才装得下 12px 文字 → 上下被裁。
+   紧凑到 2px 后 sizeHint 降到 18px，稳进 23px 可用高；表外按钮不受此规则影响 */
+QTableWidget QPushButton { padding: 2px 8px; }
 
 /* ===== 输入框 ===== */
 QLineEdit, QSpinBox, QComboBox, QPlainTextEdit, QTextEdit {
@@ -378,3 +386,30 @@ if _os.path.isfile(_ARROW):
     DARK_QSS += """
 QComboBox::down-arrow { image: url("%s"); width: 12px; height: 12px; }
 """ % (_ARROW.replace("\\", "/"))
+
+
+# ===== 表格行高统一（2026-10-27 用户报障「字体显示不全」）=====
+# 根因：QSS 给 QTableWidget::item 加了 4px 上下 padding，QWidget 全局字号 12px，
+# 文字实际需要 ~25px 行高，而 Qt 默认行高仅 24~26px —— 临界裁字（截图实测贴边）。
+# 只有插件市场表当年单独设了 30，其余表全是默认值。这里统一 32px，
+# 主窗建成后调 fit_all_tables() 一次性扫全部表格，以后新页面/新表自动覆盖。
+TABLE_ROW_H = 32
+
+
+def fit_table(tb, row_h: int = TABLE_ROW_H) -> None:
+    """统一表格行高：默认值管新建行，min 防止被拖小，循环兜底已存在的行"""
+    vh = tb.verticalHeader()
+    vh.setDefaultSectionSize(row_h)
+    vh.setMinimumSectionSize(row_h)
+    for r in range(tb.rowCount()):
+        tb.setRowHeight(r, row_h)
+
+
+def fit_all_tables(root, row_h: int = TABLE_ROW_H) -> int:
+    """扫 root 子树里全部 QTableWidget 统一行高，返回处理数量"""
+    from PySide6.QtWidgets import QTableWidget
+    n = 0
+    for tb in root.findChildren(QTableWidget):
+        fit_table(tb, row_h)
+        n += 1
+    return n

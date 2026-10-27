@@ -160,6 +160,11 @@ class MainWindow(QMainWindow):
                   self.console_page, self.settings_page):
             self.stack.addWidget(w)
 
+        # 表格行高统一 32px：QSS item 有 4px padding，默认行高会把字上下裁掉
+        # （2026-10-27 插件页报障「字体显示不全」）；扫全部页面，新表自动覆盖
+        from app.ui.theme import fit_all_tables
+        fit_all_tables(self)
+
         self._init_tray()
         self._init_task_watch()
 

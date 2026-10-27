@@ -172,7 +172,7 @@ class HomePage(QWidget):
         running = bool(inst and self.mainwin.procs.is_running(inst))
         self.b_start.setEnabled(bool(inst) and not running)
         self.b_stop.setEnabled(running)
-        self.b_web.setEnabled(bool(inst))     # 无实例时禁用
+        self.b_web.setEnabled(running)     # 未启动不能打开网页（实际端口逻辑在 open_browser）
         self.b_edit.setEnabled(bool(inst))
         self.lb_inst.setText(
             f"当前实例: {inst.get('name') if inst else '（未选择）'}"
