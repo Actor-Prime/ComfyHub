@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
-"""统一日志：UI 层防御性 except 的最小可见性（写 %APPDATA%/ComfyHub/logs/app.log）"""
+"""统一日志：UI 层防御性 except 的最小可见性（写 <数据根>/logs/app.log）"""
 import logging
 import os
 
-_LOG_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")),
-                        "ComfyHub", "logs")
+from app.paths import data_root
+
+_LOG_DIR = os.path.join(data_root(), "logs")
 os.makedirs(_LOG_DIR, exist_ok=True)
 
 _logger = logging.getLogger("comfyhub")

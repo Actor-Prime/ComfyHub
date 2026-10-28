@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
-"""ComfyUI 编辑页：实例设置（基础+高级合一页，两分区标题）+ 内核版本 + 启停 + 保存/删除"""
+"""ComfyUI 编辑页：实例设置（基础+高级+全局参数合一页，三分区标题）+ 内核版本 + 启停 + 保存/删除"""
 import os
+import time
 
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
     QComboBox, QSpinBox, QCheckBox, QFileDialog, QMessageBox, QFrame,
     QScrollArea, QGroupBox, QTableWidget, QTableWidgetItem, QHeaderView,
-    QTabWidget
+    QTabWidget, QGridLayout,
 )
 
 from app.config import VRAM_MODES, save_config
@@ -59,9 +60,14 @@ class _KernelWorker(QThread):
     def run(self):
         try:
             if self.action == "versions":
-                self.sig_log.emit("[内核] 拉取版本列表…")
-                versions = self.km.list_versions(50)
-                self.sig_log.emit(f"[内核] 取到 {len(versions)} 个版本")
+                self.sig_log.emit("[内核] 正在拉取远端更新（git fetch）…")
+                versions = self.km.list_versions(50)   # 内部已前置 fetch
+                if getattr(self.km, "last_fetch_ok", True):
+                    self.sig_log.emit(f"[内核] 远端已是最新，取到 {len(versions)} 个版本")
+                else:
+                    self.sig_log.emit(
+                        f"[内核] ⚠️ 拉取远端失败（网络慢/被墙？可在实例设置配代理后重试），"
+                        f"以下为本地缓存的 {len(versions)} 个版本")
                 self.sig_versions.emit(versions)
                 return
             if self.action == "update":
@@ -142,6 +148,8 @@ class ComfyuiPage(QWidget):
         self.tabs = QTabWidget()
         self.tabs.setContentsMargins(8, 8, 8, 0)
         outer.addWidget(self.tabs, 1)
+        # 切到「内核版本」Tab 自动刷新一次（2026-10-29 用户需求，带 60s 节流）
+        self.tabs.currentChanged.connect(self._on_tab_changed)
 
         # ---- Tab1 实例设置：基础区块 + 高级区块（同页两个分区标题）----
         t1 = QWidget(); t1v = QVBoxLayout(t1)
@@ -190,52 +198,79 @@ class ComfyuiPage(QWidget):
         self.sp_port.setRange(1024, 65535)
         t1v.addWidget(_Row("启动端口", "用于访问 ComfyUI 的 HTTP 端口（默认 8188）", self.sp_port))
 
-        # 生成设备：GPU/CPU 切换（objectName 驱动选中样式）
-        dev = QWidget()
-        dv = QHBoxLayout(dev); dv.setContentsMargins(0, 0, 0, 0)
-        self.b_gpu = QPushButton("GPU (默认)")
-        self.b_gpu.setObjectName("DeviceBtn")
-        self.b_gpu.setCheckable(True); self.b_gpu.setChecked(True)
-        self.b_cpu = QPushButton("CPU")
-        self.b_cpu.setObjectName("DeviceBtn")
-        self.b_cpu.setCheckable(True)
-        self.b_gpu.clicked.connect(lambda: self._set_device(True))
-        self.b_cpu.clicked.connect(lambda: self._set_device(False))
-        dv.addWidget(self.b_gpu)
-        dv.addWidget(self.b_cpu)
-        t1v.addWidget(_Row("生成设备", "GPU 使用显卡加速 / CPU 仅调试用", dev))
-        self._use_gpu = True
+        # 生成引擎：统一后端+设备一个下拉（2026-10-29 对齐绘世：
+        #   自动 / CUDA GPU i / DML GPU i / CPU；DML 依赖 torch-directml 需后台探测）
+        self.cb_eng = QComboBox()
+        self.cb_eng.setMinimumWidth(320)
+        self.cb_eng.setToolTip(
+            "CUDA：NVIDIA 显卡加速（推荐）\n"
+            "DML：DirectML 后端（AMD/Intel 显卡可用；依赖 torch-directml）\n"
+            "CPU：仅调试用，速度极慢")
+        t1v.addWidget(_Row(
+            "生成引擎",
+            "选择参与计算的硬件引擎：CUDA（NVIDIA 加速）/ DML（DirectML，AMD/Intel 可用）/ CPU（仅调试）",
+            self.cb_eng))
+        # 切到 CPU → 置灰显存优化（语义打架防护）
+        self.cb_eng.currentIndexChanged.connect(self._on_engine_changed)
 
         self.cb_vram = QComboBox()
         self.cb_vram.addItems(VRAM_MODES.keys())
         t1v.addWidget(_Row("CPU/显存优化", "按显存大小选择优化级别（低配选低显存）", self.cb_vram))
 
         self.cb_ca = QComboBox()
-        self.cb_ca.addItems(["自动", "Quad（省显存）", "Split（更快）", "PyTorch SDP"])
-        t1v.addWidget(_Row("Cross Attention 优化", "注意力算法：省显存 / 提速 / PyTorch 原生，出问题回自动", self.cb_ca))
+        # 对齐绘世五档（2026-10-29）：Sage 为新增；旧值"自动"仍兼容
+        self.cb_ca.addItems([
+            "自动（xFormers 优先）", "Sage Attention",
+            "PyTorch SDP", "Quad（省显存）", "Split（更快）"])
+        t1v.addWidget(_Row("Cross Attention 优化",
+                           "注意力算法：优先 xFormers（需环境已装），未装回落 SDP；Sage 需装 sageattention；省显存选 Quad",
+                           self.cb_ca))
 
         self.cb_preview = QComboBox()
-        self.cb_preview.addItems(["无", "latent2rgb（快）", "TAESD（精细）"])
-        t1v.addWidget(_Row("采样预览", "出图过程中的实时预览画质（TAESD 更清晰但略耗性能）", self.cb_preview))
+        self.cb_preview.addItems(["无", "自动", "latent2rgb（快）", "TAESD（精细）"])
+        t1v.addWidget(_Row("采样预览", "出图过程中的实时预览画质（自动=ComfyUI 自己选；TAESD 更清晰但略耗性能）", self.cb_preview))
 
-        self.ck_fp16 = QCheckBox("开启")
-        t1v.addWidget(_Row("强制 FP16", "半精度运行，低显存显卡提速（画质略降）", self.ck_fp16))
+        # 计算精度：三档互斥（自动 / 强制 FP16 / 强制 FP32）
+        self.cb_prec = QComboBox()
+        self.cb_prec.addItems(["自动", "强制 FP16", "强制 FP32"])
+        t1v.addWidget(_Row("计算精度", "平衡性能与显存占用，缓解精度带来的黑图问题", self.cb_prec))
 
         self.ck_fast = QCheckBox("开启")
-        t1v.addWidget(_Row("快速模式", "启用 PyTorch 加速技巧（新显卡提速明显，老卡慎用）", self.ck_fast))
+        t1v.addWidget(_Row("快速模式（激进提速）", "启用 PyTorch 加速技巧，以一定质量代价换速度（新显卡提速明显，老卡慎用）", self.ck_fast))
 
         self.ck_nosm = QCheckBox("开启")
-        t1v.addWidget(_Row("禁用智能显存", "显存紧张/爆显存时开启，稍降速度换稳定", self.ck_nosm))
+        t1v.addWidget(_Row("禁用智能显存（共享显存）", "显存紧张/爆显存时开启，稍降速度换稳定（关闭可避免内存弥补导致的性能降级）", self.ck_nosm))
+
+        self.ck_cpu_vae = QCheckBox("开启")
+        t1v.addWidget(_Row("CPU 运行 VAE", "显著降低峰值显存消耗，但会降低整体速度", self.ck_cpu_vae))
+
+        self.ck_deterministic = QCheckBox("开启")
+        t1v.addWidget(_Row("稳定计算", "使用速度较慢的确定性算法，保证结果可复现（可能无法让图像在所有情况下一致）", self.ck_deterministic))
+
+        self.ck_channels = QCheckBox("开启")
+        t1v.addWidget(_Row("Channels-Last 优化", "改用 channels_last 内存格式，部分场景有推理提速（对性能影响未知）", self.ck_channels))
+
+        self.cb_cuda_malloc = QComboBox()
+        self.cb_cuda_malloc.addItems(["自动", "强制启用", "禁用"])
+        t1v.addWidget(_Row("CUDA 内存分配方案", "更换底层 CUDA 内存分配器（内置异步分配器需 CUDA 11.4+）", self.cb_cuda_malloc))
+
+        self.ck_multi_user = QCheckBox("开启")
+        t1v.addWidget(_Row("多用户模式", "允许多个用户同时使用一个实例（每人独立存储空间）", self.ck_multi_user))
 
         self.ck_lan = QCheckBox("开启")
         t1v.addWidget(_Row("局域网访问", "允许同一局域网其他设备（手机/平板）打开 ComfyUI", self.ck_lan))
+
+        self.ck_hf_offline = QCheckBox("开启")
+        t1v.addWidget(_Row("Huggingface 离线模式", "关闭从 Huggingface 联网加载模型，启用后无法在线下载本地缺失的模型", self.ck_hf_offline))
 
         self.ck_browser = QCheckBox("开启")
         t1v.addWidget(_Row("自动打开", "启动成功后自动用浏览器打开 ComfyUI 界面", self.ck_browser))
 
         self.ed_extra = QLineEdit()
         self.ed_extra.setPlaceholderText("例如: --reserve-vram 2")
-        t1v.addWidget(_Row("启动参数", "附加的命令行参数（逗号分隔的高阶用法）", self.ed_extra))
+        t1v.addWidget(_Row("启动参数", "附加的命令行参数（空格分隔的高阶用法）", self.ed_extra))
+
+        # 2026-10-28 用户要求：专家模式整块移除（全局启动参数不再暴露 UI）
 
         t1v.addStretch()
         s1 = QScrollArea(); s1.setWidgetResizable(True); s1.setFrameShape(QFrame.NoFrame)
@@ -272,6 +307,12 @@ class ComfyuiPage(QWidget):
         h_k.addWidget(self.cb_kkind)
         wrap_k = QWidget(); wrap_k.setLayout(h_k)
         t2v.addWidget(_Row("内核版本管理", "一键更新到最新稳定版，或按版本回滚（切换后自动安装配套依赖）", wrap_k))
+
+        # 远端数据源提示（2026-10-29 加）：列表来自哪个仓库一目了然
+        self.lb_remote = QLabel("")
+        self.lb_remote.setStyleSheet("color:#9fb0c8; font-size:12px;")
+        self.lb_remote.setVisible(False)
+        t2v.addWidget(self.lb_remote)
 
         # 版本表格（版本 ID | 更新时间 | 类型 | 操作）
         self.tb_kver = QTableWidget(0, 4)
@@ -321,16 +362,25 @@ class ComfyuiPage(QWidget):
             ed.setCursorPosition(len(ed.text()))
         self.sp_port.setValue(int(inst.get("port") or 8188))
         self.cb_vram.setCurrentText(inst.get("vram_mode", "自动"))
-        self.cb_ca.setCurrentText(inst.get("cross_attn", "自动"))
+        # cross_attn 旧值迁移：「自动」→「自动（xFormers 优先）」（2026-10-29 五档化）
+        _ca = inst.get("cross_attn", "自动")
+        if _ca == "自动":
+            _ca = "自动（xFormers 优先）"
+        self.cb_ca.setCurrentText(_ca)
         self.cb_preview.setCurrentText(inst.get("preview_method", "无"))
-        self.ck_fp16.setChecked(bool(inst.get("force_fp16")))
+        self.cb_prec.setCurrentText(inst.get("precision", "自动"))
         self.ck_fast.setChecked(bool(inst.get("fast_mode")))
         self.ck_nosm.setChecked(bool(inst.get("no_smart_memory")))
+        self.ck_cpu_vae.setChecked(bool(inst.get("cpu_vae")))
+        self.ck_deterministic.setChecked(bool(inst.get("deterministic")))
+        self.ck_channels.setChecked(bool(inst.get("channels_last")))
+        self.cb_cuda_malloc.setCurrentText(inst.get("cuda_malloc", "自动"))
+        self.ck_multi_user.setChecked(bool(inst.get("multi_user")))
         self.ck_lan.setChecked(bool(inst.get("lan_access")))
+        self.ck_hf_offline.setChecked(bool(inst.get("hf_offline")))
         self.ck_browser.setChecked(bool(inst.get("auto_open_browser", True)))
         self.ed_extra.setText(inst.get("extra_args", ""))
-        self._use_gpu = inst.get("device", "gpu") != "cpu"
-        self._sync_device_buttons()
+        self._restore_engine_selection(inst)
         self._refresh_kernel_info()
         self._update_state()
 
@@ -338,7 +388,9 @@ class ComfyuiPage(QWidget):
     def _km(self):
         from app.tools import KernelManager
         inst = self.mainwin.current_inst()
-        return KernelManager(inst["comfyui_path"]) if inst else None
+        # git fetch/pull 走实例代理（2026-10-29：GitHub 直连慢时靠它）
+        return KernelManager(inst["comfyui_path"],
+                             proxy=inst.get("proxy") or "") if inst else None
 
     def _refresh_kernel_info(self):
         inst = self.mainwin.current_inst()
@@ -350,32 +402,62 @@ class ComfyuiPage(QWidget):
             if km.is_git_repo:
                 self.lb_kver.setText(f"当前：{ver}　·　git 仓库 ✓")
                 self.lb_kver.setStyleSheet("color:#4cd47c;")
+                # 远端 + 分支（2026-10-29 加：让用户看清列表数据源，别再和
+                # 其他启动器「对不上」——大家拉的可能根本不是一个仓库）
+                remote = km.remote_url()
+                branch = km.current_branch()
+                if remote:
+                    import re as _re
+                    short = _re.sub(r"\.git$", "", remote.split("://")[-1])
+                    self.lb_remote.setText(
+                        f"远端：{short}　·　分支：{branch or '?'}")
+                    self.lb_remote.setToolTip(f"远端地址：{remote}\n版本列表与"
+                                              "「更新至最新稳定版」都来自这个仓库")
+                    self.lb_remote.setVisible(True)
+                else:
+                    self.lb_remote.setVisible(False)
             else:
                 self.lb_kver.setText(f"当前：{ver}　·　非 git 仓库（无法切换版本）")
                 self.lb_kver.setStyleSheet("color:#e8a33d;")
+                self.lb_remote.setVisible(False)
         except Exception as e:
             self.lb_kver.setText(f"读取版本失败：{e}")
             self.lb_kver.setStyleSheet("color:#e8635a;")
 
-    def _refresh_versions(self):
+    def _refresh_versions(self, silent=False):
+        """刷新版本列表。silent=True 用于切 Tab 自动刷新（非 git 仓库静默跳过不弹窗）"""
         inst = self.mainwin.current_inst()
         if not inst:
             return
         km = self._km()
         if not km or not km.is_git_repo:
-            QMessageBox.information(self, "内核版本",
-                                    "该实例不是 git 仓库（可能是 zip 安装），无法按版本切换。")
+            if not silent:
+                QMessageBox.information(self, "内核版本",
+                                        "该实例不是 git 仓库（可能是 zip 安装），无法按版本切换。")
             return
         if getattr(self, "_kw", None) and self._kw.isRunning():
             return
-        self.lb_kver.setText("正在拉取版本列表…")
+        self.lb_kver.setText("正在拉取远端更新并加载版本列表…")
         self._kw = _KernelWorker(km, "versions")
         self._kw.sig_log.connect(self.mainwin.console_page.append_line)
         self._kw.sig_versions.connect(self._on_versions)
         self._kw.start()
 
+    def _on_tab_changed(self, idx):
+        """切到「内核版本」Tab 自动刷新一次（2026-10-29 用户需求）。
+
+        节流：60 秒内已刷过且有数据 → 不重复 fetch（fetch 要走网络）。
+        """
+        if idx != 1:   # 0=实例设置, 1=内核版本
+            return
+        last = getattr(self, "_kver_last_refresh", 0.0)
+        if time.time() - last < 60 and getattr(self, "_all_versions", None):
+            return
+        self._refresh_versions(silent=True)
+
     def _on_versions(self, versions):
         self._all_versions = versions
+        self._kver_last_refresh = time.time()   # 自动刷新节流基准
         self._filter_versions()
         self._refresh_kernel_info()
         self.lb_kver.setText(self.lb_kver.text() + f"　·　{len(versions)} 个版本")
@@ -453,15 +535,119 @@ class ComfyuiPage(QWidget):
     def on_instance_changed(self):
         self.load_current()
 
-    def _set_device(self, gpu):
-        self._use_gpu = gpu
-        self._sync_device_buttons()
-        # CPU 模式下显存优化无意义，置灰防语义打架
-        self.cb_vram.setEnabled(gpu)
+    # ---------- 生成引擎（统一后端下拉：自动 / CUDA / DML / CPU） ----------
+    def _ensure_engine_list(self):
+        """懒填充生成引擎下拉（只填一次）：
+        - CUDA 卡清单来自 nvidia-smi（毫秒级，同步安全）
+        - DML 设备数要 import torch_directml（秒级），必须后台探测，
+          探测完成后把「DML」占位项替换为具体设备；未安装则置灰提示
+        itemData: (backend, index)；backend ∈ auto/cuda/dml/cpu
+        """
+        if getattr(self, "_eng_ready", False):
+            return
+        self._eng_ready = True
+        from app.process import detect_gpus
+        self.cb_eng.clear()
+        self.cb_eng.addItem("自动（推荐）", ("auto", None))
+        self._gpus = detect_gpus()
+        for g in self._gpus:
+            vram_gb = g["vram_mib"] / 1024
+            self.cb_eng.addItem(
+                f"CUDA GPU {g['id']}: {g['name']} ({vram_gb:.0f} GB)",
+                ("cuda", g["id"]))
+        # DML 占位项：后台探测 torch_directml 后替换为 DML GPU 0..N
+        self.cb_eng.addItem("DML 设备检测中…", None)
+        self._dml_row = self.cb_eng.count() - 1
+        self.cb_eng.addItem("CPU", ("cpu", None))
+        self._start_dml_probe()
 
-    def _sync_device_buttons(self):
-        self.b_gpu.setChecked(self._use_gpu)
-        self.b_cpu.setChecked(not self._use_gpu)
+    def _start_dml_probe(self):
+        """用实例配套解释器探测 torch_directml.device_count()（秒级，后台）"""
+        inst = self.mainwin.current_inst()
+        py = (inst or {}).get("python_path") or ""
+        if not py or not os.path.isfile(py):
+            self._apply_dml_result(None)
+            return
+
+        def _probe():
+            import subprocess
+            try:
+                out = subprocess.check_output(
+                    [py, "-c",
+                     "import torch_directml;"
+                     "print(torch_directml.device_count())"],
+                    stderr=subprocess.STDOUT, timeout=20,
+                    creationflags=0x08000000 if os.name == "nt" else 0)
+                n = int(out.decode("utf-8", "replace").strip().splitlines()[-1])
+                return n if n > 0 else None
+            except Exception:
+                return None   # 未装 / 超时 / 非整数输出 → 视为不可用
+
+        self._dml_worker = BgWorker(_probe)
+        self._dml_worker.sig_done.connect(self._apply_dml_result)
+        self._dml_worker.start()
+
+    def _apply_dml_result(self, n):
+        """DML 探测回调：替换占位项。n=None 表示 torch_directml 不可用"""
+        row = getattr(self, "_dml_row", -1)
+        if row < 0 or row >= self.cb_eng.count():
+            return
+        keep = self.cb_eng.currentData()   # 记住当前选中（别把用户选择清掉）
+        self.cb_eng.removeItem(row)
+        if n:
+            for i in range(n):
+                self.cb_eng.insertItem(row, f"DML GPU {i}", ("dml", i))
+                row += 1
+        else:
+            self.cb_eng.insertItem(
+                row, "DML（需安装 torch-directml）", ("dml", None))
+            item = self.cb_eng.model().item(row)
+            if item:
+                item.setEnabled(False)   # 置灰：不可选但可见（用户知道有这功能）
+                item.setToolTip(
+                    "该实例的 Python 环境未安装 torch-directml。\n"
+                    "AMD/Intel 显卡用户可安装后使用：pip install torch-directml")
+        # 恢复选中：原选中项还在就选回它；没了（如原选中是占位项）回自动
+        new_idx = 0
+        if keep is not None:
+            for i in range(self.cb_eng.count()):
+                if self.cb_eng.itemData(i) == keep:
+                    new_idx = i
+                    break
+        self.cb_eng.setCurrentIndex(new_idx)
+        # 探测是异步的：若用户配置选了 DML 且现在可用，按配置恢复
+        inst = self.mainwin.current_inst()
+        if inst and inst.get("engine_backend") == "dml" and n:
+            self._restore_engine_selection(inst)
+
+    def _restore_engine_selection(self, inst):
+        """按实例配置恢复引擎下拉选中（含旧字段迁移）"""
+        self._ensure_engine_list()
+        backend = inst.get("engine_backend")
+        idx = inst.get("engine_index")
+        if backend is None:
+            # 旧配置迁移：device=cpu → cpu；cuda_device>=0 → cuda i；否则 auto
+            if inst.get("device") == "cpu":
+                backend, idx = "cpu", None
+            else:
+                dev = inst.get("cuda_device")
+                if dev is not None and str(dev).strip() != "" and int(dev) >= 0:
+                    backend, idx = "cuda", int(dev)
+                else:
+                    backend, idx = "auto", None
+        for i in range(self.cb_eng.count()):
+            d = self.cb_eng.itemData(i)
+            if d and d[0] == backend and \
+                    (backend != "cuda" or (d[1] or 0) == (idx or 0)):
+                self.cb_eng.setCurrentIndex(i)
+                break
+        # CPU 时显存优化无意义，置灰防语义打架（同旧 _set_device 逻辑）
+        cur = self.cb_eng.currentData()
+        self.cb_vram.setEnabled(not (cur and cur[0] == "cpu"))
+
+    def _on_engine_changed(self, *_a):
+        cur = self.cb_eng.currentData()
+        self.cb_vram.setEnabled(not (cur and cur[0] == "cpu"))
 
     def _update_state(self):
         inst = self.mainwin.current_inst()
@@ -493,13 +679,29 @@ class ComfyuiPage(QWidget):
         inst["vram_mode"] = self.cb_vram.currentText()
         inst["cross_attn"] = self.cb_ca.currentText()
         inst["preview_method"] = self.cb_preview.currentText()
-        inst["force_fp16"] = self.ck_fp16.isChecked()
+        inst["precision"] = self.cb_prec.currentText()
         inst["fast_mode"] = self.ck_fast.isChecked()
         inst["no_smart_memory"] = self.ck_nosm.isChecked()
+        inst["cpu_vae"] = self.ck_cpu_vae.isChecked()
+        inst["deterministic"] = self.ck_deterministic.isChecked()
+        inst["channels_last"] = self.ck_channels.isChecked()
+        inst["cuda_malloc"] = self.cb_cuda_malloc.currentText()
+        inst["multi_user"] = self.ck_multi_user.isChecked()
         inst["lan_access"] = self.ck_lan.isChecked()
+        inst["hf_offline"] = self.ck_hf_offline.isChecked()
         inst["auto_open_browser"] = self.ck_browser.isChecked()
         inst["extra_args"] = self.ed_extra.text().strip()
-        inst["device"] = "gpu" if self._use_gpu else "cpu"
+        # 生成引擎（2026-10-29 统一下拉）：backend ∈ auto/cuda/dml/cpu
+        eng = self.cb_eng.currentData() or ("auto", None)
+        inst["engine_backend"] = eng[0]
+        inst["engine_index"] = eng[1]
+        # 旧字段清理：device/cuda_device 已被引擎下拉取代，防止残留配置打架
+        inst.pop("device", None)
+        inst.pop("cuda_device", None)
+        # 2026-10-28 专家模式移除：顺手清掉旧配置残留，防止无 UI 的参数静默生效
+        st = self.cfg.setdefault("settings", {})
+        st.pop("expert_mode", None)
+        st.pop("launch", None)
         save_config(self.cfg)
         self.mainwin._sync_instances()
         QMessageBox.information(self, "ComfyHub", "✅ 设置已保存")

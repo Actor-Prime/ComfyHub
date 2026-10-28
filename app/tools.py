@@ -17,13 +17,65 @@ from app import instance as inst_lib
 class KernelManager:
     """基于 git 的内核版本查看与切换（要求实例目录是 git 仓库）"""
 
-    def __init__(self, comfyui_path: str):
+    def __init__(self, comfyui_path: str, proxy: str = ""):
         self.path = comfyui_path
         self.git = find_git()
+        self.proxy = (proxy or "").strip()
+        self.last_fetch_ok = True   # list_versions 的 fetch 成败（UI 提示用）
 
     @property
     def is_git_repo(self) -> bool:
         return self.git and os.path.isdir(os.path.join(self.path, ".git"))
+
+    def _env(self) -> "dict | None":
+        """git 子进程环境：实例配了代理则注入 HTTP(S)_PROXY（fetch/pull 走代理）"""
+        if not self.proxy:
+            return None
+        env = dict(os.environ)
+        env["HTTP_PROXY"] = self.proxy
+        env["HTTPS_PROXY"] = self.proxy
+        return env
+
+    def remote_url(self) -> str:
+        """origin 远端地址（失败返回空串）——UI 顶部展示，消除「源不一样」困惑"""
+        if not self.is_git_repo:
+            return ""
+        try:
+            r = run([self.git, "-C", self.path, "remote", "get-url", "origin"],
+                    capture_output=True, text=True, timeout=30,
+                    encoding="utf-8", errors="replace", env=self._env())
+            return (r.stdout or "").strip() if r.returncode == 0 else ""
+        except Exception:
+            return ""
+
+    def current_branch(self) -> str:
+        """当前分支名（HEAD 游离时返回短 hash）"""
+        if not self.is_git_repo:
+            return ""
+        try:
+            r = run([self.git, "-C", self.path, "branch", "--show-current"],
+                    capture_output=True, text=True, timeout=30,
+                    encoding="utf-8", errors="replace")
+            b = (r.stdout or "").strip()
+            if b:
+                return b
+            r = run([self.git, "-C", self.path, "rev-parse", "--short", "HEAD"],
+                    capture_output=True, text=True, timeout=30,
+                    encoding="utf-8", errors="replace")
+            return (r.stdout or "").strip()
+        except Exception:
+            return ""
+
+    def fetch_remote(self, timeout=120) -> bool:
+        """拉取远端更新（tags + 分支提交）。失败返回 False（不抛，降级用本地缓存）"""
+        if not self.is_git_repo:
+            return False
+        try:
+            r = run([self.git, "-C", self.path, "fetch", "--tags", "--quiet"],
+                    capture_output=True, timeout=timeout, env=self._env())
+            return r.returncode == 0
+        except Exception:
+            return False
 
     def current_version(self) -> str:
         from app.instance import read_comfyui_version
@@ -34,8 +86,7 @@ class KernelManager:
         if not self.is_git_repo:
             return []
         try:
-            run([self.git, "-C", self.path, "fetch", "--tags", "--quiet"],
-                           capture_output=True, timeout=300)
+            self.fetch_remote(timeout=300)
             r = run(
                 [self.git, "-C", self.path, "tag", "--sort=-creatordate"],
                 capture_output=True, text=True, timeout=60,
@@ -60,27 +111,32 @@ class KernelManager:
         b = self.stable_branch()
         try:
             run([self.git, "-C", self.path, "stash"],
-                capture_output=True, timeout=60)
+                capture_output=True, timeout=60, env=self._env())
             run([self.git, "-C", self.path, "checkout", b],
-                capture_output=True, timeout=120)
+                capture_output=True, timeout=120, env=self._env())
             r = run([self.git, "-C", self.path, "pull", "--ff-only"],
                     capture_output=True, text=True, timeout=600,
-                    encoding="utf-8", errors="replace")
+                    encoding="utf-8", errors="replace", env=self._env())
             ok = r.returncode == 0
             msg = ((r.stdout or "") + (r.stderr or "")).strip()[:400]
             return ok, (msg if ok else f"pull 失败（可稍后重试或手动 git pull）: {msg[:200]}")
         except Exception as e:
             return False, str(e)
 
-    def list_versions(self, limit=50) -> list:
+    def list_versions(self, limit=50, fetch=True) -> list:
         """版本列表（tag=稳定版优先）：[{version, hash, date, kind}]
 
         2026-10-26 修复：原来 tag 与提交共用一个 limit 且最后统一 out[:limit]，
         tag 超过 limit 时提交（开发版）会被整段截掉 →「开发版」筛选恒为空。
         现在两类各自取 limit，互不挤占。
+        2026-10-29 修复：fetch 前置（原来只读本地 refs，永远看不到远端新提交，
+        与绘世等启动器列表对不上的根因）；fetch 失败降级本地缓存（last_fetch_ok=False）。
         """
         if not self.is_git_repo:
             return []
+        self.last_fetch_ok = True
+        if fetch:
+            self.last_fetch_ok = self.fetch_remote(timeout=120)
         tags, devs = [], []
         tag_hashes = set()      # tag 对象哈希 + peel 出的 commit 哈希（开发版去重用）
         try:
@@ -126,10 +182,11 @@ class KernelManager:
             return False, "该实例不是 git 仓库（zip 安装），请重新以 git 方式安装"
         try:
             run([self.git, "-C", self.path, "stash"],
-                           capture_output=True, timeout=60)
+                           capture_output=True, timeout=60, env=self._env())
             r = run([self.git, "-C", self.path, "checkout", tag],
                                capture_output=True, text=True, timeout=300,
-                               encoding="utf-8", errors="replace")
+                               encoding="utf-8", errors="replace",
+                               env=self._env())
             ok = r.returncode == 0
             return ok, ((r.stdout or "") + (r.stderr or "")).strip()[:400]
         except Exception as e:
@@ -191,8 +248,8 @@ class EnvBackup:
     def __init__(self, comfyui_path: str, python_path: str):
         self.comfyui_path = comfyui_path
         self.python_path = python_path
-        base = os.environ.get("APPDATA") or os.path.expanduser("~")
-        self.backup_dir = os.path.join(base, "ComfyHub", "backups",
+        from app.paths import data_root
+        self.backup_dir = os.path.join(data_root(), "backups",
                                        _inst_dirname(comfyui_path))
         os.makedirs(self.backup_dir, exist_ok=True)
 
@@ -256,8 +313,8 @@ class Rescue:
     def __init__(self, comfyui_path: str):
         self.comfyui_path = comfyui_path
         self.nodes_dir = os.path.join(comfyui_path, "custom_nodes")
-        base = os.environ.get("APPDATA") or os.path.expanduser("~")
-        self.snap_dir = os.path.join(base, "ComfyHub", "rescue",
+        from app.paths import data_root
+        self.snap_dir = os.path.join(data_root(), "rescue",
                                      _inst_dirname(comfyui_path))
         os.makedirs(self.snap_dir, exist_ok=True)
 

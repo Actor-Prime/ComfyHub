@@ -1,4 +1,4 @@
-APP_VERSION = "0.8.03"
+APP_VERSION = "0.8.04"
 
 # -*- coding: utf-8 -*-
 """配置管理：多实例配置持久化 + 自动探测本机 ComfyUI"""
@@ -8,9 +8,9 @@ import sys
 
 
 def app_config_dir() -> str:
-    """配置目录：%APPDATA%\\ComfyHub；打包单文件模式下也稳定"""
-    base = os.environ.get("APPDATA") or os.path.expanduser("~")
-    d = os.path.join(base, "ComfyHub")
+    """配置目录：便携模式=程序目录\\data\\ComfyHub；否则 %APPDATA%\\ComfyHub"""
+    from app.paths import data_root
+    d = data_root()
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -20,7 +20,8 @@ CONFIG_PATH = os.path.join(app_config_dir(), "config.json")
 VRAM_MODES = {
     "自动": "",
     "低显存": "--lowvram",
-    "中显存": "--medvram",
+    # 新版 ComfyUI（aki 0.9.2 / 上游）已移除 --medvram，改用 --normalvram
+    "中显存": "--normalvram",
     "高显存": "--highvram",
     "禁用显存优化": "--novram",
     "CPU 模式": "--cpu",

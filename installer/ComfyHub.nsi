@@ -12,7 +12,7 @@ Unicode true
 ; ---------- 基本信息 ----------
 !define APP_NAME       "ComfyHub"
 !define APP_NAME_CN    "ComfyHub 多实例管理器"
-!define APP_VERSION    "0.8.03"
+!define APP_VERSION    "0.8.04"
 !define APP_PUBLISHER  "LeiMengStudio"
 !define APP_URL        "https://gitee.com/yzdydwdd/ComfyHub"
 !define APP_EXE        "ComfyHub.exe"
@@ -30,7 +30,7 @@ SetCompressor /SOLID lzma
 ShowInstDetails show
 ShowUninstDetails show
 
-VIProductVersion "0.8.3.0"
+VIProductVersion "0.8.4.0"
 VIAddVersionKey "ProductName"     "${APP_NAME_CN}"
 VIAddVersionKey "FileDescription" "${APP_NAME_CN} 安装程序"
 VIAddVersionKey "FileVersion"     "${APP_VERSION}"
@@ -194,6 +194,15 @@ Section "Uninstall"
     Sleep 200
     RMDir /r /REBOOTOK "$INSTDIR\_internal"    ; rd 失败时兜底
     RMDir /r /REBOOTOK "$INSTDIR\docs"
+    ; ---- 便携模式数据目录（exe 旁存在 data 文件夹时启用）----
+    ;   含便携 Python/MinGit/备份/日志，可能几 GB → 同样走系统 rd 快删；
+    ;   普通模式下不存在该目录，此段为空操作
+    IfFileExists "$INSTDIR\data\*.*" 0 pdSkip
+    nsExec::ExecToStack 'cmd /c rd /s /q "$INSTDIR\data"'
+    Pop $0
+    Sleep 200
+    RMDir /r /REBOOTOK "$INSTDIR\data"         ; rd 失败时兜底
+    pdSkip:
     RMDir "$INSTDIR"
 
     Delete "$DESKTOP\${APP_NAME}.lnk"

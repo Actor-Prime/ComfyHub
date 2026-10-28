@@ -786,9 +786,9 @@ def find_git() -> str | None:
 
 
 def tools_root() -> str:
-    """工具存放根目录：%APPDATA%\\ComfyHub\\tools"""
-    base = os.environ.get("APPDATA") or os.path.expanduser("~")
-    d = os.path.join(base, "ComfyHub", "tools")
+    """工具存放根目录：<数据根>\\tools（便携模式=程序目录\\data\\ComfyHub\\tools）"""
+    from app.paths import data_root
+    d = os.path.join(data_root(), "tools")
     os.makedirs(d, exist_ok=True)
     return d
 
