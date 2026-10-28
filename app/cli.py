@@ -58,7 +58,8 @@ def _pick(args):
 
 
 def _log_dir():
-    d = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "ComfyHub", "logs")
+    from app.paths import data_root
+    d = os.path.join(data_root(), "logs")
     os.makedirs(d, exist_ok=True)
     return d
 

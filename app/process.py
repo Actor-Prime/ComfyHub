@@ -239,20 +239,27 @@ def scan_orphans(instances, exclude_pids=None) -> list:
     return found
 
 
-def _global_launch() -> dict:
-    """专家模式的全局启动参数（设置页配置，对所有实例生效）
-
-    返回 {"vram","attn","cache","upcast","flags":[...],"extra"}；
-    专家模式未开启或读取失败时返回 {}（不影响普通启动）。
-    """
+def detect_gpus() -> list:
+    """枚举本机 CUDA 显卡（nvidia-smi）。返回 [{"id":int,"name":str,"vram_mib":int}]，
+    无 nvidia-smi / 无 N 卡时返回 []（调用方据此决定是否显示设备下拉）。"""
     try:
-        from app.config import load_config
-        st = load_config().get("settings") or {}
-        if st.get("expert_mode"):
-            return st.get("launch") or {}
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=index,name,memory.total",
+             "--format=csv,noheader,nounits"],
+            stderr=subprocess.DEVNULL, timeout=6,
+            creationflags=0x08000000 if os.name == "nt" else 0)  # CREATE_NO_WINDOW
+        gpus = []
+        for line in out.decode("utf-8", "replace").splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) >= 3:
+                try:
+                    gpus.append({"id": int(parts[0]), "name": parts[1],
+                                 "vram_mib": int(parts[2])})
+                except ValueError:
+                    continue
+        return gpus
     except Exception:
-        pass
-    return {}
+        return []
 
 
 def build_command(inst: dict, port: int | None = None) -> list:
@@ -260,71 +267,104 @@ def build_command(inst: dict, port: int | None = None) -> list:
 
     port: 覆盖实例配置端口（启动时配置端口被占、自动顺延后传实际端口）。
 
-    合并规则（2026-10-26 专家模式全局参数）：
-      实例单独设置 > 全局设置 —— 实例的显存/注意力留「自动」时才吃全局值，
-      全局的缓存/精度/开关/自定义参数无实例对应项，直接追加（去重）。
+    2026-10-28 专家模式（全局启动参数）整体移除：命令只吃实例级配置，
+    旧配置里残留的 settings.launch 不再消费。
+    2026-10-28 对齐绘世「高级选项」补齐：多卡 --cuda-device、CPU VAE、
+    稳定计算、Channels-Last、CUDA 分配器、多用户、三档计算精度。
     """
-    gl = _global_launch()
     python = inst.get("python_path") or "python"
     main_py = os.path.join(inst["comfyui_path"], "main.py")
     cmd = [python, "-s", main_py]
-    # 显存模式：实例优先，实例为「自动」时用全局
+    # 显存模式
     flag = VRAM_MODES.get(inst.get("vram_mode", "自动"), "")
-    if not flag and gl.get("vram"):
-        flag = gl["vram"]
     if flag:
         cmd.append(flag)
-    # 生成设备
-    if inst.get("device") == "cpu":
+    # 生成引擎（后端 + 设备）：2026-10-29 对齐绘世统一为一个下拉
+    #   backend: auto / cuda / dml / cpu；index: 设备序号（auto 可空）
+    #   旧字段兼容：device=="cpu"、cuda_device>=0（无 backend 字段的存量配置）
+    backend = inst.get("engine_backend")
+    if backend is None:
+        backend = "cpu" if inst.get("device") == "cpu" else "cuda"
+    if backend == "cpu":
         cmd.append("--cpu")
+    elif backend == "dml":
+        # torch-directml；序号省略 = 默认设备（cli_args: const=-1 → device()）
+        _dml = inst.get("engine_index")
+        if _dml is not None and str(_dml).strip() != "":
+            cmd += ["--directml", str(int(_dml))]
+        else:
+            cmd.append("--directml")
+    else:  # cuda / auto
+        _dev = inst.get("engine_index", inst.get("cuda_device"))
+        if _dev is not None and str(_dev).strip() != "" and int(_dev) >= 0:
+            cmd += ["--cuda-device", str(int(_dev))]
     # 端口（start() 自动顺延后会传入实际端口覆盖配置值）
     if port is None:
         port = int(inst.get("port") or 8188)
     listen_all = bool(inst.get("lan_access"))
     cmd += ["--listen", "0.0.0.0" if listen_all else "127.0.0.1",
             "--port", str(port)]
-    # Cross Attention 优化方案：实例优先，实例为「自动」时用全局
+    # Cross Attention 优化方案（2026-10-29 对齐绘世五档：
+    #   自动(xFormers优先) / Sage / SDP / Quad / Split；旧值"自动"仍兼容）
     ca = inst.get("cross_attn", "自动")
     ca_flag = ""
-    if ca == "Quad（省显存）":
+    if ca.startswith("Sage"):
+        ca_flag = "--use-sage-attention"
+    elif ca == "Quad（省显存）":
         ca_flag = "--use-quad-cross-attention"
     elif ca == "Split（更快）":
         ca_flag = "--use-split-cross-attention"
     elif ca == "PyTorch SDP":
         ca_flag = "--use-pytorch-cross-attention"
-    if not ca_flag and gl.get("attn"):
-        ca_flag = gl["attn"]
+    # "自动*"：不加参数（ComfyUI 有 xformers 用 xformers，否则回落 SDP）
     if ca_flag:
         cmd.append(ca_flag)
     # 预览方式
     pv = inst.get("preview_method", "无")
     if pv != "无":
-        cmd += ["--preview-method", "taesd" if pv == "TAESD（精细）" else "latent2rgb"]
-    # 精度 / 性能开关（实例）
-    if inst.get("force_fp16"):
+        cmd += ["--preview-method",
+                "auto" if pv.startswith("自动")
+                else ("taesd" if pv == "TAESD（精细）" else "latent2rgb")]
+    # 计算精度（三档，互斥）：默认自动不加参数
+    prec = inst.get("precision", "自动")
+    if prec == "强制 FP16":
+        cmd.append("--force-fp16")
+    elif prec == "强制 FP32":
+        cmd.append("--force-fp32")
+    elif inst.get("force_fp16"):   # 旧字段兼容（老配置存的布尔）
         cmd.append("--force-fp16")
     if inst.get("fast_mode"):
         cmd.append("--fast")
     if inst.get("no_smart_memory"):
         cmd.append("--disable-smart-memory")
+    # 对齐绘世补齐的开关
+    if inst.get("cpu_vae"):
+        cmd.append("--cpu-vae")
+    if inst.get("deterministic"):
+        cmd.append("--deterministic")
+    if inst.get("channels_last"):
+        cmd.append("--force-channels-last")
+    if inst.get("multi_user"):
+        cmd.append("--multi-user")
+    # CUDA 内存分配器：自动(默认)/强制启用/禁用
+    cm = inst.get("cuda_malloc", "自动")
+    if cm == "强制启用":
+        cmd.append("--cuda-malloc")
+    elif cm == "禁用":
+        cmd.append("--disable-cuda-malloc")
+    # 自动打开浏览器：不勾时同时禁掉 ComfyUI 自己弹网页
+    # （2026-10-28 补齐：原先只控制 ComfyHub 侧，ComfyUI 仍会自弹）
+    if not inst.get("auto_open_browser", True):
+        cmd.append("--disable-auto-launch")
     # 自定义输出/输入目录
     if inst.get("output_dir"):
         cmd += ["--output-directory", inst["output_dir"]]
     if inst.get("input_dir"):
         cmd += ["--input-directory", inst["input_dir"]]
-    # 全局参数（专家模式）：缓存 / 精度提升 / 常用开关
-    for k in ("cache", "upcast"):
-        v = (gl.get(k) or "").strip()
-        if v and v not in cmd:
-            cmd.append(v)
-    for f in (gl.get("flags") or []):
-        if f and f not in cmd:
-            cmd.append(f)
-    # 额外参数：全局在前、实例在后（实例可覆盖同名参数的取值型 flag）
-    for src in (gl.get("extra"), inst.get("extra_args")):
-        s = (src or "").strip()
-        if s:
-            cmd += s.split()
+    # 额外参数（实例）
+    s = (inst.get("extra_args") or "").strip()
+    if s:
+        cmd += s.split()
     return cmd
 
 
@@ -426,6 +466,11 @@ class ComfyProcess(QObject):
             env.insert("HTTP_PROXY", _proxy)
             env.insert("HTTPS_PROXY", _proxy)
             self.log_line.emit(f"[ComfyHub] 已为实例设置代理 {_proxy}")
+        # Huggingface 离线模式（环境变量，非命令行参数）
+        if inst.get("hf_offline"):
+            env.insert("HF_HUB_OFFLINE", "1")
+            env.insert("TRANSFORMERS_OFFLINE", "1")
+            self.log_line.emit("[ComfyHub] 已开启 Huggingface 离线模式（不联网加载模型）")
 
         self._proc = QProcess(self)
         self._proc.setProgram(cmd[0])

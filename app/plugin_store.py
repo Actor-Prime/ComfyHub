@@ -6,7 +6,7 @@
   2. jsDelivr fastly / gcore 备用节点
   3. ghproxy.net / gh-proxy.com 反代 raw.githubusercontent.com
 
-缓存：%APPDATA%\\ComfyHub\\cache\\plugin_catalog.json（默认 12 小时有效）
+缓存：<数据根>/cache/plugin_catalog.json（默认 12 小时有效）
 清单字段：author / title / reference / files[] / install_type / description
 """
 import json
@@ -27,8 +27,8 @@ CACHE_TTL = 12 * 3600        # 12 小时
 
 
 def cache_path() -> str:
-    d = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")),
-                     "ComfyHub", "cache")
+    from app.paths import data_root
+    d = os.path.join(data_root(), "cache")
     os.makedirs(d, exist_ok=True)
     return os.path.join(d, "plugin_catalog.json")
 
@@ -183,8 +183,8 @@ STATS_CACHE_TTL = 12 * 3600
 
 
 def stats_cache_path() -> str:
-    d = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")),
-                     "ComfyHub", "cache")
+    from app.paths import data_root
+    d = os.path.join(data_root(), "cache")
     os.makedirs(d, exist_ok=True)
     return os.path.join(d, "registry_stats.json")
 

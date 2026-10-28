@@ -71,10 +71,10 @@ class _LogPage(QWizardPage):
     # ---------- 入口 ----------
     def start(self, target_dir, python_exe, mirror, proxy, torch_flag, on_done):
         from app import bootstrap
-        # 本次安装日志落盘：%APPDATA%\ComfyHub\logs\install_YYYYmmdd_HHMMSS.log
+        # 本次安装日志落盘：<数据根>\logs\install_YYYYmmdd_HHMMSS.log
         import datetime as _dt
-        _logdir = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")),
-                               "ComfyHub", "logs")
+        from app.paths import data_root
+        _logdir = os.path.join(data_root(), "logs")
         os.makedirs(_logdir, exist_ok=True)
         self._install_log_path = os.path.join(
             _logdir, f"install_{_dt.datetime.now():%Y%m%d_%H%M%S}.log")
@@ -113,8 +113,8 @@ class _LogPage(QWizardPage):
         向导回流第一页重新验证，通过才解锁「完成」。"""
         from app import bootstrap
         import datetime as _dt
-        _logdir = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")),
-                               "ComfyHub", "logs")
+        from app.paths import data_root
+        _logdir = os.path.join(data_root(), "logs")
         os.makedirs(_logdir, exist_ok=True)
         self._install_log_path = os.path.join(
             _logdir, f"repair_{_dt.datetime.now():%Y%m%d_%H%M%S}.log")
@@ -646,7 +646,8 @@ class SetupWizard(QWizard):
         self.ck_torch.setChecked(True)
         form_opts.addRow("", self.ck_torch)
 
-        tip = QLabel("说明：便携 Python 与 MinGit 安装在 %APPDATA%\\ComfyHub\\tools，"
+        from app.bootstrap import tools_root
+        tip = QLabel(f"说明：便携 Python 与 MinGit 安装在 {tools_root()}，"
                      "可随时整目录删除卸载，不影响系统。")
         tip.setWordWrap(True)
         tip.setStyleSheet("color:#666;")
@@ -714,7 +715,7 @@ class SetupWizard(QWizard):
         self._repair_mode = False
         # 验证结果缓存 {comfy路径: 可用解释器}——切回已验过的候选秒过，不必重跑 2~4 秒
         self._verify_cache = {}
-        # ★ UI 操作审计：记录真实点击/选择到 %APPDATA%\ComfyHub\logs\ui_YYYYMMDD.log
+        # ★ UI 操作审计：记录真实点击/选择到 <数据根>\logs\ui_YYYYMMDD.log
         from app.ui.audit import log_ui
         self._audit = log_ui
         self.setObjectName("SetupWizard")

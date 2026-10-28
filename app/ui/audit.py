@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """UI 操作审计日志：把用户/测试在界面上的真实操作记录到文件，便于复盘问题。
 
-写到哪里：%APPDATA%\\ComfyHub\\logs\\ui_YYYYMMDD.log
+写到哪里：<数据根>/logs/ui_YYYYMMDD.log
 格式：HH:MM:SS.mmm  ACTION  key=value ...
 """
 import datetime
@@ -15,7 +15,8 @@ def _ensure():
     global _LOG_DIR, _LOG_PATH
     if _LOG_PATH:
         return
-    base = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "ComfyHub", "logs")
+    from app.paths import data_root
+    base = os.path.join(data_root(), "logs")
     try:
         os.makedirs(base, exist_ok=True)
     except OSError:
