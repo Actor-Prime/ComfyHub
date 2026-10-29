@@ -554,6 +554,25 @@ def portable_pip(python_exe: str) -> str:
     return python_exe
 
 
+def uninstall_portable_python(tools_dir: str, log=print) -> bool:
+    """卸载便携 Python（只删 python 子目录，不动 MinGit/wheels）。
+    2026-10-29 用户需求：重装=先卸载原本的，再装新的。
+    返回是否确实删除了目录。"""
+    py_dir = os.path.join(tools_dir, "python")
+    if not os.path.isdir(py_dir):
+        log(f"便携 Python 不存在，无需卸载: {py_dir}")
+        return False
+    import shutil as _sh
+    # 先杀可能残留的 python 进程句柄无从下手——直接删（便携版无后台常驻）
+    _sh.rmtree(py_dir, ignore_errors=True)
+    # 顺带清掉历史 stage/backup 残留
+    for extra in ("_python_stage", "python_old"):
+        _sh.rmtree(os.path.join(tools_dir, extra), ignore_errors=True)
+    gone = not os.path.isdir(py_dir)
+    log(f"已卸载便携 Python: {py_dir}" if gone else f"⚠️ 卸载未完全: {py_dir}")
+    return gone
+
+
 # ---------------- ComfyUI 源码 ----------------
 def install_comfyui_source(dest: str, log=print, proxy: str = "") -> str:
     """下载 ComfyUI 源码 zip 并解压到 dest，返回实际目录"""
@@ -786,10 +805,27 @@ def find_git() -> str | None:
 
 
 def tools_root() -> str:
-    """工具存放根目录：<数据根>\\tools（便携模式=程序目录\\data\\ComfyHub\\tools）"""
-    from app.paths import data_root
-    d = os.path.join(data_root(), "tools")
-    os.makedirs(d, exist_ok=True)
+    """工具存放根目录：<数据根>\\tools（便携模式=程序目录\\data\\ComfyHub\\tools）
+    2026-10-29 用户需求：支持自定义——settings.tools_dir 非空且为绝对路径时优先。
+    旧目录不自动搬迁：改路径只影响下次安装/修复（GB 级拷贝中断风险归零，
+    旧目录由用户按提示手动删除）。"""
+    custom = ""
+    try:
+        from app.config import CONFIG_PATH
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            custom = str(((json.load(f).get("settings") or {}).get("tools_dir")
+                          or "")).strip()
+    except Exception:
+        custom = ""          # 配置损坏/不存在 → 走默认，绝不因此崩
+    if custom and os.path.isabs(custom):
+        d = custom
+    else:
+        from app.paths import data_root
+        d = os.path.join(data_root(), "tools")
+    try:
+        os.makedirs(d, exist_ok=True)
+    except OSError:
+        pass   # 只读检测场景返回路径即可；真正安装写入时会明确报错
     return d
 
 
