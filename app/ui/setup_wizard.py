@@ -69,7 +69,8 @@ class _LogPage(QWizardPage):
         self.sig_ui_log.connect(self._on_log)
 
     # ---------- 入口 ----------
-    def start(self, target_dir, python_exe, mirror, proxy, torch_flag, on_done):
+    def start(self, target_dir, python_exe, mirror, proxy, torch_flag, on_done,
+              py_install_dir=""):
         from app import bootstrap
         # 本次安装日志落盘：<数据根>\logs\install_YYYYmmdd_HHMMSS.log
         import datetime as _dt
@@ -83,6 +84,7 @@ class _LogPage(QWizardPage):
                 f.write(f"# ComfyHub 安装日志 {_dt.datetime.now():%Y-%m-%d %H:%M:%S}\n"
                         f"# 目标: {target_dir}\n"
                         f"# Python: {python_exe or '（自动安装便携）'}\n"
+                        f"# Python 安装到: {py_install_dir or bootstrap.tools_root()}\n"
                         f"# 镜像: {mirror}  代理: {proxy or '无'}  torch: {torch_flag}\n"
                         "--------------------------------------------------------\n")
         except OSError:
@@ -91,6 +93,7 @@ class _LogPage(QWizardPage):
         self.on_done = on_done
         self.done_ok = False
         self.state = {"target_dir": target_dir, "python_exe": python_exe,
+                      "py_install_dir": py_install_dir or bootstrap.tools_root(),
                       "mirror_name": mirror, "proxy": proxy, "total": 4 if torch_flag else 3}
         # 分流：目录里已有 ComfyUI 实例 → 步进制（逐步检测询问）；
         #       空目录（全新安装）→ 全自动连跑（无需逐步确认）
@@ -188,9 +191,13 @@ class _LogPage(QWizardPage):
         self.bar.setRange(0, total)
         target_dir = self.state["target_dir"]
         python_exe = self.state["python_exe"]
+        is_reinstall = python_exe == "__reinstall__"
+        # 便携 Python 安装根目录：用户可选（留空=默认 tools_root()），
+        # 新装/重装一致——重装时"卸载旧的"自动定位共享位置，"装新的"到所选路径
+        py_dir = self.state.get("py_install_dir") or bootstrap.tools_root()
         mirror = bootstrap.PYPI_MIRRORS.get(self.state["mirror_name"],
                                             bootstrap.PYPI_MIRRORS["阿里云"])
-        wheels = os.path.join(bootstrap.tools_root(), "wheels")
+        wheels = os.path.join(py_dir, "wheels")
         # ★ 关键：后台线程的日志只能走信号（emit），由主线程执行 _on_log。
         #   直接把 self._on_log 传进 worker 会导致跨线程操作 Qt 控件 → 堆损坏崩溃
         log = self.sig_ui_log.emit
@@ -206,15 +213,39 @@ class _LogPage(QWizardPage):
                 pass   # Manager 失败不影响主流程
             return res
 
+        def _install_python_step():
+            """便携 Python 安装/重装：
+            重装 = 自动识别共享位置卸载旧版（不需手动指定）→ 新版装到所选路径
+            不论路径是否变化，旧共享 Python 都先卸载（2026-10-29 用户定稿）"""
+            if is_reinstall:
+                bootstrap.uninstall_portable_python(
+                    bootstrap.tools_root(), log=log)
+                return bootstrap.install_portable_python(
+                    py_dir, log=log, proxy=self.state["proxy"], force=True)
+            # 新装：目标路径已有则复用，没有则装
+            return bootstrap.install_portable_python(
+                py_dir, log=log, proxy=self.state["proxy"])
+
+        # 重装的 detect：仅首次返回 missing 触发安装；
+        # 安装完成后的复验走真实检测——否则永远 missing → "复验未通过"死循环
+        # （且 payload 为空会断掉 python_path 向后续步骤的传递）
+        _reinstall_state = {"first": True}
+
+        def _detect_python_step():
+            if is_reinstall:
+                if _reinstall_state["first"]:
+                    _reinstall_state["first"] = False
+                    return ("missing",
+                            "已选择重新安装便携 Python（将先卸载旧版再装新版）",
+                            {})
+                # 复验：真实检测新装出的解释器（python_exe 是哨兵，需按便携路径查）
+                return bootstrap.detect_python_step("", py_dir)
+            return bootstrap.detect_python_step(python_exe, py_dir)
+
         plan = [
             {"title": self.STEP_TITLES[0],
-             "detect": lambda: (
-                 # 用户明确选了"重新安装"→ 强制走安装（覆盖共享版本）
-                 ("missing", "已选择重新安装便携 Python（覆盖共享版本）", {})
-                 if python_exe == "__reinstall__"
-                 else bootstrap.detect_python_step(python_exe, bootstrap.tools_root())),
-             "install": lambda: bootstrap.install_portable_python(
-                 bootstrap.tools_root(), log=log, proxy=self.state["proxy"])},
+             "detect": _detect_python_step,
+             "install": _install_python_step},
             {"title": self.STEP_TITLES[1],
              "detect": lambda: bootstrap.detect_source_step(target_dir),
              "install": lambda: _install_source_with_manager()},
@@ -597,38 +628,94 @@ class SetupWizard(QWizard):
 
         self.cb_python = QComboBox()
         tools_py = os.path.join(bootstrap.tools_root(), "python", "python.exe")
+        # ★ 分类标签体系（2026-10-30 用户要求）：[共享] = ComfyHub 管理的共享便携
+        #   Python（安装/重装/自动安装都属它）；[实例自带] = 整合包等实例目录里
+        #   自带的解释器（如 python_embeded）；[自定义] = 用户自己新增的任意解释器。
+        #   三类绝不混标，别把共享的和实例自带的搞混。
         if os.path.isfile(tools_py):
             # 共享便携 Python 已存在：默认使用它（免重装），重装降级为可选项
-            self.cb_python.addItem("使用 ComfyHub 共享便携 Python（已安装，实例共用）",
+            self.cb_python.addItem("[共享] 使用 ComfyHub 共享便携 Python（已安装，实例共用）",
                                    userData=tools_py)
-            self.cb_python.addItem("重新安装便携 Python（覆盖共享版本）", userData=None)
+            # ★ userData 必须是 "__reinstall__"：步骤机靠它强制走安装分支
+            #   （2026-10-29 修：原来是 None → 共享 Python 存在时检测直接 ok 跳过，
+            #    「重新安装」选项形同虚设）
+            self.cb_python.addItem("[共享] 重新安装便携 Python（覆盖共享版本，可改安装路径）",
+                                   userData="__reinstall__")
         else:
-            self.cb_python.addItem("自动安装便携 Python（推荐，不污染系统）", userData=None)
-        # 已注册实例用过的解释器也列为可选
-        parent_cfg = getattr(self.parent(), "cfg", {}) if self.parent() else {}
-        seen = {tools_py}
-        for inst in parent_cfg.get("instances", []):
+            self.cb_python.addItem("[共享] 自动安装便携 Python（推荐，不污染系统）", userData=None)
+        # 已注册实例用过的解释器也列为可选（实例自带 / 自定义，按路径判定）
+        self._parent_cfg = getattr(self.parent(), "cfg", {}) if self.parent() else {}
+        seen = {os.path.normcase(tools_py)}
+        for inst in self._parent_cfg.get("instances", []):
             cand = inst.get("python_path") or ""
-            if cand and os.path.isfile(cand) and cand not in seen:
-                self.cb_python.addItem(f"使用已有: {cand}", userData=cand)
-                seen.add(cand)
+            if cand and os.path.isfile(cand) \
+                    and os.path.normcase(cand) not in seen:
+                self.cb_python.addItem(
+                    f"[{self._classify_py(cand)}] 使用已有: {cand}", userData=cand)
+                seen.add(os.path.normcase(cand))
+        # ★ 选择新增（2026-10-30 用户要求）：浏览添加任意 python.exe——
+        #   比如另一个实例里的 F:\ComfyUI_windows_portable\python_embeded\python.exe。
+        #   userData="__add__" 是哨兵：选中即弹文件选择器，选完插入真实项并选中
+        self.cb_python.addItem("➕ 选择新增 Python 解释器…（如其他实例的 python_embeded）",
+                               userData="__add__")
         form_opts.addRow("Python 环境:", self.cb_python)
 
-        # 解释器路径展示（跟随上方选择实时更新；选中"重新安装"时显示目标安装路径）
+        # 解释器路径（2026-10-29 用户需求：可浏览选择自己的 python.exe，留空=默认）
+        # · 上方下拉切换 → 自动填充对应路径（仍可手动改）
+        # · 手动填写/浏览 → 以填写值为准（必须是存在的 python.exe，下一步时校验）
+        # · 留空 → 走默认逻辑（自动安装/使用共享便携 Python）
+        row_py = QHBoxLayout()
         self.ed_py_path = QLineEdit("")
-        self.ed_py_path.setReadOnly(True)
-        self.ed_py_path.setStyleSheet("color:#8fa3bf;")
-        form_opts.addRow("解释器路径:", self.ed_py_path)
+        self.ed_py_path.setPlaceholderText(
+            "留空 = 自动选择（共享便携 Python）；也可浏览选择已有 python.exe")
+        b_py = QPushButton("浏览…")
+        b_py.clicked.connect(self._pick_python_exe)
+        # ★ 分类标签 chip（2026-10-30 用户要求）：实时显示当前解释器的归属分类——
+        #   [共享 Python]（ComfyHub 安装管理，安装/重装目标）/ [实例自带] / [自定义]，
+        #   一眼区分，别跟添加实例自带的搞混
+        self.lb_py_chip = QLabel("[共享 Python]")
+        self.lb_py_chip.setStyleSheet(
+            "QLabel{color:#2b6cb0; background:#e3edfa; border:1px solid #b5cdee;"
+            " border-radius:3px; padding:1px 6px; font-size:11px; font-weight:600;}")
+        row_py.addWidget(self.ed_py_path, 1)
+        row_py.addWidget(self.lb_py_chip)
+        row_py.addWidget(b_py)
+        self.ed_py_path.editingFinished.connect(
+            lambda: self._update_py_chip(self.cb_python.currentData()))
+        form_opts.addRow("解释器路径:", row_py)
+
+        # ---- 路径职责统一在「解释器路径」一行（2026-10-30 用户定稿）----
+        # 「Python 安装到」行已删除。本行按内容/模式解析：
+        #   重装：显示默认共享 python.exe 路径；改了 → 新版安装到该路径所在文件夹
+        #   新装：留空=装默认位置；填文件夹=装到那里；填已有 python.exe=直接使用
+        #   用已有解释器：填存在的 python.exe（原语义）
 
         def _sync_py_path(_idx=0):
             ud = self.cb_python.currentData()
+            if ud == "__add__":
+                # 「➕ 选择新增」哨兵项：弹文件选择器（异步，避免信号里嵌套对话框）。
+                # 记住进入前的选项，用户取消时回退
+                self._last_py_idx = getattr(self, "_last_py_idx", 0)
+                QTimer.singleShot(0, self._flow_add_python)
+                return
+            self._last_py_idx = self.cb_python.currentIndex()
             if ud == "__reinstall__":
-                self.ed_py_path.setText(
-                    "将安装到: " + os.path.join(bootstrap.tools_root(), "python", "python.exe"))
+                # 重装：直接显示默认路径（可读可见，不再空白+提示文字）
+                self.ed_py_path.setText(os.path.join(
+                    bootstrap.tools_root(), "python", "python.exe"))
+                self.ed_py_path.setPlaceholderText(
+                    "默认安装到 " + bootstrap.tools_root()
+                    + "（可改成其他文件夹）；将先卸载共享便携 Python 再安装")
             elif ud:
                 self.ed_py_path.setText(ud)
+                self.ed_py_path.setPlaceholderText(
+                    "留空 = 自动选择（共享便携 Python）；也可浏览选择已有 python.exe")
             else:
-                self.ed_py_path.setText("（将自动下载安装便携 Python）")
+                self.ed_py_path.clear()   # 留空 = 自动下载安装便携 Python
+                self.ed_py_path.setPlaceholderText(
+                    "留空 = 安装到默认位置（" + bootstrap.tools_root()
+                    + "）；可填目标文件夹，或选已有 python.exe 直接使用")
+            self._update_py_chip(ud)
 
         self.cb_python.currentIndexChanged.connect(_sync_py_path)
         _sync_py_path()
@@ -646,6 +733,7 @@ class SetupWizard(QWizard):
         self.ck_torch.setChecked(True)
         form_opts.addRow("", self.ck_torch)
 
+        # 说明（工具目录自定义入口在设置页，本页不再放——2026-10-29 用户要求精简）
         from app.bootstrap import tools_root
         tip = QLabel(f"说明：便携 Python 与 MinGit 安装在 {tools_root()}，"
                      "可随时整目录删除卸载，不影响系统。")
@@ -1551,6 +1639,224 @@ class SetupWizard(QWizard):
             self.ed_dir.setText(d)
             self._detect_existing()   # 每次选择文件夹自动扫描
 
+    # ---------------- 解释器路径（统一路径职责 2026-10-30）----------------
+    def _choose_python_exe(self):
+        """弹文件选择器选 python.exe（新增/浏览共用）。返回路径或 ""（取消/非法）。"""
+        start = self.ed_py_path.text().strip()
+        if not (start and os.path.isfile(start)):
+            # 起始目录：当前共享便携 Python 所在目录（没有就从用户目录起步）
+            cand = os.path.join(bootstrap.tools_root(), "python", "python.exe")
+            start = cand if os.path.isfile(cand) else os.path.expanduser("~")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择 Python 解释器", start,
+            "python.exe (*.exe);;所有文件 (*.*)")
+        if not path:
+            return ""
+        if os.path.basename(path).lower() != "python.exe":
+            QMessageBox.warning(self, "ComfyHub",
+                                "请选择 python.exe 文件（如 "
+                                "…\\python\\python.exe）。")
+            return ""
+        return path
+
+    def _pick_python_exe(self):
+        # 重装模式：本行选的是「新版本安装到哪个文件夹」→ 文件夹选择器
+        if self.cb_python.currentData() == "__reinstall__":
+            start = self.ed_py_path.text().strip()
+            if start and os.path.isfile(start):
+                start = os.path.dirname(start)
+            elif not (start and os.path.isdir(start)):
+                start = bootstrap.tools_root()
+            d = QFileDialog.getExistingDirectory(
+                self, "选择 Python 安装目录", start)
+            if d:
+                self.ed_py_path.setText(d)
+                self._update_py_chip("__reinstall__")
+            return
+        path = self._choose_python_exe()
+        if path:
+            self.ed_py_path.setText(path)
+            self._update_py_chip(self.cb_python.currentData())
+
+    def _classify_py(self, exe: str) -> str:
+        """解释器来源分类：共享 / 实例自带 / 自定义（下拉标签与 chip 共用）。
+        · 共享 = ComfyHub 共享便携 Python（tools_root 管理，安装/重装的对象）
+        · 实例自带 = 在某个 ComfyUI 实例目录下（含 python_embeded 整合包布局）
+        · 自定义 = 其他任意解释器（用户自己新增）"""
+        try:
+            e = os.path.normcase(os.path.normpath(exe))
+            tools_py = os.path.normcase(os.path.normpath(
+                os.path.join(bootstrap.tools_root(), "python", "python.exe")))
+            if e == tools_py:
+                return "共享"
+            # python_embeded 布局（ComfyUI_windows_portable 官方整合包）一律实例自带
+            if "python_embeded" in e:
+                return "实例自带"
+            # 在已注册实例 / 扫描候选目录下 → 实例自带
+            roots = [i.get("comfyui_path") or ""
+                     for i in getattr(self, "_parent_cfg", {}).get("instances", [])]
+            roots += list(getattr(self, "_scan_candidates", None) or [])
+            for r in roots:
+                if not r:
+                    continue
+                rn = os.path.normcase(os.path.normpath(r)).rstrip("\\/")
+                if e.startswith(rn + os.sep):
+                    return "实例自带"
+        except Exception:
+            pass
+        return "自定义"
+
+    def _update_py_chip(self, ud):
+        """解释器路径行的分类 chip：实时显示当前解释器归属
+        （[共享 Python] ComfyHub 管理 / [实例自带] / [自定义]）——
+        安装、重装（默认或自定义路径）都归「共享」，绝不与实例自带混淆"""
+        try:
+            if ud == "__add__":
+                return                      # 哨兵瞬态，chip 保持上一状态
+            if ud == "__reinstall__":
+                cls, text, color = ("共享",
+                                    "[共享 Python] ComfyHub 管理（安装/重装目标）",
+                                    ("#2b6cb0", "#e3edfa", "#b5cdee"))
+            else:
+                # 有效 exe（下拉选中的或解释器行填的）→ 按真实来源分类；
+                # 无 exe（自动安装/填的是安装文件夹）→ 归「共享」（装出来就是共享 Python）
+                exe = ud if (ud and os.path.isfile(ud)) \
+                    else self.ed_py_path.text().strip()
+                if exe and os.path.isfile(exe):
+                    cls = self._classify_py(exe)
+                    if cls == "共享":
+                        text = "[共享 Python] ComfyHub 管理"
+                        color = ("#2b6cb0", "#e3edfa", "#b5cdee")
+                    elif cls == "实例自带":
+                        text = "[实例自带] 该实例目录里的解释器"
+                        color = ("#1d7a46", "#e2f4ea", "#a8d9bf")
+                    else:
+                        text = "[自定义] 用户添加的解释器"
+                        color = ("#a35a12", "#fbeedd", "#e8c39a")
+                elif ud is None:
+                    cls, text, color = ("共享",
+                                        "[共享 Python] ComfyHub 管理（安装/重装目标）",
+                                        ("#2b6cb0", "#e3edfa", "#b5cdee"))
+                else:
+                    self.lb_py_chip.hide()
+                    return
+            self.lb_py_chip.setText(text)
+            self.lb_py_chip.setStyleSheet(
+                f"QLabel{{color:{color[0]}; background:{color[1]};"
+                f" border:1px solid {color[2]}; border-radius:3px;"
+                " padding:1px 6px; font-size:11px; font-weight:600;}")
+            self.lb_py_chip.show()
+        except Exception:
+            pass
+
+    def _flow_add_python(self):
+        """「➕ 选择新增」流程：选 python.exe → 插入下拉（带分类标签）并选中；
+        取消/非法 → 回退到进入前的选项。"""
+        if getattr(self, "_adding_py", False):
+            return
+        self._adding_py = True
+        try:
+            path = self._choose_python_exe()
+            if path:
+                self._add_custom_python(path)
+            else:
+                # 取消：回退（blockSignals 防止再次触发本流程）
+                self.cb_python.blockSignals(True)
+                self.cb_python.setCurrentIndex(getattr(self, "_last_py_idx", 0))
+                self.cb_python.blockSignals(False)
+        finally:
+            self._adding_py = False
+
+    def _add_custom_python(self, path):
+        """把用户新增的解释器（如另一实例的 python_embeded）插入下拉并选中：
+        查重、打分类标签、插在「➕ 选择新增」哨兵之前"""
+        path = os.path.normpath(path)
+        for i in range(self.cb_python.count()):
+            if self.cb_python.itemData(i) == path:
+                self.cb_python.blockSignals(True)
+                self.cb_python.setCurrentIndex(i)
+                self.cb_python.blockSignals(False)
+                self._last_py_idx = i
+                self.ed_py_path.setText(path)
+                self._update_py_chip(path)
+                return
+        add_idx = self.cb_python.count()
+        for i in range(self.cb_python.count()):
+            if self.cb_python.itemData(i) == "__add__":
+                add_idx = i
+                break
+        self.cb_python.insertItem(
+            add_idx, f"[{self._classify_py(path)}] 使用已有: {path}",
+            userData=path)
+        self.cb_python.blockSignals(True)
+        self.cb_python.setCurrentIndex(add_idx)
+        self.cb_python.blockSignals(False)
+        self._last_py_idx = add_idx
+        self.ed_py_path.setText(path)
+        self._update_py_chip(path)
+
+    def _reinstall_target(self, raw: str):
+        """重装模式：把本行文本解析成安装根目录（tools_dir）。
+        返回 (tools_dir, err)。规则：
+          空 / 默认共享 python.exe 路径 → 默认 tools_root()
+          …\\python\\python.exe 型路径  → 去掉 \\python\\python.exe 两层（原地重装）
+          其他 python.exe               → 该 exe 所在文件夹作安装根
+          文件夹路径                     → 直接作安装根（新版装进该文件夹）"""
+        default_exe = os.path.join(
+            bootstrap.tools_root(), "python", "python.exe")
+        v = (raw or "").strip().rstrip("\\/")
+        if not v:
+            return bootstrap.tools_root(), ""
+        if os.path.normpath(v) == os.path.normpath(default_exe):
+            return bootstrap.tools_root(), ""
+        if v.lower().endswith(".exe"):
+            parent = os.path.dirname(v)
+            if os.path.basename(parent).lower() == "python":
+                return os.path.dirname(parent), ""   # …\X\python\python.exe → X
+            return parent, ""                        # …\X\python.exe → X
+        if not os.path.isabs(v):
+            return None, (f"Python 安装路径必须是绝对路径：\n{v}\n\n"
+                          "如 F:\\ComfyHub_tools，或清空用默认。")
+        return v, ""
+
+    def _effective_python_exe(self):
+        """下一步时解析解释器（填写值优先）。返回 (path_or_None, error_msg)：
+        None=自动安装便携 Python  ·  "__reinstall__"=强制重装  ·  路径=直接使用。
+        新增：非 exe 的文件夹填写 → 视为「安装到该文件夹」（None+安装目标）"""
+        ud = self.cb_python.currentData()
+        custom = self.ed_py_path.text().strip()
+        if ud == "__add__":
+            # 「➕ 选择新增」哨兵停留态（没选成文件）：不放行，引导选完再继续
+            return None, ("请先选择一个 python.exe（点下拉「➕ 选择新增…」或右侧"
+                          "「浏览…」），或改选其他 Python 环境项。")
+        if ud == "__reinstall__":
+            # 重装：本行语义是「安装目标」而非解释器，按 _reinstall_target 校验
+            _d, err = self._reinstall_target(custom)
+            return ("__reinstall__", err)
+        if custom:
+            if os.path.isfile(custom):
+                return custom, ""
+            if custom.lower().endswith(".exe"):
+                return None, (f"解释器路径不存在：\n{custom}\n\n"
+                              "请重新选择，或清空该行改用自动安装。")
+            # 非 exe 文本 = 安装文件夹（新装到该位置）
+            if not os.path.isabs(custom):
+                return None, (f"路径必须是绝对路径：\n{custom}\n\n"
+                              "如 F:\\ComfyHub_tools，或留空用默认。")
+            return None, ""     # None → 自动安装；目标文件夹由 _install_target_dir 取
+        return ud, ""           # None / 已有解释器路径（留空走下拉默认）
+
+    def _install_target_dir(self, py):
+        """便携 Python 安装根目录（新装/重装）。返回 (dir, err)。"""
+        if py == "__reinstall__":
+            return self._reinstall_target(self.ed_py_path.text().strip())
+        raw = self.ed_py_path.text().strip()
+        if py is None and raw and not raw.lower().endswith(".exe") \
+                and os.path.isabs(raw):
+            return raw.rstrip("\\/"), ""    # 新装到用户填写的文件夹
+        from app import bootstrap
+        return bootstrap.tools_root(), ""
+
     def _on_page_change(self, page_id: int):
         # 进入进度页时自动开跑（page_id 是 int，必须换算成页对象再比）
         if self.page(page_id) is self.p2 and not self._started:
@@ -1587,11 +1893,27 @@ class SetupWizard(QWizard):
                                      self._on_done)
                 return
             target = self.ed_dir.text().strip()
-            py = self.cb_python.currentData()
+            # 解释器：填写值优先（2026-10-29 用户需求），无效路径拦截不放行
+            py, _py_err = self._effective_python_exe()
+            if _py_err:
+                QMessageBox.warning(self, "ComfyHub", _py_err)
+                self._started = False
+                self.setCurrentId(0)   # 回第一页让用户改
+                return
+            # Python 安装目标：新装/重装时从解释器路径行解析并校验（2026-10-30
+            # 「Python 安装到」行已删，路径职责统一在解释器路径行）
+            pdir = ""
+            if py is None or py == "__reinstall__":
+                pdir, _pd_err = self._install_target_dir(py)
+                if _pd_err:
+                    QMessageBox.warning(self, "ComfyHub", _pd_err)
+                    self._started = False
+                    self.setCurrentId(0)
+                    return
             mirror = self.cb_mirror.currentText()
             proxy = self.ed_proxy.text().strip()
             self.p2.start(target, py, mirror, proxy, self.ck_torch.isChecked(),
-                          self._on_done)
+                          self._on_done, py_install_dir=pdir)
 
     def _on_done(self, ok: bool, res: dict, err: str):
         # ★ 修复模式：完成不关向导——回第一页重新验证，通过才解锁「完成」

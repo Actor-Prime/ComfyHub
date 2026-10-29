@@ -12,7 +12,7 @@ Unicode true
 ; ---------- 基本信息 ----------
 !define APP_NAME       "ComfyHub"
 !define APP_NAME_CN    "ComfyHub 多实例管理器"
-!define APP_VERSION    "0.8.04"
+!define APP_VERSION    "0.8.05"
 !define APP_PUBLISHER  "LeiMengStudio"
 !define APP_URL        "https://gitee.com/yzdydwdd/ComfyHub"
 !define APP_EXE        "ComfyHub.exe"
@@ -30,7 +30,7 @@ SetCompressor /SOLID lzma
 ShowInstDetails show
 ShowUninstDetails show
 
-VIProductVersion "0.8.4.0"
+VIProductVersion "0.8.5.0"
 VIAddVersionKey "ProductName"     "${APP_NAME_CN}"
 VIAddVersionKey "FileDescription" "${APP_NAME_CN} 安装程序"
 VIAddVersionKey "FileVersion"     "${APP_VERSION}"
@@ -216,8 +216,8 @@ Section "Uninstall"
     ; ---- 配置目录：默认删除（用户要求），选"否"才保留 ----
     IfFileExists "$APPDATA\ComfyHub\*.*" 0 cfgDone
     IfSilent delCfg 0                          ; 静默模式 = 默认清理
-    MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON1 \
-        "是否同时删除配置目录？（含实例配置、启动模式、运行日志）" \
+    MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 \
+        "是否同时删除 ComfyHub 用户数据目录？$\r$\n$\r$\n注意：该目录不仅是配置，还含共享便携 Python / MinGit / PyTorch（可达数 GB）。$\r$\n删除后重装需重新下载这些组件；选「否」则全部保留，重装无需重新配置。" \
         IDYES delCfg IDNO keepCfg
     keepCfg:
         MessageBox MB_OK|MB_ICONINFORMATION \

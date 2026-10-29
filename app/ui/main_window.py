@@ -60,12 +60,19 @@ class MainWindow(QMainWindow):
         lv.setContentsMargins(0, 8, 0, 4)
         lv.setSpacing(2)
         icon_label = QLabel()
-        icon_pixmap = QPixmap(os.path.join(ASSETS_DIR, "icon.ico"))
+        # 侧边栏 logo 用 logo.png（256×256）——QPixmap 直接载 icon.ico 只会拿到
+        # 16×16 最小帧，放大到 40×40 会发糊（2026-10-30 用户反馈）；ico 留给
+        # 窗口/托盘图标（QIcon 会按尺寸挑最合适的帧，不受影响）
+        icon_pixmap = QPixmap(os.path.join(ASSETS_DIR, "logo.png"))
         if icon_pixmap.isNull():
-            icon_pixmap = QPixmap(os.path.join(ASSETS_DIR, "logo.png"))
+            icon_pixmap = QPixmap(os.path.join(ASSETS_DIR, "icon.ico"))
         if not icon_pixmap.isNull():
-            icon_label.setPixmap(icon_pixmap.scaled(40, 40, Qt.KeepAspectRatio,
-                                                    Qt.SmoothTransformation))
+            # 按 devicePixelRatio 渲染，高 DPI 缩放下保持清晰
+            dpr = self.devicePixelRatioF() or 1.0
+            pm = icon_pixmap.scaled(int(40 * dpr), int(40 * dpr),
+                                    Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            pm.setDevicePixelRatio(dpr)
+            icon_label.setPixmap(pm)
         icon_label.setAlignment(Qt.AlignCenter)
         lv.addWidget(icon_label)
         logo = QLabel("ComfyHub")
