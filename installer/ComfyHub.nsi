@@ -12,7 +12,7 @@ Unicode true
 ; ---------- 基本信息 ----------
 !define APP_NAME       "ComfyHub"
 !define APP_NAME_CN    "ComfyHub 多实例管理器"
-!define APP_VERSION    "0.8.06"
+!define APP_VERSION    "0.8.07"
 !define APP_PUBLISHER  "LeiMengStudio"
 !define APP_URL        "https://gitee.com/yzdydwdd/ComfyHub"
 !define APP_EXE        "ComfyHub.exe"
@@ -30,7 +30,7 @@ SetCompressor /SOLID lzma
 ShowInstDetails show
 ShowUninstDetails show
 
-VIProductVersion "0.8.6.0"
+VIProductVersion "0.8.7.0"
 VIAddVersionKey "ProductName"     "${APP_NAME_CN}"
 VIAddVersionKey "FileDescription" "${APP_NAME_CN} 安装程序"
 VIAddVersionKey "FileVersion"     "${APP_VERSION}"
@@ -64,6 +64,8 @@ VIAddVersionKey "LegalCopyright"  "MIT License"
 !define MUI_FINISHPAGE_TEXT  "已经成功安装到本机。"
 !insertmacro MUI_PAGE_WELCOME
 ; 用户同意书：必须勾选"我接受"才能继续
+; ⚠ docs\DISCLAIMER_unicode.txt 是 docs\DISCLAIMER.txt 的 UTF-16 版本（NSIS 许可页中文须 UTF-16），
+;   两份内容必须同步修改，否则安装向导许可页与 README 链接的声明不一致
 !insertmacro MUI_PAGE_LICENSE "..\docs\DISCLAIMER_unicode.txt"
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES

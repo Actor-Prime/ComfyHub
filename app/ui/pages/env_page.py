@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QScrollArea, QComboBox,
 )
 
+from app.i18n import T
 from app.tools import EnvBackup, Rescue
 from app.bootstrap import find_git
 from app.winsub import run as sub_run
@@ -185,13 +186,13 @@ class EnvPage(QWidget):
         w = DetectWorker(inst)
         w.sig_item.connect(self._set_state)
         w.sig_done.connect(lambda: self.lb_inst.setText(
-            f"实例: {inst.get('name')} — 检测完成 ✅"))
+            f"{T('实例')}: {inst.get('name')} — {T('检测完成')} ✅"))
         swap_worker(self, "_worker", w)
         w.start()
 
     def on_show(self):
         self.lb_inst.setText(
-            f"实例: {self._inst().get('name')}" if self._inst() else "（未选择实例）")
+            f"{T('实例')}: {self._inst().get('name')}" if self._inst() else "（未选择实例）")
         self._refresh_snapshots()
 
     def on_instance_changed(self):

@@ -68,7 +68,7 @@ if errorlevel 1 (
 rem Advisory verify: signature was already applied successfully above. A chain
 rem error here is EXPECTED with a self-signed cert until its root certificate
 rem is imported into the Trusted Root store - warn, do not fail the build.
-"%SIGNTOOL_EXE%" verify /pa "%TARGET%"
+"%SIGNTOOL_EXE%" verify /pa "%TARGET%" 2>&1
 if errorlevel 1 (
     echo [sign] verify warning: signature is on the file but its chain is not
     echo [sign] trusted yet. Expected for self-signed certs until the root

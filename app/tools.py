@@ -229,8 +229,6 @@ class ModelDownloader:
         log(f"开始下载 {filename} → models/{subdir}/")
         return download_multi(url, dest, log=log, max_retry=100, timeout=120)
 
-    # TODO(v0.4): civitai_search(api_token) / hf_search / resolve_missing
-
 
 # ================= 环境备份 =================
 def _inst_dirname(comfyui_path: str) -> str:

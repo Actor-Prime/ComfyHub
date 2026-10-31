@@ -3,8 +3,8 @@
 import os
 import uuid
 
-from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtCore import QSize, Qt, QRect, QTimer
+from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor
 from app.ui.nav import NAV
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QListWidget,
@@ -34,6 +34,43 @@ NAV_ITEMS = [
 ]
 
 
+class _Backdrop(QWidget):
+    """主窗背景层（2026-11-01 自定义主题）：负责画用户背景图。
+
+    只有「自定义」主题才画图，其余主题补一层与主题一致的低色兜底，
+    避免 rgba 面板叠在未绘制区域上出现花屏。图片按 cover 方式裁切铺满，
+    并按面板不透明度压暗 —— 面板越透，图越暗，保证文字始终可读。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._pix = QPixmap()
+        self._alpha = 1.0
+        self._resolved = "dark"
+
+    def set_background(self, image_path: str, alpha: float, resolved: str):
+        self._alpha = alpha
+        self._resolved = resolved
+        pm = QPixmap(image_path) if (image_path and os.path.isfile(image_path)) else QPixmap()
+        self._pix = pm
+        self.update()
+
+    def paintEvent(self, _ev):
+        p = QPainter(self)
+        r = self.rect()
+        p.fillRect(r, QColor("#f7f8fa" if self._resolved == "light" else "#1e2229"))
+        if self._pix.isNull():
+            return
+        scaled = self._pix.scaled(r.size(), Qt.KeepAspectRatioByExpanding,
+                                  Qt.SmoothTransformation)
+        sx = max(0, (scaled.width() - r.width()) // 2)
+        sy = max(0, (scaled.height() - r.height()) // 2)
+        p.drawPixmap(r, scaled, QRect(sx, sy, r.width(), r.height()))
+        # 固定轻度压暗：保证文字在花哨照片上可读，但不要压掉图片本身
+        # （早期按 1-alpha 取值，面板越透图越黑，实测等于把壁纸抹掉了）
+        p.fillRect(r, QColor(0, 0, 0, 52))
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -43,7 +80,9 @@ class MainWindow(QMainWindow):
         self.procs = ProcManager()
         self._quit_direct = False    # 托盘「退出」直通标志（防被关闭行为「最小化」分支截胡）
 
-        central = QWidget()
+        central = _Backdrop()
+        central.setObjectName("Backdrop")   # QSS 里 #Backdrop 需透明（自定义主题露图片）
+        self._backdrop = central
         self.setCentralWidget(central)
         root = QHBoxLayout(central)
         root.setContentsMargins(0, 0, 0, 0)
@@ -180,6 +219,48 @@ class MainWindow(QMainWindow):
         self.nav.setCurrentRow(0)
         self._init_orphan_check()
 
+        # ---------- 主题与语言（2026-11-01）----------
+        self._apply_theme()
+        self.settings_page.sig_saved.connect(self._apply_theme)   # 设置页保存后实时重绘
+        self._init_theme_watch()
+        from app.i18n import apply_language
+        apply_language(self, str((self.cfg.get("settings") or {}).get("lang", "zh")))
+
+    # ---------- 主题 ----------
+    def _apply_theme(self):
+        """应用主题 QSS + 同步背景层；自定义模式才传图片路径"""
+        from PySide6.QtWidgets import QApplication
+        from app.ui.theme import apply_theme
+        info = apply_theme(QApplication.instance(), self.cfg)
+        self._backdrop.set_background(
+            info["bg_image"] if info["mode"] == "custom" else "",
+            info["alpha"], info["resolved"])
+        # 自定义主题下滚动视口会用自己的不透明底把背景图涂掉（palette autoFill），
+        # 这里按模式统一关/开；其余主题保持 Qt 原行为不变。
+        from PySide6.QtWidgets import QAbstractScrollArea
+        custom = info["mode"] == "custom"
+        for sa in self.findChildren(QAbstractScrollArea):
+            sa.viewport().setAutoFillBackground(not custom)
+
+    def _init_theme_watch(self):
+        """「跟随系统」：Windows 深浅色切换后自动重绘（15s 轮询，开销可忽略）"""
+        from app.ui.theme import theme_conf, resolve_mode
+        self._sys_mode = resolve_mode("system")
+        self._theme_timer = QTimer(self)
+        self._theme_timer.setInterval(15000)
+
+        def _tick():
+            mode, _alpha, _bg = theme_conf(self.cfg)
+            if mode != "system":
+                return
+            cur = resolve_mode("system")
+            if cur != self._sys_mode:
+                self._sys_mode = cur
+                self._apply_theme()
+
+        self._theme_timer.timeout.connect(_tick)
+        self._theme_timer.start()
+
     # ---------- 系统托盘 ----------
     def _init_tray(self):
         """最小化到任务栏托盘：托盘图标 + 显示/退出菜单"""
@@ -286,16 +367,18 @@ class MainWindow(QMainWindow):
         self._quit_direct = True
         self.close()
 
-    def changeEvent(self, event):
-        """点最小化 → 收进任务栏托盘（不再占任务栏按钮）"""
-        from PySide6.QtCore import QEvent
-        if event.type() == QEvent.WindowStateChange and self.isMinimized():
-            self.hide()
-            if getattr(self, "tray", None):
-                self.tray.showMessage(
-                    "ComfyHub", "已最小化到托盘，点击图标恢复窗口",
-                    self.tray.MessageIcon.Information, 3000)
-        super().changeEvent(event)
+    def _hide_to_tray(self):
+        """收进托盘：直接 hide()，不经「先最小化再拦截」的中转。
+
+        2026-11-01 用户实测：走 showMinimized → changeEvent → hide 的链路，
+        窗口会先在任务栏出现（有时还残留按钮），期望是「点了最小化就直接变成小图标」。
+        直接隐藏的结果是确定的：任务栏无按钮，只剩托盘图标。
+        """
+        self.hide()
+        if getattr(self, "tray", None):
+            self.tray.showMessage(
+                "ComfyHub", "已最小化到托盘，点击图标恢复窗口",
+                self.tray.MessageIcon.Information, 3000)
 
     # ---------- 实例（全局） ----------
     def current_inst(self):
@@ -336,6 +419,10 @@ class MainWindow(QMainWindow):
         w = self.stack.currentWidget()
         if hasattr(w, "on_show"):
             w.on_show()
+        # 英文模式补扫：页面刷新会重设动态文案（按钮态、表头），切页时对齐一次
+        from app import i18n
+        if i18n.get_lang() != "zh":
+            i18n.apply_language(self, i18n.get_lang())
 
     def goto(self, row):
         self.nav.setCurrentRow(row)
@@ -452,12 +539,12 @@ class MainWindow(QMainWindow):
         # 关闭行为（2026-10-31）：settings.close_behavior = ask / close / minimize
         #   ask      = 弹框询问（退出 / 最小化到托盘，可勾「记住我的选择」）
         #   close    = 直接退出
-        #   minimize = 最小化到托盘（changeEvent 收进托盘并提示）
+        #   minimize = 最小化到托盘（直接 hide 收进托盘并提示，任务栏不留按钮）
         # 托盘「退出」置 _quit_direct 直通退出路径
         behavior = str((self.cfg.get("settings") or {}).get("close_behavior") or "ask")
         if not self._quit_direct and behavior == "minimize":
             event.ignore()
-            self.showMinimized()     # changeEvent 拦截后收进托盘
+            self._hide_to_tray()
             return
         if not self._quit_direct and behavior != "close":
             from app.ui.close_dialog import CloseChoiceDialog
@@ -468,9 +555,12 @@ class MainWindow(QMainWindow):
             if dlg.remembered():
                 self.cfg.setdefault("settings", {})["close_behavior"] = dlg.choice
                 save_config(self.cfg)
+                # 设置页下拉立即跟上（不然要切一次页才刷新，用户会以为没记住）
+                if hasattr(self, "settings_page"):
+                    self.settings_page.on_show()
             if dlg.choice == "minimize":
                 event.ignore()
-                self.showMinimized()
+                self._hide_to_tray()
                 return
         # 退出路径（直接退出 / 用户选了退出 / 托盘退出）：
         # 有实例运行中 → 明确提示"关闭会一并停止实例"，确认后才退

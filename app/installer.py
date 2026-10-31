@@ -93,6 +93,15 @@ def plan_from_scan(scan_result: dict, log=print, resolve_online: bool = True,
     """
     from app import core_nodes, model_resolve
     steps, unresolvable, upgrades = [], [], []
+    # AI 兜底预算（2026-11-01）：AI 是同步网络请求，批量扫描时逐项问会把界面拖死
+    # （实测开启 AI 后 UI 回归矩阵从 4.5 分钟涨到 11 分钟超时）。限制条数 + 超时。
+    ai_budget = [6]
+
+    def _ai_take() -> bool:
+        if ai_budget[0] <= 0:
+            return False
+        ai_budget[0] -= 1
+        return True
     for node in scan_result.get("missing", {}).get("__unknown__", []):
         repo = KNOWN_PLUGIN_REPOS.get(node)
         if repo:
@@ -124,7 +133,7 @@ def plan_from_scan(scan_result: dict, log=print, resolve_online: bool = True,
                     continue
             except Exception as e:
                 log(f"[计划] 插件映射查询失败: {e}")
-        if ai_settings:
+        if ai_settings and _ai_take():
             from app import ai_assist
             if ai_assist.enabled(ai_settings):
                 guess = ai_assist.ask_node_origin(node, ai_settings, log=log)
@@ -142,7 +151,7 @@ def plan_from_scan(scan_result: dict, log=print, resolve_online: bool = True,
     for kind, files in scan_result.get("models", {}).items():
         for f in files:
             hit = model_resolve.resolve_file(f, online=resolve_online, log=log)
-            if not hit and ai_settings:
+            if not hit and ai_settings and _ai_take():
                 from app import ai_assist
                 if ai_assist.enabled(ai_settings):
                     g = ai_assist.ask_model_source(f, ai_settings, log=log)
@@ -164,8 +173,62 @@ def plan_from_scan(scan_result: dict, log=print, resolve_online: bool = True,
                     "status": "需手动下载（无直链，可搜 HF/ModelScope）",
                     "downloadable": False, "source": None,
                 })
+    if ai_settings and ai_budget[0] <= 0:
+        log("[计划] AI 调用已达本次上限（6 项）；其余未识别项留待手动处理，"
+            "重新扫描可再获得额度")
     return {"steps": steps, "upgrades": upgrades,
             "unresolvable": unresolvable, "models": models}
+
+
+def build_solve_queue(plan: dict, include_models: bool = True,
+                      kernel_target: str = "stable", log=print) -> list:
+    """把「升级内核 + 装插件 + 下模型」合成一条可执行队列（2026-11-01）。
+
+    plan = plan_from_scan(...) 的返回值。顺序：内核 → 插件 → 模型。
+    内核必须先升：插件依赖要按新内核版本来装；模型是纯文件搬运，放最后。
+    同一批 upgrades 合并成一步（取最高 min_version 需求 → 直接上最新稳定版）。
+    """
+    steps = []
+    ups = plan.get("upgrades") or []
+    if ups:
+        from app import core_nodes
+        try:
+            need = max((u.get("min_version") or "" for u in ups),
+                       key=core_nodes.parse_ver)
+        except Exception:
+            need = ""
+        nodes = ", ".join(u.get("node", "?") for u in ups)
+        steps.append({
+            "type": "upgrade_kernel",
+            "content": kernel_target or "stable",
+            "reason": f"节点 {nodes} 需内核 ≥ {need or '?'}",
+        })
+    steps.extend(plan.get("steps") or [])
+    if include_models:
+        for m in plan.get("models") or []:
+            if not (m.get("downloadable") and m.get("source")):
+                continue        # 无直链的模型本来就下不了，别塞进队列里当失败项
+            s = m["source"]
+            steps.append({
+                "type": "model_url",
+                "content": {"repo": s["repo"], "path": s["path"],
+                            "subdir": s.get("subdir") or "checkpoints"},
+                "reason": f"模型 {m['file']}"
+                          + ("（🤖AI待验证）" if s.get("ai") else ""),
+            })
+    if steps:
+        kinds = "、".join(f"{k}×{n}" for k, n in _count_kinds(steps).items())
+        log(f"[补全] 队列 {len(steps)} 步：{kinds}")
+    else:
+        log("[补全] 没有需要补的项")
+    return steps
+
+
+def _count_kinds(steps: list) -> dict:
+    out = {}
+    for s in steps:
+        out[s.get("type", "?")] = out.get(s.get("type", "?"), 0) + 1
+    return out
 
 
 def import_plan(path: str) -> list:
@@ -207,6 +270,7 @@ class PlanExecutor:
                     "model_url": self._model_url,
                     "cmd": self._run_cmd,
                     "python_cmd": self._run_py_cmd,
+                    "upgrade_kernel": self._upgrade_kernel,
                 }.get(stype)
                 if fn is None:
                     raise ValueError(f"未知步骤类型: {stype}")
@@ -269,6 +333,30 @@ class PlanExecutor:
         if r.returncode != 0:
             raise RuntimeError((r.stderr or "")[-200:])
         log(f"  依赖安装完成: {' '.join(pkgs)}")
+
+    def _upgrade_kernel(self, content, log):
+        """升级/切换 ComfyUI 内核并同步依赖（2026-11-01 AI 补全队列用）
+
+        content: ""/"stable" = 更新到最新稳定版；其他值 = 切到该 tag
+        ⚠ 调用前实例必须已停止（git checkout 会被运行中的进程锁文件挡住）
+        """
+        from app import bootstrap
+        from app.tools import KernelManager
+        km = KernelManager(self.inst["comfyui_path"])
+        target = (content or "").strip() if isinstance(content, str) else "stable"
+        if target in ("", "stable", "latest"):
+            log("  更新至最新稳定版…")
+            ok, msg = km.update_stable()
+        else:
+            log(f"  切换到内核 {target} …")
+            ok, msg = km.switch_to(target)
+        if not ok:
+            raise RuntimeError((msg or "内核更新失败")[-200:])
+        log(f"  内核已更新: {str(msg)[:160]}")
+        log("  同步该版本要求的依赖…")
+        bootstrap.install_comfyui_requirements(
+            self.inst["python_path"], km.path, log=log)
+        log("  内核依赖已同步")
 
     def _model_url(self, content, log):
         # content: URL 或 {url, subdir, filename} 或 {repo, path, subdir}
