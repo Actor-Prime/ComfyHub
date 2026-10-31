@@ -116,7 +116,7 @@ A: 看 `%APPDATA%\ComfyHub\crash.log`——内置黑匣子记录完整异常堆�
 
 - [x] 多实例管理 / 一键安装 / 环境检测 / 依赖管理 / 备份救援
 - [ ] 工作流依赖一键安装端到端实测（框架已就绪）
-- [ ] CivitAI / HF 站内搜索下载
+- [x] CivitAI / HF 站内搜索下载（多源：CivitAI、HF 镜像、ModelScope、Comfy-Org，含分页与断点续传）
 - [ ] ComfyUI 内核版本管理（切换 13MB 源码即切版本）
 - [ ] 插件市场（Gitee 镜像索引）
 - [ ] FluxGym LoRA 训练集成
@@ -181,6 +181,6 @@ python tests/sim_run_instance.py "F://path//to//ComfyUI" 8199   # 启动实例�
 - **零版权风险**：不使用 GPL/AGPL 等传染性许可代码；PySide6 以 LGPL 合规方式使用（onedir 打包，用户可替换 Qt 库）
 - **可借鉴不可抄**：功能设计可参考竞品，代码/文案/资源一律独立实现（记录见 [docs/COMPETITORS.md](docs/COMPETITORS.md)）
 - **来源可追溯**：第三方组件许可见 [THIRD_PARTY_LICENSES.txt](THIRD_PARTY_LICENSES.txt)，素材来源见 [assets/SOURCES.md](assets/SOURCES.md)
-- **数据源**：插件目录来自 ComfyUI-Manager 公开清单，下载量来自 ComfyUI 官方 Registry（运行时拉取，不随程序分发）
+- **数据源**：插件目录来自 ComfyUI-Manager 公开清单，下载量来自 ComfyUI 官方 Registry，模型检索来自 CivitAI / HuggingFace（hf-mirror）/ ModelScope / Comfy-Org 公开接口（均为运行时拉取，不随程序分发）
 
 本项目以 **MIT** 许可发布，见 [LICENSE](LICENSE)。
