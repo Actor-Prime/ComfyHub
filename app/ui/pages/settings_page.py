@@ -10,7 +10,7 @@ import os
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QComboBox,
     QPushButton, QGroupBox, QFormLayout, QMessageBox, QScrollArea,
-    QFileDialog,
+    QFileDialog, QCheckBox,
 )
 
 from app.config import save_config, APP_VERSION
@@ -86,7 +86,46 @@ class SettingsPage(QWidget):
         self.cb_theme.addItems(["深色"])
         self.cb_theme.setEnabled(False)  # v0.5 加浅色主题后开放
         f2.addRow("主题:", self.cb_theme)
+        # 关闭行为（2026-10-31）：与关闭询问框的「记住我的选择」共用同一设置
+        self.cb_close = QComboBox()
+        self.cb_close.addItem("每次询问", "ask")
+        self.cb_close.addItem("直接退出程序", "close")
+        self.cb_close.addItem("最小化到托盘", "minimize")
+        idx_close = self.cb_close.findData(str(st.get("close_behavior", "ask")))
+        self.cb_close.setCurrentIndex(idx_close if idx_close >= 0 else 0)
+        f2.addRow("关闭主窗口时:", self.cb_close)
+        tip_close = QLabel("「每次询问」下首次点关闭按钮会弹窗选择，"
+                           "勾选『记住我的选择』后不再询问（随时可在此改回）")
+        tip_close.setWordWrap(True)
+        tip_close.setStyleSheet("color:#888;")
+        f2.addRow("", tip_close)
         root.addWidget(g2)
+
+        # ---- AI 接入（可选）：确定性查不到的疑难条目才调用 ----
+        g_ai = QGroupBox("AI 接入（可选）")
+        f_ai = QFormLayout(g_ai)
+        self.ck_ai = QCheckBox("启用 AI 接入（仅确定性查不到时调用）")
+        self.ck_ai.setChecked(bool(st.get("ai_enabled", False)))
+        f_ai.addRow("", self.ck_ai)
+        self.ed_ai_base = QLineEdit(st.get("ai_base_url", ""))
+        self.ed_ai_base.setPlaceholderText(
+            "OpenAI 兼容端点，如 https://api.deepseek.com/v1")
+        f_ai.addRow("接口地址:", self.ed_ai_base)
+        self.ed_ai_key = QLineEdit(st.get("ai_api_key", ""))
+        self.ed_ai_key.setEchoMode(QLineEdit.Password)
+        self.ed_ai_key.setPlaceholderText("API Key（仅存本机 config.json）")
+        f_ai.addRow("API Key:", self.ed_ai_key)
+        self.ed_ai_model = QLineEdit(st.get("ai_model", "deepseek-chat"))
+        self.ed_ai_model.setPlaceholderText("模型名，如 deepseek-chat / glm-4-flash")
+        f_ai.addRow("模型名:", self.ed_ai_model)
+        tip_ai = QLabel(
+            "用于「未识别节点 / 无直链模型」的疑难推断，结果标『🤖 待验证』"
+            "需人工确认后再用。国内推荐 DeepSeek / 智谱 / 通义（均为 OpenAI 兼容"
+            "接口）。不配置则完全走本地确定性识别，不影响其他功能。")
+        tip_ai.setWordWrap(True)
+        tip_ai.setStyleSheet("color:#888;")
+        f_ai.addRow("", tip_ai)
+        root.addWidget(g_ai)
 
         b_save = QPushButton("保存设置")
         b_save.setProperty("accent", True)
@@ -128,6 +167,11 @@ class SettingsPage(QWidget):
         st["gh_proxy"] = self.ed_ghproxy.text().strip()
         st["git_proxy"] = self.ed_gitproxy.text().strip()
         st["tools_dir"] = new_tools
+        st["close_behavior"] = self.cb_close.currentData() or "ask"
+        st["ai_enabled"] = self.ck_ai.isChecked()
+        st["ai_base_url"] = self.ed_ai_base.text().strip()
+        st["ai_api_key"] = self.ed_ai_key.text().strip()
+        st["ai_model"] = self.ed_ai_model.text().strip() or "deepseek-chat"
         save_config(self.cfg)
         # 变更提示：旧目录原样保留（不自动搬迁 GB 级工具链）
         if new_tools != old_tools and old_tools and os.path.isdir(old_tools):

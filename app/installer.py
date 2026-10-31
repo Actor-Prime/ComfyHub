@@ -77,11 +77,22 @@ KNOWN_PLUGIN_REPOS = {
 
 
 # ---------------- 步骤生成 ----------------
-def plan_from_scan(scan_result: dict) -> dict:
+def plan_from_scan(scan_result: dict, log=print, resolve_online: bool = True,
+                   ai_settings: dict = None) -> dict:
     """从 workflow_scan.analyze_workflow 的结果生成安装计划。
-    返回 {steps: [...], unresolvable: [...], models: [...]}
+    返回 {steps: [...], upgrades: [...], unresolvable: [...], models: [...]}
+
+    节点解析链（2026-10-31 增强，未命中逐级下钻）：
+      1) KNOWN_PLUGIN_REPOS      内置常见插件映射 → git_clone 步骤
+      2) core_nodes 知识表        新内核核心节点 → upgrades（升级内核，别找插件）
+      3) plugin_store 映射        ComfyUI-Manager extension-node-map（6000+ 插件）
+      4) AI 接入（可选，需配置）   结果标「待验证」
+      5) 全落空 → unresolvable   （UI 给搜索链接）
+    模型解析链：model_resolve 已知表/repack 仓库树 → 可下载直链
+    （hf-mirror + ModelScope 双源），再落空走 AI，最后才「需手动下载」。
     """
-    steps, unresolvable = [], []
+    from app import core_nodes, model_resolve
+    steps, unresolvable, upgrades = [], [], []
     for node in scan_result.get("missing", {}).get("__unknown__", []):
         repo = KNOWN_PLUGIN_REPOS.get(node)
         if repo:
@@ -90,14 +101,71 @@ def plan_from_scan(scan_result: dict) -> dict:
                 "content": repo,
                 "reason": f"节点 {node}",
             })
-        else:
-            unresolvable.append(node)
+            continue
+        minv = core_nodes.known_core_min_version(node)
+        if minv:
+            kind, detail = core_nodes.classify_node(
+                node, scan_result.get("comfyui_path", ""))
+            if kind == "local_core":
+                continue   # 版本已达标——核心节点自带，无需任何安装
+            upgrades.append({"node": node, "min_version": minv,
+                             "kernel_ver": scan_result.get("kernel_ver", "")})
+            continue
+        if resolve_online:
+            try:
+                from app import plugin_store
+                sugg = plugin_store.suggest_for_classes([node], log=log)
+                if sugg and sugg[0].get("urls"):
+                    steps.append({
+                        "type": "git_clone",
+                        "content": sugg[0]["urls"][0],
+                        "reason": f"节点 {node}",
+                    })
+                    continue
+            except Exception as e:
+                log(f"[计划] 插件映射查询失败: {e}")
+        if ai_settings:
+            from app import ai_assist
+            if ai_assist.enabled(ai_settings):
+                guess = ai_assist.ask_node_origin(node, ai_settings, log=log)
+                if guess:
+                    steps.append({
+                        "type": "git_clone",
+                        "content": guess,
+                        "reason": f"节点 {node}（🤖 AI推断·待验证）",
+                        "ai": True,
+                    })
+                    continue
+        unresolvable.append(node)
+
     models = []
     for kind, files in scan_result.get("models", {}).items():
         for f in files:
-            models.append({"category": kind, "file": f,
-                           "status": "需手动下载（尚无搜索源）"})
-    return {"steps": steps, "unresolvable": unresolvable, "models": models}
+            hit = model_resolve.resolve_file(f, online=resolve_online, log=log)
+            if not hit and ai_settings:
+                from app import ai_assist
+                if ai_assist.enabled(ai_settings):
+                    g = ai_assist.ask_model_source(f, ai_settings, log=log)
+                    if g:
+                        hit = {"repo": g["repo"], "path": g["path"],
+                               "subdir": g["path"].split("/")[0]
+                               if "/" in g["path"] else "checkpoints",
+                               "ai": True}
+            if hit:
+                models.append({
+                    "category": kind, "file": f,
+                    "status": f"✅ 可下载（{hit['repo']}）"
+                              + ("·🤖AI待验证" if hit.get("ai") else ""),
+                    "downloadable": True, "source": hit,
+                })
+            else:
+                models.append({
+                    "category": kind, "file": f,
+                    "status": "需手动下载（无直链，可搜 HF/ModelScope）",
+                    "downloadable": False, "source": None,
+                })
+    return {"steps": steps, "upgrades": upgrades,
+            "unresolvable": unresolvable, "models": models}
 
 
 def import_plan(path: str) -> list:
@@ -203,7 +271,19 @@ class PlanExecutor:
         log(f"  依赖安装完成: {' '.join(pkgs)}")
 
     def _model_url(self, content, log):
-        # content: URL 或 {url, subdir, filename}
+        # content: URL 或 {url, subdir, filename} 或 {repo, path, subdir}
+        # （repo/path 形态走 model_resolve 断点续传+「有进展就重置」重试，
+        #   对付 hf-mirror 大文件周期性掐 TLS）
+        if isinstance(content, dict) and content.get("repo"):
+            from app import model_resolve
+            fname = os.path.basename(content["path"])
+            dest = os.path.join(self.inst["comfyui_path"], "models",
+                                content.get("subdir") or "checkpoints")
+            log(f"  下载 {fname} → {dest}（断点续传）")
+            model_resolve.download_with_retry(
+                content["repo"], content["path"], dest, log=log)
+            log("  模型下载完成")
+            return
         if isinstance(content, dict):
             url = content.get("url", "")
             subdir = content.get("subdir", "checkpoints")

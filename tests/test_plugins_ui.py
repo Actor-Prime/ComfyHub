@@ -133,6 +133,7 @@ try:
     state2 = {x["name"]: x["enabled"] for x in pp.list_plugins(CP)}
     check("三个插件全部恢复启用", all(state2.values()), str(state2))
 
+    win.cfg.setdefault("settings", {})["close_behavior"] = "close"   # 测试直退，防关闭询问框挂死
     win.close()
 finally:
     # 恢复 config

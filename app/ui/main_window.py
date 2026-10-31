@@ -9,7 +9,7 @@ from app.ui.nav import NAV
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QListWidget,
     QListWidgetItem, QStackedWidget, QLabel, QMessageBox, QComboBox,
-    QPushButton, QFrame,
+    QPushButton, QFrame, QDialog,
 )
 
 from app.config import load_config, save_config
@@ -41,6 +41,7 @@ class MainWindow(QMainWindow):
         self.resize(1180, 780)
         self.cfg = load_config()
         self.procs = ProcManager()
+        self._quit_direct = False    # 托盘「退出」直通标志（防被关闭行为「最小化」分支截胡）
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -200,7 +201,7 @@ class MainWindow(QMainWindow):
         act_show.triggered.connect(self._restore_from_tray)
         menu.addSeparator()
         act_quit = menu.addAction("退出 ComfyHub")
-        act_quit.triggered.connect(self.close)   # 走 closeEvent（含实例运行确认）
+        act_quit.triggered.connect(self._quit_from_tray)   # 直通退出（不被「最小化」截胡）
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(self._on_tray_activated)
         self.tray.show()
@@ -279,6 +280,11 @@ class MainWindow(QMainWindow):
         self.showNormal()
         self.raise_()
         self.activateWindow()
+
+    def _quit_from_tray(self):
+        """托盘「退出 ComfyHub」：明确要退出，不被关闭行为的「最小化」分支截胡"""
+        self._quit_direct = True
+        self.close()
 
     def changeEvent(self, event):
         """点最小化 → 收进任务栏托盘（不再占任务栏按钮）"""
@@ -407,6 +413,10 @@ class MainWindow(QMainWindow):
     def _check_orphans(self):
         if not self.isVisible():    # 未显示（自动化测试等）不弹窗
             return
+        if os.environ.get("QT_QPA_PLATFORM") == "offscreen":
+            # 无头测试环境绝不能弹模态窗（2026-10-31 实测：测试 show() 后
+            # 机器上恰好有实例在跑 → QMessageBox.question 挂死整个测试进程）
+            return
         try:
             from app.process import scan_orphans, kill_tree
             orphans = scan_orphans(
@@ -439,6 +449,30 @@ class MainWindow(QMainWindow):
 
     # ---------- 关闭 ----------
     def closeEvent(self, event):
+        # 关闭行为（2026-10-31）：settings.close_behavior = ask / close / minimize
+        #   ask      = 弹框询问（退出 / 最小化到托盘，可勾「记住我的选择」）
+        #   close    = 直接退出
+        #   minimize = 最小化到托盘（changeEvent 收进托盘并提示）
+        # 托盘「退出」置 _quit_direct 直通退出路径
+        behavior = str((self.cfg.get("settings") or {}).get("close_behavior") or "ask")
+        if not self._quit_direct and behavior == "minimize":
+            event.ignore()
+            self.showMinimized()     # changeEvent 拦截后收进托盘
+            return
+        if not self._quit_direct and behavior != "close":
+            from app.ui.close_dialog import CloseChoiceDialog
+            dlg = CloseChoiceDialog(self)
+            if dlg.exec() != QDialog.Accepted or not dlg.choice:
+                event.ignore()       # 取消/关掉弹窗：留在窗口
+                return
+            if dlg.remembered():
+                self.cfg.setdefault("settings", {})["close_behavior"] = dlg.choice
+                save_config(self.cfg)
+            if dlg.choice == "minimize":
+                event.ignore()
+                self.showMinimized()
+                return
+        # 退出路径（直接退出 / 用户选了退出 / 托盘退出）：
         # 有实例运行中 → 明确提示"关闭会一并停止实例"，确认后才退
         running = [i.get("name") or "实例" for i in self.cfg.get("instances", [])
                    if self.procs.is_running(i)]

@@ -24,7 +24,10 @@ from app.workers import swap_worker
 
 class _QueueWorker(QThread):
     """顺序下载队列。items = [(repo_id, file_path, dest_dir, task_id), ...]"""
-    sig_progress = Signal(str, int, int)          # task_id, done, total
+    # 2026-10-31 修：大模型动辄 7GB+，字节数超 int32 上限（2147483647），
+    # Signal(str, int, int) emit 时 shiboken 溢出报 OverflowError，进度条全程
+    # 死亡 + stderr 刷屏。改用 object 承载 Python int 不做窄化转换。
+    sig_progress = Signal(str, object, object)    # task_id, done, total（字节数）
     sig_state = Signal(str, str)                  # task_id, state(下载中/完成/失败/已取消)
     sig_queue_done = Signal(int, int)             # ok, bad
 
@@ -92,8 +95,10 @@ class _TaskRow(QWidget):
 
     def set_progress(self, done, total):
         if total > 0:
-            self.pb.setMaximum(total)
-            self.pb.setValue(done)
+            # 2026-10-31 修：total 可达 7GB+，Qt int 参数同样溢出；
+            # 进度条固定 0-1000 按比例走，字节数只进文字标签
+            self.pb.setMaximum(1000)
+            self.pb.setValue(min(1000, int(done * 1000 / total)))
         self.lb_state.setText(f"{done / 1048576:,.0f}/{total / 1048576:,.0f} MB")
 
     def set_state(self, text, color="#9aa4b2"):
@@ -150,6 +155,12 @@ class DownloadCenter(QToolButton):
         self._pump()
 
     _ids = itertools.count(1)
+
+    def cancel_all(self):
+        """取消全部下载任务（进行中 + 排队），保留 .part 供续传"""
+        self._pending = []
+        if self._worker and self._worker.isRunning():
+            self._worker.cancel_all()
 
     def _pump(self):
         if self._worker and self._worker.isRunning():

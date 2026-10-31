@@ -44,6 +44,14 @@ if errorlevel 1 (
     exit /b 1
 )
 
+rem ---- 代码签名（可选）：配置了证书才签，未配置自动跳过（见 packaging\sign.bat 头部）----
+call "%~dp0sign.bat" "dist\ComfyHub\ComfyHub.exe"
+if errorlevel 1 (
+    echo 签名失败！请检查证书配置（SIGN_THUMBPRINT / SIGN_PFX）。
+    pause
+    exit /b 1
+)
+
 echo [3/3] 整理产物...
 if not exist dist\ComfyHub\assets mkdir dist\ComfyHub\assets
 copy /y assets\icon.ico dist\ComfyHub\assets\ > nul
@@ -53,5 +61,5 @@ echo.
 echo 完成！产物:
 echo   便携目录:   dist\ComfyHub\ComfyHub.exe
 echo   便携压缩包: dist\ComfyHub-portable.zip
-echo   安装包:     用 Inno Setup 编译 packaging\installer.iss
+echo   安装包:     运行 packaging\build_installer.bat（makensis 编译 + 条件签名）
 pause

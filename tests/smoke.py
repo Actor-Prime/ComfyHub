@@ -69,6 +69,7 @@ def main():
         win.show()
         assert win.cb_inst is not None
         assert win.home_page is not None
+        win.cfg.setdefault("settings", {})["close_behavior"] = "close"   # 测试直退，防关闭询问框挂死
         win.close()
         return app
     app = None
@@ -88,6 +89,7 @@ def main():
         assert hasattr(wiz, "cb_python"), "cb_python 缺失"
         assert hasattr(wiz, "ed_name"), "ed_name 缺失"
         wiz.close()
+        win.cfg.setdefault("settings", {})["close_behavior"] = "close"   # 测试直退，防关闭询问框挂死
         win.close()
     except Exception:
         FAILURES.append(("SetupWizard 构造", traceback.format_exc()))
@@ -104,6 +106,7 @@ def main():
             assert hasattr(page, attr), f"comfyui_page 缺 {attr}"
         for attr in ("b_start", "b_stop", "b_web"):
             assert hasattr(win.home_page, attr), f"home_page 缺 {attr}"
+        win.cfg.setdefault("settings", {})["close_behavior"] = "close"   # 测试直退，防关闭询问框挂死
         win.close()
     check("关键控件属性抽查", _attrs)
 

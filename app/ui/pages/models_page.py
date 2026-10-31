@@ -1,22 +1,24 @@
 # -*- coding: utf-8 -*-
-"""模型库页：本地模型列表（主角）+ 添加模型（在线下载 Tab）+ 下载中心指示器（右上角下拉）
+"""模型库页（v0.8.06 重构）：统一搜索栏 + 范围切换 + 分类 chips + 双内容区
 
-交互（对齐插件页模式）：
-  · 默认显示本地模型列表（类别筛选 + 明细）
-  · 「➕ 添加模型」→ 切到「在线下载」Tab：选源 → 搜索 → 勾文件 → 入队下载
-  · 右上角 ⬇ 指示器：点击下拉显示每个任务的实时进度
+交互（一条搜索框管全部，根治双搜索框混淆）：
+  · 范围切换：[本地] [HF 镜像] [CivitAI] [HF 官方(代理)]
+  · 本地范围：实时过滤——文件名 + 类别名都能搜（「全部」视图也能搜文件）
+  · 在线范围：卡片式结果流（ModelMarketWidget），回车/点搜索触发
+  · 分类 chips：本地=类别过滤；在线=类型词追加搜索（如 lora）
+  · 下载统一走右上角 ⬇ 下载中心；直链下载保留在底部工具行
 """
 import os
 import shutil
 import datetime
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal, QSettings
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QComboBox,
     QPushButton, QTableWidget, QTableWidgetItem, QHeaderView,
-    QPlainTextEdit, QGroupBox, QFileDialog, QMessageBox, QTabBar,
-    QTabWidget,
+    QPlainTextEdit, QGroupBox, QFileDialog, QMessageBox,
+    QButtonGroup, QScrollArea, QFrame, QStackedWidget,
 )
 
 from app.tools import ModelDownloader
@@ -48,6 +50,16 @@ def _fmt_size(n: int) -> str:
     return f"{n / 1024:.0f} KB"
 
 
+# 在线范围追加的类型词（chips → 检索词）
+_CHIP_EN = {
+    "checkpoints": "checkpoint", "loras": "lora", "vae": "vae",
+    "controlnet": "controlnet", "unet": "unet", "clip": "clip",
+    "clip_vision": "clip vision", "upscale_models": "upscale",
+    "embeddings": "embedding", "diffusion_models": "diffusion",
+    "text_encoders": "text encoder",
+}
+
+
 class ModelsPage(QWidget):
     def __init__(self, cfg, mainwin):
         super().__init__()
@@ -67,63 +79,101 @@ class ModelsPage(QWidget):
     def _build(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(18, 14, 18, 14)
+        root.setSpacing(10)
+
+        # 标题行：标题 | stretch | 实例信息 | 下载中心
+        head = QHBoxLayout()
         t = QLabel("模型库")
         t.setStyleSheet("font-size:17px; font-weight:bold; color:#fff;")
-        root.addWidget(t)
-
-        # 标题行：实例信息 | stretch | 下载中心指示器（右上角下拉）
-        head = QHBoxLayout()
+        head.addWidget(t)
+        head.addStretch()
         self.lb_inst = QLabel()
         self.lb_inst.setStyleSheet("color:#9aa4b2;")
         head.addWidget(self.lb_inst)
-        head.addStretch()
         self.dl_center = DownloadCenter()
         self.dl_center.sig_queue_done.connect(lambda *_: self.refresh_stats())
         head.addWidget(self.dl_center)
         root.addLayout(head)
 
-        # 操作行：添加模型（主入口）+ 本地库操作
-        h2 = QHBoxLayout()
-        b_add = QPushButton("➕ 添加模型")
-        b_add.setProperty("accent", True)
-        b_add.clicked.connect(self._go_market)
-        h2.addWidget(b_add)
+        # 统一搜索行：范围切换 + 搜索框 + 搜索 + 本地操作
+        bar = QHBoxLayout()
+        bar.setSpacing(8)
+        self.scope_group = QButtonGroup(self)
+        self.scope_group.setExclusive(True)
+        self._scope_defs = [
+            ("本地", "local", "搜索本地模型文件名或类别名（实时过滤）"),
+            ("HF 镜像", "mirror", "搜索 HuggingFace 国内镜像：sdxl / flux lora / vae…（回车）"),
+            ("CivitAI", "civitai", "搜索 CivitAI 国内镜像（热门同步）…（回车）"),
+            ("HF 官方", "hf", "搜索 huggingface.co（更新及时，需系统代理）…（回车）"),
+        ]
+        for i, (label, _key, _tip) in enumerate(self._scope_defs):
+            b = QPushButton(label)
+            b.setObjectName("ScopeBtn")
+            b.setCheckable(True)
+            b.setToolTip(_tip)
+            self.scope_group.addButton(b, i)
+            bar.addWidget(b)
+
         self.ed_search = QLineEdit()
-        self.ed_search.setPlaceholderText("🔍 搜索本地模型文件名…")
-        self.ed_search.textChanged.connect(lambda _t: self.refresh_stats())
-        h2.addWidget(self.ed_search, 1)
-        b_refresh = QPushButton("🔄 刷新列表")
-        b_refresh.clicked.connect(self.refresh_stats)
-        b_import = QPushButton("📥 导入模型文件")
+        self.ed_search.setPlaceholderText(self._scope_defs[0][2])
+        self.ed_search.textChanged.connect(self._on_search_text)
+        self.ed_search.returnPressed.connect(self._do_search)
+        bar.addWidget(self.ed_search, 1)
+
+        b_search = QPushButton("🔍 搜索")
+        b_search.setProperty("accent", True)
+        b_search.clicked.connect(self._do_search)
+        bar.addWidget(b_search)
+        b_import = QPushButton("📥 导入")
+        b_import.setToolTip("把本地模型文件复制/剪切进当前类别的 models 目录")
         b_import.clicked.connect(self._import_files)
-        b_open = QPushButton("📂 打开文件夹")
+        bar.addWidget(b_import)
+        b_open = QPushButton("📂 打开")
+        b_open.setToolTip("打开当前类别（或 models 根）目录")
         b_open.clicked.connect(self._open_dir)
-        h2.addWidget(b_refresh)
-        h2.addWidget(b_import)
-        h2.addWidget(b_open)
-        root.addLayout(h2)
+        bar.addWidget(b_open)
+        b_refresh = QPushButton("🔄 刷新")
+        b_refresh.clicked.connect(self.refresh_stats)
+        bar.addWidget(b_refresh)
+        root.addLayout(bar)
 
-        # 双 Tab：本地模型（默认）/ 在线下载
-        self.tabs2 = QTabWidget()
-        self.tabs2.addTab(self._build_local_tab(), "💾 本地模型")
-        self.market = ModelMarketWidget(self.cfg, self.mainwin)
-        self.market.dl_center = self.dl_center            # 下载统一走下载中心
-        self.tabs2.addTab(self.market, "🛒 在线下载")
-        self.tabs2.currentChanged.connect(self._on_main_tab)
-        root.addWidget(self.tabs2, 1)
+        # 分类 chips（本地=类别过滤；在线=类型词追加）
+        chips_host = QWidget()
+        chips_h = QHBoxLayout(chips_host)
+        chips_h.setContentsMargins(0, 0, 0, 0)
+        chips_h.setSpacing(6)
+        self.chip_group = QButtonGroup(self)
+        self.chip_group.setExclusive(True)
+        cats = [""] + list(ModelDownloader("").MODEL_SUBDIRS)
+        for i, cat in enumerate(cats):
+            b = QPushButton("全部" if not cat else cat)
+            b.setObjectName("CatChip")
+            b.setCheckable(True)
+            b.setFixedHeight(24)
+            self.chip_group.addButton(b, i)
+            chips_h.addWidget(b)
+        chips_h.addStretch()
+        chips = QScrollArea()
+        chips.setWidgetResizable(True)
+        chips.setFrameShape(QFrame.NoFrame)
+        chips.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        chips.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        chips.setFixedHeight(36)
+        chips.setWidget(chips_host)
+        root.addWidget(chips)
 
-        self.log = QPlainTextEdit()
-        self.log.setReadOnly(True)
-        self.log.setObjectName("LogConsole")
-        self.log.setMaximumHeight(110)
-        root.addWidget(self.log, 0)
+        # 内容区：本地表格 / 在线卡片面板
+        self.stack = QStackedWidget()
+        self._build_local_page()
+        self.market = ModelMarketWidget(self.cfg, self.mainwin,
+                                        local_names=self._local_names)
+        self.market.dl_center = self.dl_center
+        self.market.sig_quick_search.connect(self._on_quick_search)
+        self.stack.addWidget(self.local_w)     # 0
+        self.stack.addWidget(self.market)      # 1
+        root.addWidget(self.stack, 1)
 
-    def _build_local_tab(self) -> QWidget:
-        w = QWidget()
-        lv = QVBoxLayout(w)
-        lv.setContentsMargins(0, 6, 0, 0)
-
-        # 直链下载（高级功能）
+        # 直链下载（高级功能，单行工具条）
         g = QGroupBox("直链下载（断点续传 · CivitAI / HuggingFace 链接）")
         h1 = QHBoxLayout(g)
         self.ed_url = QLineEdit()
@@ -136,38 +186,103 @@ class ModelsPage(QWidget):
         b_dl = QPushButton("⬇ 下载")
         b_dl.clicked.connect(self._download)
         h1.addWidget(b_dl)
-        lv.addWidget(g)
+        root.addWidget(g)
 
-        # 类别标签（顶部横排）
-        self.tabs = QTabBar()
-        self.tabs.addTab("全部")
-        for sub in ModelDownloader("").MODEL_SUBDIRS:
-            self.tabs.addTab(sub)
-        self.tabs.setExpanding(False)
-        self.tabs.currentChanged.connect(lambda _i: self.refresh_stats())
-        lv.addWidget(self.tabs)
+        self.log = QPlainTextEdit()
+        self.log.setReadOnly(True)
+        self.log.setObjectName("LogConsole")
+        self.log.setMaximumHeight(110)
+        root.addWidget(self.log, 0)
 
-        # 文件明细表
+        # 初始范围（记忆上次选择；恢复时同步占位符，别只换选中态）
+        saved = QSettings("LeiMengStudio", "ComfyHub").value("model_scope", "local")
+        idx = next((i for i, (_l, k, _t) in enumerate(self._scope_defs) if k == saved), 0)
+        self.scope_group.button(idx).setChecked(True)
+        self.ed_search.setPlaceholderText(self._scope_defs[idx][2])
+        self.stack.setCurrentIndex(0 if idx == 0 else 1)
+        self.chip_group.button(0).setChecked(True)
+        self.scope_group.idToggled.connect(self._on_scope_toggled)
+        self.chip_group.idToggled.connect(self._on_chip_toggled)
+
+    def _build_local_page(self):
+        self.local_w = QWidget()
+        lv = QVBoxLayout(self.local_w)
+        lv.setContentsMargins(0, 4, 0, 0)
         self.tb = QTableWidget(0, 3)
         self.tb.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.tb.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.tb.setEditTriggers(QTableWidget.NoEditTriggers)
         self.tb.setSelectionBehavior(QTableWidget.SelectRows)
         lv.addWidget(self.tb, 1)
-        return w
 
-    def _go_market(self):
-        self.tabs2.setCurrentWidget(self.market)
-        self.market.ed_search.setFocus()
+    # ---------- 范围/chips/搜索 ----------
+    def _scope_key(self) -> str:
+        return self._scope_defs[self.scope_group.checkedId()][1]
 
-    def _on_main_tab(self, i):
-        if self.tabs2.tabText(i).startswith("💾"):
+    def _on_scope_toggled(self, idx, on):
+        if not on:
+            return
+        key = self._scope_defs[idx][1]
+        QSettings("LeiMengStudio", "ComfyHub").setValue("model_scope", key)
+        self.ed_search.setPlaceholderText(self._scope_defs[idx][2])
+        self.stack.setCurrentIndex(0 if key == "local" else 1)
+        if key == "local":
             self.refresh_stats()
+        elif self.ed_search.text().strip():
+            self._do_search()
+
+    def _on_chip_toggled(self, idx, on):
+        if not on:
+            return
+        if self._scope_key() == "local":
+            self.refresh_stats()
+        elif self.ed_search.text().strip():
+            self._do_search()
+
+    def _on_search_text(self, _t):
+        if self._scope_key() == "local":
+            self.refresh_stats()
+
+    def _on_quick_search(self, kw):
+        self.ed_search.setText(kw)
+        self._do_search()
+
+    def _do_search(self):
+        if self._scope_key() == "local":
+            self.refresh_stats()
+            return
+        kw = self.ed_search.text().strip()
+        if not kw:
+            self.market.show_hint("请先输入关键词（中文会自动换英文词），或点空状态里的快捷词。")
+            self.ed_search.setFocus()
+            return
+        cat = self._cur_cat()
+        if cat:
+            extra = _CHIP_EN.get(cat, cat.replace("_", " "))
+            if extra.lower() not in kw.lower():
+                kw = f"{kw} {extra}"
+        self.market.run_search(self._scope_key(), kw)
 
     # ---------- 数据 ----------
     def _cur_cat(self) -> str:
-        i = self.tabs.currentIndex()
-        return "" if i <= 0 else self.tabs.tabText(i)
+        i = self.chip_group.checkedId()
+        if i is None or i <= 0:
+            return ""
+        return ModelDownloader("").MODEL_SUBDIRS[i - 1]
+
+    def _local_names(self):
+        """所有本地模型文件名（供在线卡片「已装」启发式匹配）"""
+        out = set()
+        d_root = self._models_dir()
+        if not d_root:
+            return out
+        for sub in ModelDownloader("").MODEL_SUBDIRS:
+            d = os.path.join(d_root, sub)
+            if os.path.isdir(d):
+                for name in os.listdir(d):
+                    if inst_lib.is_model_file(name):
+                        out.add(name)
+        return out
 
     def _list_files(self, subdir: str, kw: str = ""):
         d = os.path.join(self._models_dir(), subdir)
@@ -195,6 +310,8 @@ class ModelsPage(QWidget):
     def refresh_stats(self):
         self.tb.setRowCount(0)
         inst = self._inst()
+        self.lb_inst.setText(
+            f"实例：{inst.get('name', '')}" if inst else "（未选择实例）")
         if not inst:
             self.tb.setColumnCount(3)
             self.tb.setHorizontalHeaderLabels(["提示", "", ""])
@@ -203,28 +320,44 @@ class ModelsPage(QWidget):
         cat = self._cur_cat()
         kw = self.ed_search.text().strip()
         if cat:
-            # 单类别：文件明细（对标绘世列表）
+            # 单类别：文件明细（支持文件名搜索）
             self.tb.setColumnCount(3)
             self.tb.setHorizontalHeaderLabels(["文件名", "大小", "修改日期"])
             files = self._list_files(cat, kw)
             if not files:
                 self._add_row(["（此类别暂无文件）", "-",
-                               "点「➕ 添加模型」在线下载，或「导入模型文件」"],
+                               "点范围切「HF 镜像」在线下载，或「导入」"],
                               {0: "#7d8797"})
             for name, size, mtime in files:
                 dt = datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
                 self._add_row([name, _fmt_size(size), dt])
+        elif kw:
+            # 「全部」视图 + 关键词：跨类别搜文件名（类别名命中→整类列出）
+            self.tb.setColumnCount(4)
+            self.tb.setHorizontalHeaderLabels(["文件名", "类别", "大小", "修改日期"])
+            hit = False
+            for sub in ModelDownloader("").MODEL_SUBDIRS:
+                if kw.lower() in sub.lower():
+                    files = self._list_files(sub, "")
+                else:
+                    files = self._list_files(sub, kw)
+                for name, size, mtime in files:
+                    dt = datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+                    self._add_row([name, sub, _fmt_size(size), dt])
+                    hit = True
+            if not hit:
+                self._add_row([f"（没有匹配「{kw}」的文件）", "-", "-",
+                               "试试更短的关键词，或切到具体类别"],
+                              {0: "#7d8797"})
         else:
-            # 全部：分类统计（支持搜索类别名）
+            # 「全部」视图：分类统计
             self.tb.setColumnCount(3)
             self.tb.setHorizontalHeaderLabels(["类别", "文件数", "总体积"])
             rows = inst_lib.model_stats(inst["comfyui_path"])
             if not rows:
-                self._add_row(["（models 目录为空）", "-", "点「➕ 添加模型」在线下载"],
-                              {0: "#7d8797"})
+                self._add_row(["（models 目录为空）", "-",
+                               "切范围「HF 镜像」在线下载"], {0: "#7d8797"})
             for cat_name, cnt, gb in rows:
-                if kw and kw.lower() not in cat_name.lower():
-                    continue
                 self._add_row([cat_name, str(cnt), f"{gb:.2f} GB"])
 
     def on_show(self):
@@ -242,7 +375,7 @@ class ModelsPage(QWidget):
         cat = self._cur_cat()
         if not cat:
             QMessageBox.information(self, "ComfyHub",
-                                    "请先在顶部标签页选择一个具体类别\n"
+                                    "请先在分类 chips 选择一个具体类别\n"
                                     "（导入的模型会放进该类别目录）")
             return
         files, _ = QFileDialog.getOpenFileNames(

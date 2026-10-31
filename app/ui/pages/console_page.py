@@ -6,6 +6,7 @@
   🔵 蓝   #7fa8d9  [INFO] —— 常规信息
   🟢 绿   #4cd47c  Prompt executed / got prompt / Starting server —— 成功与出图完成
   🟣 橙   #e8871e  [ComfyHub] / [计划] / [插件] / [工具] —— 本软件自身操作
+  ⚫ 暗灰 #6b7480  [safe-delete] / SAFE_DELETE_ —— 外部环境删除防护层噪声（降噪显示，非错误）
   ⚪ 灰   #b8c2ce  其余普通输出
 """
 import re
@@ -26,10 +27,14 @@ _COLOR_RULES = [
     (re.compile(r"\[INFO\]"), "#7fa8d9"),
 ]
 _SELF_PREFIX = re.compile(r"^\[(ComfyHub|计划|插件|工具|救援)\]")
+# 外部环境注入的删除防护层日志（如 WorkBuddy safe-delete shim），不是本软件错误——降噪显示
+_ENV_NOISE = re.compile(r"\[safe-delete\]|SAFE_DELETE_", re.I)
 
 
 def classify_color(line: str) -> str:
-    """按行内容返回颜色（优先级：自身日志 > 错误 > 警告 > 成功 > 信息 > 默认）"""
+    """按行内容返回颜色（优先级：环境噪声 > 自身日志 > 错误 > 警告 > 成功 > 信息 > 默认）"""
+    if _ENV_NOISE.search(line):
+        return "#6b7480"
     if _SELF_PREFIX.search(line):
         return "#e8871e"
     for pat, color in _COLOR_RULES:

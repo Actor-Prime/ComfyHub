@@ -41,7 +41,7 @@ def _ssl_ctx():
     return ctx
 
 
-def _fetch_one(url: str, timeout=25) -> list:
+def _fetch_one(url: str, timeout=12) -> list:
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 ComfyHub/0.7"})
     with urllib.request.urlopen(req, timeout=timeout, context=_ssl_ctx()) as r:
         raw = r.read()
@@ -50,6 +50,29 @@ def _fetch_one(url: str, timeout=25) -> list:
     if not isinstance(nodes, list):
         raise ValueError("清单结构异常")
     return nodes
+
+
+_RAW_URL = ("https://raw.githubusercontent.com/ltdrdata/ComfyUI-Manager"
+            "/main/custom-node-list.json")
+
+
+def _sources() -> list:
+    """源顺序：用户配置的 GitHub 代理优先（gh_proxy 拼 raw 直链），再公共多源轮换。
+
+    2026-10-31 修：jsDelivr 系在国内裸连常被 SSL 断连，原先每源重试 2 次×25s
+    超时太拖；现改为每源 1 次×12s 快速轮换，且优先走用户在「系统设置」里配的代理。
+    """
+    srcs = []
+    try:
+        from app import config as _cfg
+        gp = ((_cfg.load_config().get("settings") or {}).get("gh_proxy") or "").strip()
+        if gp:
+            if not gp.endswith("/"):
+                gp += "/"
+            srcs.append((f"用户代理({gp})", gp + _RAW_URL))
+    except Exception:
+        pass
+    return srcs + SOURCES
 
 
 def load_catalog(force=False, log=print) -> tuple:
@@ -73,27 +96,26 @@ def load_catalog(force=False, log=print) -> tuple:
             pass
 
     last_err = None
-    for name, url in SOURCES:
-        for attempt in (1, 2):
+    for name, url in _sources():
+        try:
+            log(f"[市场] 从 {name} 拉取插件清单…")
+            nodes = _fetch_one(url)
+            # 只保留有安装地址的
+            nodes = [n for n in nodes
+                     if (n.get("reference") or (n.get("files") or [None])[0])]
             try:
-                log(f"[市场] 从 {name} 拉取插件清单…")
-                nodes = _fetch_one(url)
-                # 只保留有安装地址的
-                nodes = [n for n in nodes
-                         if (n.get("reference") or (n.get("files") or [None])[0])]
-                try:
-                    with open(cp, "w", encoding="utf-8") as f:
-                        json.dump({"fetched_at": time.time(), "source": name,
-                                   "nodes": nodes}, f, ensure_ascii=False)
-                except OSError:
-                    pass
-                log(f"[市场] ✅ {name}：{len(nodes)} 个插件")
-                return nodes, {"source": name, "fetched_at": time.time(),
-                               "count": len(nodes), "cached": False}
-            except Exception as e:
-                last_err = f"{name}: {type(e).__name__} {str(e)[:60]}"
-                log(f"[市场] {name} 失败（{attempt}/2）：{last_err}")
-                time.sleep(0.6)
+                with open(cp, "w", encoding="utf-8") as f:
+                    json.dump({"fetched_at": time.time(), "source": name,
+                               "nodes": nodes}, f, ensure_ascii=False)
+            except OSError:
+                pass
+            log(f"[市场] ✅ {name}：{len(nodes)} 个插件")
+            return nodes, {"source": name, "fetched_at": time.time(),
+                           "count": len(nodes), "cached": False}
+        except Exception as e:
+            last_err = f"{name}: {type(e).__name__} {str(e)[:60]}"
+            log(f"[市场] {name} 失败：{last_err}")
+            time.sleep(0.3)
     # 全失败 → 退回过期缓存（有总比没有好）
     if os.path.isfile(cp):
         try:
@@ -297,3 +319,98 @@ def hot_text(node: dict) -> str:
     if s > 0:
         return f"⭐{s}"
     return "—"
+
+
+# ================================================ 节点类 → 插件包映射（工作流智能识别）
+# 数据源：ComfyUI-Manager 官方 extension-node-map.json（与 custom-node-list 同源同镜像）
+#   结构: {"节点类名": [["仓库url", ...], "说明"]}
+NODE_MAP_SOURCES = [
+    ("jsDelivr", "https://cdn.jsdelivr.net/gh/ltdrdata/ComfyUI-Manager@main/extension-node-map.json"),
+    ("jsDelivr-fastly", "https://fastly.jsdelivr.net/gh/ltdrdata/ComfyUI-Manager@main/extension-node-map.json"),
+    ("jsDelivr-gcore", "https://gcore.jsdelivr.net/gh/ltdrdata/ComfyUI-Manager@main/extension-node-map.json"),
+    ("ghproxy", "https://ghproxy.net/https://raw.githubusercontent.com/ltdrdata/ComfyUI-Manager/main/extension-node-map.json"),
+    ("gh-proxy", "https://gh-proxy.com/https://raw.githubusercontent.com/ltdrdata/ComfyUI-Manager/main/extension-node-map.json"),
+]
+NODE_MAP_TTL = 24 * 3600
+
+
+def node_map_cache_path() -> str:
+    from app.paths import data_root
+    d = os.path.join(data_root(), "cache")
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, "extension_node_map.json")
+
+
+def load_node_map(force=False, log=print) -> dict:
+    """返回 {节点类名: {"urls": [...], "desc": str}}。缓存 24h，多源轮换。"""
+    cp = node_map_cache_path()
+    if not force and os.path.isfile(cp):
+        try:
+            with open(cp, "r", encoding="utf-8") as f:
+                blob = json.load(f)
+            if (blob.get("map")
+                    and time.time() - float(blob.get("fetched_at") or 0)
+                    < NODE_MAP_TTL):
+                return blob["map"]
+        except Exception:
+            pass
+    raw_map = None
+    last_err = None
+    for name, url in NODE_MAP_SOURCES:
+        try:
+            log(f"[市场] 从 {name} 拉取节点类映射表…")
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "Mozilla/5.0 ComfyHub"})
+            with urllib.request.urlopen(req, timeout=30,
+                                        context=_ssl_ctx()) as r:
+                raw_map = json.loads(r.read().decode("utf-8", "ignore"))
+            log(f"[市场] ✅ {name}：{len(raw_map)} 个节点类")
+            break
+        except Exception as e:
+            last_err = e
+    if raw_map is None:
+        log(f"[市场] 节点映射表拉取失败（不影响其他功能）：{last_err}")
+        return {}
+    out = {}
+    for cls, val in raw_map.items():
+        urls, desc = [], ""
+        if isinstance(val, (list, tuple)):
+            if val and isinstance(val[0], (list, tuple)):
+                urls = [str(u) for u in val[0]]
+            if len(val) > 1 and isinstance(val[1], str):
+                desc = val[1]
+        out[str(cls)] = {"urls": urls, "desc": desc}
+    try:
+        with open(cp, "w", encoding="utf-8") as f:
+            json.dump({"fetched_at": time.time(), "map": out}, f,
+                      ensure_ascii=False)
+    except OSError:
+        pass
+    return out
+
+
+def suggest_for_classes(classes: list, log=print) -> list:
+    """给缺失节点类找插件包候选（工作流导入 → 自动建启动模式用）。
+    返回 [{class, urls, desc, catalog_node|None}]，catalog_node 为
+    custom-node-list 里可一键安装的条目（按 owner/repo 归一匹配）。"""
+    nmap = load_node_map(log=log)
+    try:
+        catalog, _meta = load_catalog(log=log)
+    except Exception:
+        catalog = []
+    by_repo = {}
+    for n in catalog:
+        u = install_url(n)
+        if u:
+            by_repo.setdefault(_norm_repo(u), n)
+    out = []
+    for cls in classes:
+        info = nmap.get(cls) or {"urls": [], "desc": ""}
+        cat = None
+        for u in info["urls"]:
+            cat = by_repo.get(_norm_repo(u))
+            if cat:
+                break
+        out.append({"class": cls, "urls": info["urls"],
+                    "desc": info["desc"], "catalog_node": cat})
+    return out
