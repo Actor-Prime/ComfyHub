@@ -21,6 +21,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication, QMessageBox   # noqa: E402
 
 QMessageBox.information = staticmethod(lambda *a, **k: None)
+QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.No)
 
 qapp = QApplication(sys.argv[:1])
 from app.ui.main_window import MainWindow                  # noqa: E402

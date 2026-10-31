@@ -25,6 +25,12 @@ temp/
 # 竞品黑盒分析产物（截图不入库，结论记 docs/COMPETITORS.md）
 analysis/
 
+# 代码签名证书（私钥不入库；自签证书可随时重新生成）
+packaging/certs/
+
+# 本地归档抽屉（发版整理时的散件暂存，不入库）
+归档/
+
 # ---- IDE ----
 .idea/
 .vscode/

@@ -22,12 +22,18 @@ def swap_worker(obj, attr, worker, max_grave=20):
         # 关键：绝不能在当前信号回调栈内 disconnect 正在发信号的 sender
         # （Qt 内部会崩在 Qt6Gui 0xc0000005）——用 QTimer 延迟到事件循环下一轮
         def _retire(w=old_w):
+            import warnings
             for sig_name in ("sig_done", "sig_log", "sig_progress",
                              "sig_prog", "sig_result"):
                 sig = getattr(w, sig_name, None)
                 if sig is not None:
                     try:
-                        sig.disconnect()
+                        # 未连接过的信号 disconnect() 会刷 shiboken
+                        # RuntimeWarning（"Failed to disconnect (None)"），
+                        # try/except 拦不住 warning——catch_warnings 压掉
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("ignore", RuntimeWarning)
+                            sig.disconnect()
                     except Exception:
                         pass
             grave = [x for x in getattr(obj, "_graveyard", []) if x.isRunning()]

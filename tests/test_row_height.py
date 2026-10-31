@@ -17,14 +17,22 @@ from app.ui.theme import TABLE_ROW_H
 
 win = MainWindow()          # 不 show()：孤儿弹窗 isVisible 守卫不弹
 tables = win.findChildren(QTableWidget)
+# v0.8.06 起在线市场改卡片式，模型库主窗从 2 张表减为 1 张：8 → 7
+# v0.8.07 起启动模式页新增 1 张模式表：7 → 8
 assert len(tables) == 8, f"主窗预期 8 张表，实际 {len(tables)}"
 
-# 懒创建对话框表（CivitaiDialog 的 tb_files/tb_hf）：主窗扫描覆盖不到，
-# 靠构造时 fit_table 就地统一；model_name="" 走不到网络搜索分支
+# 懒创建对话框表（CivitaiDialog 的 tb_files/tb_hf + 启动模式页两个对话框）：
+# 主窗扫描覆盖不到，靠构造时 fit_table 就地统一；
+# model_name="" 走不到网络搜索分支
 from app.ui.pages.model_market_widget import CivitaiDialog
 dlg = CivitaiDialog(win, "1", "", [])
 tables += dlg.findChildren(QTableWidget)
-assert len(tables) == 10, f"预期 10 张表（8 主窗 + 2 对话框），实际 {len(tables)}"
+from app.ui.pages.profiles_page import KernelManageDialog, FromWorkflowDialog
+kdlg = KernelManageDialog(win)
+tables += kdlg.findChildren(QTableWidget)
+fdlg = FromWorkflowDialog(win.cfg, win, win)
+tables += fdlg.findChildren(QTableWidget)
+assert len(tables) == 12, f"预期 12 张表（8 主窗 + 4 对话框），实际 {len(tables)}"
 
 # 1) 每张表：默认行高与最小行高都是 32
 for tb in tables:
@@ -51,5 +59,6 @@ assert tb.rowHeight(0) >= TABLE_ROW_H and tb.rowHeight(1) >= TABLE_ROW_H
 tb.setRowCount(old)
 
 print(f"PASS {len(tables)} 张表行高全为 {TABLE_ROW_H}px（默认+最小+新行+兜底）")
+win.cfg.setdefault("settings", {})["close_behavior"] = "close"   # 测试直退，防关闭询问框挂死
 win.close()
 sys.exit(0)

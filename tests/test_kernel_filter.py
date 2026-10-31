@@ -62,4 +62,5 @@ print(f"切回 稳定版 index={cb.currentIndex()} text={cb.currentText()} rows=
 print(f"table maxHeight={tb.maximumHeight()} actual_h={tb.height()} "
       f"win_h={win.height()} "
       f"fills={'YES' if tb.height() > 400 else 'NO'}")
+win.cfg.setdefault("settings", {})["close_behavior"] = "close"   # 测试直退，防关闭询问框挂死
 win.close()

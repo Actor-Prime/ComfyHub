@@ -273,7 +273,11 @@ class _LogPage(QWizardPage):
                                      gpu.torch_variant, log=log, mirror=mirror,
                                      wheels_dir=wheels)
         if not ok:
-            log("CUDA 版安装失败，回退 CPU 版")
+            if gpu.torch_variant != "cpu":
+                # 2026-10-31 修：回退要出声——静默 CPU 回退会吞掉失败根因，
+                # N 卡悄悄没了加速。失败原因在上文 pip/下载日志里，这里点明。
+                log("⚠️ CUDA 版 torch 安装失败（失败原因见上文日志），"
+                    "已回退 CPU 版保底运行——可点「重试」重装 CUDA 版")
             bootstrap.install_torch(self.state.get("python_path"), "cpu",
                                     log=log, mirror=mirror)
         # GPU 加速验证（区分"torch 导入崩溃"与"正常但无 CUDA"两种失败）
@@ -289,7 +293,11 @@ class _LogPage(QWizardPage):
                 if "CUDA_OK" in out:
                     log("torch 安装完成，GPU 加速: ✅ 可用")
                 else:
-                    log("⚠️ torch 安装完成，GPU 加速: 不可用（将以 CPU 运行）")
+                    if gpu.vendor == "nvidia":
+                        log(f"⚠️ torch 安装完成，GPU 加速: 不可用（检测到 {gpu.name} "
+                            "却以 CPU 运行）——可点「重试」重装 CUDA 版")
+                    else:
+                        log("⚠️ torch 安装完成，GPU 加速: 不可用（将以 CPU 运行）")
         except Exception:
             log("torch 验证跳过")
 
@@ -409,11 +417,9 @@ class _LogPage(QWizardPage):
         # 复验：重新检测，确认最新
         self.lb_state.setText("执行完成，正在复验…")
         step = self.plan[self.cur]
-        self.worker = StepWorker(step["detect"])
-        try:
-            self.worker.sig_done.disconnect()
-        except Exception:
-            pass
+        # 2026-10-31 修：原代码对【新】worker 直接 disconnect()——无接收者断开，
+        # shiboken 反刷 RuntimeWarning。换 worker 走 swap_worker（内置旧件清理）。
+        swap_worker(self, "worker", StepWorker(step["detect"]))
         self.worker.sig_done.connect(self._on_verify_done)
         self.worker.start()
 

@@ -8,6 +8,8 @@ import json
 import os
 import re
 
+from app import core_nodes
+
 # ComfyUI 内置核心节点（无需插件）——按前缀 + 精确名单双重匹配
 CORE_EXACT = {
     "KSampler", "KSamplerAdvanced", "CheckpointLoaderSimple", "VAELoader",
@@ -217,16 +219,19 @@ def analyze_workflow(comfyui_path: str, workflow_path: str, log=print) -> dict:
     ctypes = extract_class_types(wf)
     models = extract_models(wf)
     node_map = build_node_plugin_map(comfyui_path, log=log)
+    # 2026-10-31：静态反查实例自身内核（comfy/ + comfy_extras/ 节点注册），
+    # 核心节点不再误报「未识别」（如 ComfySwitchNode 就在 nodes_logic.py）
+    kernel_core = core_nodes.scan_kernel_core(comfyui_path)
 
     core, required, unknown = [], {}, []
     for t in ctypes:
-        if is_core_node(t):
+        if is_core_node(t) or t in kernel_core:
             core.append(t)
         elif t in node_map:
             required.setdefault(node_map[t], []).append(t)
         else:
             unknown.append(t)
-    # unknown = 需要用户搜索安装的（可能是未装的插件）
+    # unknown = 需要用户搜索安装的（可能是未装的插件，也可能要升级内核）
     missing = {"__unknown__": unknown} if unknown else {}
     return {
         "class_types": ctypes,
@@ -234,4 +239,6 @@ def analyze_workflow(comfyui_path: str, workflow_path: str, log=print) -> dict:
         "required": required,
         "missing": missing,
         "models": models,
+        "kernel_ver": core_nodes.kernel_version(comfyui_path),
+        "comfyui_path": comfyui_path,
     }

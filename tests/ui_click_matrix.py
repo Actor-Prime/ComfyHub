@@ -51,6 +51,7 @@ def pump(seconds):
 def new_wizard():
     """新建一个向导，并等自动探测跑完（避免它覆盖我们设的路径）"""
     win = MainWindow()
+    win.cfg.setdefault("settings", {})["close_behavior"] = "close"   # 测试直退，防关闭询问框挂死
     wiz = SetupWizard(win)
     wiz.show()
     pump(1.3)
@@ -667,6 +668,7 @@ def scenario_plugin_toggle():
     os.makedirs(os.path.join(nodes, "other-plugin"), exist_ok=True)
     try:
         win = MainWindow()
+        win.cfg.setdefault("settings", {})["close_behavior"] = "close"   # 测试直退，防关闭询问框挂死
         pg = win.plugins_page
         # 隔离：实例指向临时目录，refresh_list 用真实 list_plugins 跑通
         pg._inst = lambda: {"name": "t", "comfyui_path": base}
@@ -683,6 +685,9 @@ def scenario_plugin_toggle():
 
             def row(self):
                 return self._r
+
+            def column(self):
+                return 0    # 名称列触发启用/禁用（列 1 是 Git 地址列，守卫会跳过）
 
         pg._toggle(_Idx(rows["ComfyUI-GGUF"]))
         pump(0.3)

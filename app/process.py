@@ -361,6 +361,14 @@ def build_command(inst: dict, port: int | None = None) -> list:
         cmd += ["--output-directory", inst["output_dir"]]
     if inst.get("input_dir"):
         cmd += ["--input-directory", inst["input_dir"]]
+    # 启动模式（2026-10-31）：官方基座隔离——custom_nodes/user/output 落
+    # base_directory，模型目录单独共享。结构化字段，避免 extra_args 带空格
+    # 路径被 split() 拆碎。旧内核无 --base-directory 时 profiles.prepare_launch
+    # 走 junction 换头，不设这两个字段。
+    if inst.get("base_directory"):
+        cmd += ["--base-directory", inst["base_directory"]]
+    if inst.get("models_directory"):
+        cmd += ["--models-directory", inst["models_directory"]]
     # 额外参数（实例）
     s = (inst.get("extra_args") or "").strip()
     if s:
@@ -471,6 +479,12 @@ class ComfyProcess(QObject):
             env.insert("HF_HUB_OFFLINE", "1")
             env.insert("TRANSFORMERS_OFFLINE", "1")
             self.log_line.emit("[ComfyHub] 已开启 Huggingface 离线模式（不联网加载模型）")
+        # 启动模式 L1 依赖 overlay：PYTHONPATH 前置 site_overlay 压过共享
+        # venv 同名包（profiles.prepare_launch 注入）
+        for k, v in (inst.get("env") or {}).items():
+            env.insert(k, v)
+        if inst.get("env", {}).get("PYTHONPATH"):
+            self.log_line.emit("[ComfyHub] 已启用模式依赖 overlay（PYTHONPATH）")
 
         self._proc = QProcess(self)
         self._proc.setProgram(cmd[0])

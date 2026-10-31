@@ -100,6 +100,7 @@ finally:
     webbrowser.open = _orig_open
 print("PASS UI 禁用/实际端口打开/回退/未运行守卫")
 
+win.cfg.setdefault("settings", {})["close_behavior"] = "close"   # 测试直退，防关闭询问框挂死
 win.close()
 print("ALL PASS")
 sys.exit(0)

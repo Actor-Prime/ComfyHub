@@ -371,6 +371,44 @@ QPushButton#DeleteBtn {
     border: none; border-radius: 6px; padding: 11px;
 }
 QPushButton#DeleteBtn:hover { background: #e46e6e; }
+
+/* ===== 模型库统一搜索（范围切换/分类 chips/卡片） ===== */
+#ScopeBtn {
+    background: #20252e;
+    border: 1px solid #363f4d;
+    border-radius: 4px;
+    padding: 6px 18px;
+    color: #9aa4b2;
+    font-weight: bold;
+}
+#ScopeBtn:hover { border-color: #3d8bff; color: #d8dee6; }
+#ScopeBtn:checked {
+    background: #2f6fd6;
+    border-color: #3d7ee2;
+    color: #ffffff;
+}
+#CatChip {
+    background: #2a313c;
+    border: 1px solid #363f4d;
+    border-radius: 11px;
+    padding: 3px 12px;
+    color: #9aa4b2;
+}
+#CatChip:hover { border-color: #3d8bff; color: #d8dee6; }
+#CatChip:checked {
+    background: #2f4a75;
+    border-color: #3d8bff;
+    color: #ffffff;
+}
+#Card:hover { border-color: #3d8bff; }
+#BadgeInstalled {
+    background: #1e3a28;
+    color: #4cd47c;
+    border: 1px solid #2e8b57;
+    border-radius: 8px;
+    padding: 1px 8px;
+    font-size: 11px;
+}
 """
 
 

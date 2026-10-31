@@ -43,6 +43,37 @@ class _Row(QFrame):
 
 
 
+class _KernelInfoWorker(QThread):
+    """内核信息（版本/远端/分支）后台读取。
+    2026-10-31 卡顿修复：remote_url/current_branch 各起一个 git 子进程，
+    Windows 上进程创建+杀软扫描 ≈ 100ms/个，同步跑会在切页时冻结 UI
+    250~340ms（实测）——挪到后台线程，UI 只画缓存。"""
+    sig_done = Signal(dict)
+
+    def __init__(self, comfyui_path, proxy=""):
+        super().__init__()
+        self.path = comfyui_path
+        self.proxy = proxy
+
+    def run(self):
+        try:
+            from app.tools import KernelManager
+            km = KernelManager(self.path, proxy=self.proxy)
+            info = {
+                "ver": km.current_version() or "未知",
+                "is_git": bool(km.is_git_repo),
+                "remote": "", "branch": "",
+            }
+            if info["is_git"]:
+                info["remote"] = km.remote_url()
+                info["branch"] = km.current_branch()
+            self.sig_done.emit(info)
+        except Exception as e:
+            self.sig_done.emit({"ver": f"读取版本失败：{e}",
+                               "is_git": False, "remote": "", "branch": "",
+                               "error": str(e)})
+
+
 class _KernelWorker(QThread):
     """内核版本：拉标签 / 切换+装依赖（git 与 pip 都可能慢，必须后台）"""
     sig_log = Signal(str)
@@ -393,19 +424,44 @@ class ComfyuiPage(QWidget):
                              proxy=inst.get("proxy") or "") if inst else None
 
     def _refresh_kernel_info(self):
+        """内核信息展示：同步 git 子进程改为「缓存秒画 + 后台补读」
+        （2026-10-31 卡顿修复，见 _KernelInfoWorker 注释）"""
         inst = self.mainwin.current_inst()
         if not inst or not hasattr(self, "lb_kver"):
             return
+        iid = inst.get("id")
+        cache = getattr(self, "_kinfo_cache", None)
+        if cache is None:
+            cache = self._kinfo_cache = {}
+        hit = cache.get(iid)
+        if hit and time.time() - hit["ts"] < 300:
+            self._paint_kinfo(hit["info"])
+            return
+        if not hit:
+            self.lb_kver.setText("正在读取内核信息…")
+            self.lb_kver.setStyleSheet("color:#9aa4b2;")
+        w = _KernelInfoWorker(inst["comfyui_path"],
+                              proxy=inst.get("proxy") or "")
+        w.sig_done.connect(lambda info, iid=iid: self._on_kinfo(iid, info))
+        swap_worker(self, "_kinfo_worker", w)
+        w.start()
+
+    def _on_kinfo(self, iid, info):
+        self._kinfo_cache[iid] = {"info": info, "ts": time.time()}
+        inst = self.mainwin.current_inst()
+        if inst and inst.get("id") == iid:
+            self._paint_kinfo(info)
+
+    def _paint_kinfo(self, info):
         try:
-            km = self._km()
-            ver = km.current_version() or "未知"
-            if km.is_git_repo:
+            ver = info.get("ver") or "未知"
+            if info.get("is_git"):
                 self.lb_kver.setText(f"当前：{ver}　·　git 仓库 ✓")
                 self.lb_kver.setStyleSheet("color:#4cd47c;")
                 # 远端 + 分支（2026-10-29 加：让用户看清列表数据源，别再和
                 # 其他启动器「对不上」——大家拉的可能根本不是一个仓库）
-                remote = km.remote_url()
-                branch = km.current_branch()
+                remote = info.get("remote") or ""
+                branch = info.get("branch") or ""
                 if remote:
                     import re as _re
                     short = _re.sub(r"\.git$", "", remote.split("://")[-1])

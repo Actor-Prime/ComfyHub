@@ -688,6 +688,71 @@ def _zero_byte_dlls(pkg_dir: str) -> list:
     return hits[:5]
 
 
+def _pip_report_wheels(python_exe: str, pkgs: list, index: str,
+                       log=print) -> list | None:
+    """用 pip --dry-run --report 解析安装清单（wheel 文件名/URL/sha256），不下载大包。
+    返回 [(fname, url, sha256)]；解析失败返回 None（调用方回退直连安装）。"""
+    import json as _json
+    import tempfile as _tf
+    from urllib.parse import unquote as _unquote
+    fd, report = _tf.mkstemp(suffix=".json")
+    os.close(fd)
+    try:
+        cmd = [python_exe, "-s", "-m", "pip", "install", "--dry-run", "--no-deps",
+               "--quiet", "--report", report, "-i", index, *pkgs]
+        r = run(cmd, capture_output=True, text=True, timeout=600)
+        if r.returncode != 0 or not os.path.isfile(report):
+            return None
+        with open(report, encoding="utf-8") as f:
+            data = _json.load(f)
+        out = []
+        for item in data.get("install", []):
+            di = item.get("download_info") or {}
+            url = di.get("url") or ""
+            if not url.lower().endswith(".whl"):
+                continue
+            fname = _unquote(url.rsplit("/", 1)[-1])
+            sha = ((di.get("archive_info") or {}).get("hashes")
+                   or {}).get("sha256") or ""
+            out.append((fname, url, sha))
+        return out or None
+    except Exception as e:
+        log(f"⚠️ wheel 清单解析异常：{e}")
+        return None
+    finally:
+        try:
+            os.remove(report)
+        except OSError:
+            pass
+
+
+def _torch_post_check(python_exe: str, variant: str, log=print) -> bool:
+    """安装后自检：import 能过 + 版本对得上变体（装 cu 出 +cpu = 失败）。
+    磁盘满时 pip 可能报成功但留下损坏文件；pip"已满足"也可能装了个寂寞。"""
+    r2 = run([python_exe, "-c",
+              "import torch;print(torch.__version__);"
+              "print(getattr(torch.version,'cuda') or 'cpu')"],
+             capture_output=True, text=True, timeout=300)
+    if r2.returncode != 0:
+        err_tail = ((r2.stderr or "").strip().splitlines() or ["未知错误"])[-1]
+        log(f"❌ torch 安装后自检失败（pip 完成但 import 崩溃）：{err_tail[:140]}")
+        zeros = _zero_byte_dlls(
+            os.path.join(os.path.dirname(python_exe), "Lib", "site-packages", "torch"))
+        if zeros:
+            log(f"⚠️ 发现 {len(zeros)} 个 0 字节 DLL（如 {os.path.basename(zeros[0])}）"
+                "——请确认磁盘空间充足后重新点「安装」强制重装")
+        return False
+    lines = (r2.stdout or "").strip().splitlines()
+    ver = lines[0].strip() if lines else "?"
+    cuda = lines[1].strip() if len(lines) > 1 else "cpu"
+    if variant != "cpu" and cuda == "cpu":
+        log(f"❌ 安装后自检：torch {ver} 仍是 CPU 版（要求 {variant}）——安装未生效")
+        return False
+    log(f"✅ torch {ver}（{'CUDA ' + cuda if cuda != 'cpu' else 'CPU 版'}）"
+        "安装完成并通过导入自检")
+    return True
+
+
 def install_torch(python_exe: str, variant: str, log=print,
                   mirror: str = PYPI_MIRRORS["官方"], wheels_dir: str | None = None) -> bool:
     """按变体安装 torch 三件套。
@@ -708,17 +773,17 @@ def install_torch(python_exe: str, variant: str, log=print,
     pkgs = ["torch", "torchvision", "torchaudio"]
     force_flags: list = []   # 安装损坏时的强制重装参数
 
-    # 检测已装 torch 状态（能否 import + CUDA 版本）
+    # 检测已装 torch 状态：import 崩了要区分"没装"与"装损坏"（决定 --force-reinstall）
     r = run([python_exe, "-c",
              "import torch;print(getattr(torch.version,'cuda') or 'cpu')"],
             capture_output=True, text=True, timeout=300)
-    import_ok = r.returncode == 0
-    if import_ok:
-        installed_cuda = (r.stdout or "").strip()
-        if variant != "cpu" and installed_cuda == "cpu":
-            log("检测到已装 torch 为 CPU 版，先卸载避免混装…")
-            run([python_exe, "-m", "pip", "uninstall", "-y", *pkgs],
-                capture_output=True, text=True, timeout=600)
+    if r.returncode == 0:
+        pass   # 已装：cu 变体在下方统一分批卸载干净起装；cpu 变体由 pip 判已满足
+    elif "No module named 'torch'" in (r.stderr or ""):
+        # 2026-10-31 修：全新安装绝不能按"安装损坏"处理——--force-reinstall
+        # --no-deps 会装出缺依赖的残缺 torch（新装环境必炸，此前被步骤3
+        # 预装依赖掩盖才侥幸能跑）
+        log("torch 未安装，全新安装")
     else:
         # pip 认为已装、但 import 直接崩（典型：0 字节 DLL / WinError 193）
         err_tail = ((r.stderr or "").strip().splitlines() or ["未知错误"])[-1]
@@ -731,11 +796,46 @@ def install_torch(python_exe: str, variant: str, log=print,
         force_flags = ["--force-reinstall", "--no-deps"]
 
     if variant == "cpu":
-        return pip_install(python_exe, pkgs, mirror, log=log, extra=force_flags)
+        if not pip_install(python_exe, pkgs, mirror, log=log, extra=force_flags):
+            return False
+        return _torch_post_check(python_exe, variant, log)
 
     idx = TORCH_VARIANTS[variant]["index"]
+    wdir = wheels_dir or os.path.join(os.path.dirname(python_exe), "wheels")
+    os.makedirs(wdir, exist_ok=True)
 
-    # 本地 wheel 缓存加速（如 tools\wheels\torch-2.10.0+cu130-....whl）
+    # 卸干净再装：防 pip 把同版本 CPU wheel 判"已满足"静默跳过（装了个寂寞）
+    log("卸载旧 torch 三件套（干净起装，防混装/防已满足跳过）…")
+    run([python_exe, "-m", "pip", "uninstall", "-y", *pkgs],
+        capture_output=True, text=True, timeout=600)
+
+    # ★ 2026-10-31 修：torch cu wheel 3GB+，pip 自身无断点续传，download.pytorch.org
+    #   大包 SSL 断连一次就前功尽弃（实测 E2E 因此装出 CPU 版）。改为：
+    #   pip --dry-run --report 解析 wheel 清单 → download_multi 多源断点续传预下载
+    #   到 wheels_dir（sha256 校验，已下过的秒复用）→ 本地 wheel 显式安装
+    #   （显式文件路径不会被 pip"已满足"跳过）。
+    plan = _pip_report_wheels(python_exe, pkgs, idx, log)
+    if plan and all(any(f.startswith(p + "-") for f, _, _ in plan) for p in pkgs):
+        wheel_paths = []
+        for fname, url, sha in plan:
+            dest = os.path.join(wdir, fname)
+            if os.path.isfile(dest) and sha and _sha256_of(dest) == sha:
+                log(f"复用本地 wheel：{fname}")
+            else:
+                srcs = [url,
+                        f"https://mirrors.aliyun.com/pytorch-wheels/{variant}/{fname}",
+                        f"https://mirror.sjtu.edu.cn/pytorch-wheels/{variant}/{fname}"]
+                log(f"预下载 wheel：{fname}（断点续传+多源）")
+                if not download_multi(srcs, dest, log=log, expected_sha=sha or None):
+                    log(f"❌ {fname} 多源下载失败")
+                    return False
+            wheel_paths.append(dest)
+        if not pip_install(python_exe, wheel_paths, mirror, log=log):
+            return False
+        return _torch_post_check(python_exe, variant, log)
+
+    # 清单解析失败（离线元数据/老 pip）→ 回退直连 pip（无续传，赌一次网络）
+    log("wheel 清单解析失败，回退直连 pip 安装（无续传，网络抖动可能失败）")
     f_links = []
     if wheels_dir and os.path.isdir(wheels_dir):
         for f in os.listdir(wheels_dir):
@@ -756,21 +856,7 @@ def install_torch(python_exe: str, variant: str, log=print,
         log("  " + ln[:160])
     if r.returncode != 0:
         return False
-
-    # ★ 安装后 import 自检：磁盘满时 pip 也可能报成功但留下损坏文件
-    r2 = run([python_exe, "-c", "import torch;print(torch.__version__)"],
-             capture_output=True, text=True, timeout=300)
-    if r2.returncode != 0:
-        err_tail = ((r2.stderr or "").strip().splitlines() or ["未知错误"])[-1]
-        log(f"❌ torch 安装后自检失败（pip 完成但 import 崩溃）：{err_tail[:140]}")
-        zeros = _zero_byte_dlls(
-            os.path.join(os.path.dirname(python_exe), "Lib", "site-packages", "torch"))
-        if zeros:
-            log(f"⚠️ 发现 {len(zeros)} 个 0 字节 DLL（如 {os.path.basename(zeros[0])}）"
-                "——请确认磁盘空间充足后重新点「安装」强制重装")
-        return False
-    log(f"✅ torch {(r2.stdout or '').strip()} 安装完成并通过导入自检")
-    return True
+    return _torch_post_check(python_exe, variant, log)
 
 
 def install_comfyui_requirements(python_exe: str, comfyui_path: str, log=print,
@@ -790,18 +876,27 @@ def install_comfyui_requirements(python_exe: str, comfyui_path: str, log=print,
 
 
 # ---------------- 便携 Git（MinGit） ----------------
+_FIND_GIT_CACHE = []   # 进程级缓存（结果可能为 None，用列表区分「未查过」）
+
+
 def find_git() -> str | None:
+    if _FIND_GIT_CACHE:
+        return _FIND_GIT_CACHE[0]
     for c in (r"C:\Program Files\Git\cmd\git.exe",
               r"C:\Program Files (x86)\Git\cmd\git.exe"):
         if os.path.isfile(c):
+            _FIND_GIT_CACHE.append(c)
             return c
     from shutil import which
     p = which("git")
     if p:
+        _FIND_GIT_CACHE.append(p)
         return p
     # ComfyHub 自带便携 Git
     cand = os.path.join(tools_root(), "MinGit", "cmd", "git.exe")
-    return cand if os.path.isfile(cand) else None
+    out = cand if os.path.isfile(cand) else None
+    _FIND_GIT_CACHE.append(out)
+    return out
 
 
 def tools_root() -> str:
@@ -922,7 +1017,13 @@ def detect_torch_step(python_exe):
         ver = lines[0].strip() if lines else "?"
         cuda = lines[1].strip() if len(lines) > 1 else "cpu"
         if cuda == "cpu":
-            return "cpu", f"已装 torch {ver}（CPU 版）——建议更新为 CUDA 版以启用显卡加速", {}
+            # 2026-10-31 修：CPU 版只在有 N 卡时算"未达标"——无 N 卡机器上
+            # CPU 就是合适版本，不该永远卡"复验未通过"
+            gpu = detect_gpu()
+            if gpu.vendor == "nvidia":
+                return ("cpu", f"已装 torch {ver}（CPU 版）——检测到 {gpu.name}，"
+                        "建议更新为 CUDA 版以启用显卡加速", {})
+            return "ok", f"已装 torch {ver}（CPU 版）——未检测到 N 卡，已是合适版本", {}
         return "ok", f"已装 torch {ver}（CUDA {cuda}）——已就绪", {}
     except Exception as e:
         return "missing", f"torch 检测失败: {e}", {}
