@@ -187,6 +187,12 @@ class WorkflowPage(QWidget):
         self.b_exec.setProperty("accent", True)
         self.b_exec.setEnabled(False)
         self.b_exec.clicked.connect(self._execute)
+        # 2026-11-01：一键把「升级内核 + 装插件 + 下模型」合成一条队列执行
+        self.b_ai = QPushButton("🤖 AI 补全并执行")
+        self.b_ai.setEnabled(False)
+        self.b_ai.setToolTip("按「内核 → 插件 → 模型」顺序补齐扫描出的全部缺口，"
+                             "执行前自动快照")
+        self.b_ai.clicked.connect(self._ai_solve)
         b_stop = QPushButton("停止")
         b_stop.setProperty("danger", True)
         b_stop.clicked.connect(self._stop)
@@ -194,6 +200,7 @@ class WorkflowPage(QWidget):
         b_imp.clicked.connect(self._import_plan)
         bar.addWidget(b_imp)
         bar.addWidget(b_stop)
+        bar.addWidget(self.b_ai)
         bar.addWidget(self.b_exec)
         root.addLayout(bar)
 
@@ -426,6 +433,7 @@ class WorkflowPage(QWidget):
         n_m = len(self.plan["models"])
         n_dl = len(dl_rows)
         self._counts = (n_ok, n_dl)
+        self._has_upgrades = bool(self.plan.get("upgrades"))
         parts = [f"计划: {n_ok} 步可自动执行"]
         if n_up:
             parts.append(f"{n_up} 个需升级内核")
@@ -445,7 +453,11 @@ class WorkflowPage(QWidget):
 
     def _sync_exec_btn(self):
         n_ok, n_dl = getattr(self, "_counts", (0, 0))
+        has_up = bool(getattr(self, "_has_upgrades", False))
         self.b_exec.setEnabled(bool(n_ok) or bool(n_dl and self.ck_models.isChecked()))
+        # AI 补全把「需升级内核」也算进来：那种情况 n_ok=0，但确实有事可做
+        self.b_ai.setEnabled(bool(n_ok) or has_up
+                             or bool(n_dl and self.ck_models.isChecked()))
 
     def _dl_model(self, src):
         inst = self._current_inst()
@@ -526,7 +538,62 @@ class WorkflowPage(QWidget):
             "执行前会自动创建救援快照，失败可回滚。继续？")
         if r != QMessageBox.Yes:
             return
+        self._run_steps(inst, steps)
+
+    def _ai_solve(self):
+        """AI 补全并执行（2026-11-01 用户需求）
+
+        扫描结果常常长这样：0 步可自动执行 / 2 个节点要升级内核 / 3 个模型待下载。
+        逐项点按钮很碎，这里合成一条队列一次跑完：内核 → 插件 → 模型。
+        AI 的补全作用在扫描阶段（plan_from_scan 里对未识别节点/模型做推断），
+        本方法负责把推断结果和确定性结果合并成可执行队列。
+        """
+        inst = self._current_inst()
+        if not inst or not self.plan:
+            QMessageBox.warning(self, "ComfyHub", "请先扫描工作流")
+            return
+        if self._exec is not None and self._exec.isRunning():
+            QMessageBox.information(self, "ComfyHub", "已有任务在执行，等它结束再点")
+            return
+        steps = installer.build_solve_queue(
+            self.plan, include_models=self.ck_models.isChecked(), log=self._log)
+        if not steps:
+            QMessageBox.information(self, "ComfyHub", "扫描结果里没有需要补的项 ✅")
+            return
+        # 升级内核要 git checkout，实例运行时文件被锁 → 直接拦住，别等跑到一半失败
+        if any(st.get("type") == "upgrade_kernel" for st in steps):
+            procs = getattr(self.mainwin, "procs", None)
+            try:
+                if procs is not None and procs.is_running(inst):
+                    QMessageBox.warning(
+                        self, "ComfyHub",
+                        "该实例正在运行，升级内核会被运行中的文件锁挡住。\n"
+                        "请先到「ComfyUI」页停止实例，再回来执行。")
+                    return
+            except Exception:
+                pass
+        kinds = {}
+        for st in steps:
+            kinds[st.get("type", "?")] = kinds.get(st.get("type", "?"), 0) + 1
+        label = {"upgrade_kernel": "%d 步升级内核", "git_clone": "%d 个插件",
+                 "model_url": "%d 个模型", "python_package": "%d 个依赖",
+                 "cmd": "%d 条命令", "python_cmd": "%d 个脚本"}
+        desc = "、".join(label.get(k, "%d 个 " + k) % v for k, v in kinds.items())
+        r = QMessageBox.question(
+            self, "AI 补全并执行",
+            f"将按「内核 → 插件 → 模型」顺序执行 {len(steps)} 步：{desc}。\n\n"
+            "⚠ 升级内核前请先停止该实例（运行中会锁文件导致失败）。\n"
+            "执行前会自动创建救援快照，失败可回滚。继续？")
+        if r != QMessageBox.Yes:
+            return
+        self._run_steps(inst, steps)
+
+    def _run_steps(self, inst, steps):
+        """统一执行入口（普通计划与 AI 补全共用）"""
+        self._last_had_kernel = any(
+            st.get("type") == "upgrade_kernel" for st in steps)
         self.b_exec.setEnabled(False)
+        self.b_ai.setEnabled(False)
         self.bar_prog.setVisible(True)
         self.bar_prog.setRange(0, len(steps))
         self.bar_prog.setValue(0)
@@ -538,12 +605,16 @@ class WorkflowPage(QWidget):
     def _on_exec(self, res):
         self.bar_prog.setValue(res.get("done", 0))
         self.b_exec.setEnabled(True)
+        self.b_ai.setEnabled(True)
         snap = res.get("snapshot", "")
         fail = res.get("failed_step")
+        tail = ("已升级内核：请重启 ComfyUI 实例后再生图。"
+                if getattr(self, "_last_had_kernel", False)
+                else "重启 ComfyUI 后生效。")
         if fail is None:
             QMessageBox.information(
                 self, "ComfyHub", f"✅ 安装完成（{res.get('done')}/{res.get('total')}）。\n"
-                f"重启 ComfyUI 后生效。\n救援快照: {snap}")
+                f"{tail}\n救援快照: {snap}")
         else:
             QMessageBox.warning(
                 self, "ComfyHub",

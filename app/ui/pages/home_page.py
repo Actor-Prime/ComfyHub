@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
 )
 
 from app import sysinfo
+from app.i18n import T
 from app.ui.nav import NAV
 
 ASSETS = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
@@ -124,7 +125,7 @@ class HomePage(QWidget):
     def _set_card(self, w, title, value, sub=""):
         w.setText(
             f"<div style='padding:9px 12px;'>"
-            f"<span style='color:#9aa4b2; font-size:11px;'>{title}</span><br>"
+            f"<span style='color:#9aa4b2; font-size:11px;'>{T(title)}</span><br>"
             f"<span style='color:#fff; font-size:15px; font-weight:bold;'>{value}</span>"
             + (f"<br><span style='color:#7d8797; font-size:11px;'>{sub}</span>" if sub else "")
             + "</div>")
@@ -175,7 +176,7 @@ class HomePage(QWidget):
         self.b_web.setEnabled(running)     # 未启动不能打开网页（实际端口逻辑在 open_browser）
         self.b_edit.setEnabled(bool(inst))
         self.lb_inst.setText(
-            f"当前实例: {inst.get('name') if inst else '（未选择）'}"
+            f"{T('当前实例')}: {inst.get('name') if inst else T('（未选择）')}"
             + ("   ● 运行中" if running else ""))
 
     def on_show(self):
@@ -198,36 +199,36 @@ class HomePage(QWidget):
         r = sysinfo.ram_info()
         self._set_card(self.card_ram, "内存",
                        f"{r['used_gb']:.1f} / {r['total_gb']:.0f} GB",
-                       f"占用 {r['percent']:.0f}%")
+                       f"{T('占用')} {r['percent']:.0f}%")
         c = sysinfo.cpu_info()
         self._set_card(self.card_cpu, "处理器",
-                       f"{c['cores_physical']}核/{c['cores_logical']}线程",
-                       f"占用 {c['usage']:.0f}%")
+                       f"{c['cores_physical']}{T('核')}/{c['cores_logical']}{T('线程')}",
+                       f"{T('占用')} {c['usage']:.0f}%")
         g = sysinfo.gpu_info_display()
         # 拆出主名 / 显存 / 驱动 → 精简显示，避免副标题重复冗长
         try:
             from app.bootstrap import detect_gpu
             gpu = detect_gpu()
             if gpu.vendor == "nvidia":
-                gb = f"{gpu.vram_mb / 1024:.0f}GB" if gpu.vram_mb else "显存未知"
+                gb = f"{gpu.vram_mb / 1024:.0f}GB" if gpu.vram_mb else T("显存未知")
                 self._set_card(self.card_gpu, "显卡",
                                f"{gpu.name} · {gb}",
-                               f"驱动 {gpu.driver} → 推荐 torch {gpu.torch_variant}")
+                               f"{T('驱动')} {gpu.driver} → {T('推荐')} torch {gpu.torch_variant}")
             else:
-                self._set_card(self.card_gpu, "显卡", gpu.name or "未检测到", g)
+                self._set_card(self.card_gpu, "显卡", gpu.name or T("未检测到"), g)
         except Exception:
             self._set_card(self.card_gpu, "显卡", g.split("（")[0], g)
         d = sysinfo.disk_info("F:\\")
         self._set_card(self.card_disk, "F 盘空间",
-                       f"{d['free_gb']:.0f} GB 可用",
-                       f"共 {d['total_gb']:.0f} GB")
+                       f"{d['free_gb']:.0f} GB {T('可用')}",
+                       f"{T('共')} {d['total_gb']:.0f} GB")
 
     def _refresh_live(self):
         r = sysinfo.ram_info()
         self._set_card(self.card_ram, "内存",
                        f"{r['used_gb']:.1f} / {r['total_gb']:.0f} GB",
-                       f"占用 {r['percent']:.0f}%")
+                       f"{T('占用')} {r['percent']:.0f}%")
         c = sysinfo.cpu_info()
         self._set_card(self.card_cpu, "处理器",
-                       f"{c['cores_physical']}核/{c['cores_logical']}线程",
-                       f"占用 {c['usage']:.0f}%")
+                       f"{c['cores_physical']}{T('核')}/{c['cores_logical']}{T('线程')}",
+                       f"{T('占用')} {c['usage']:.0f}%")

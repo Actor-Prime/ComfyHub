@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QButtonGroup, QScrollArea, QFrame, QStackedWidget,
 )
 
+from app.i18n import T
 from app.tools import ModelDownloader
 from app import instance as inst_lib
 from app.workers import swap_worker
@@ -311,7 +312,7 @@ class ModelsPage(QWidget):
         self.tb.setRowCount(0)
         inst = self._inst()
         self.lb_inst.setText(
-            f"实例：{inst.get('name', '')}" if inst else "（未选择实例）")
+            f"{T('实例')}: {inst.get('name', '')}" if inst else "（未选择实例）")
         if not inst:
             self.tb.setColumnCount(3)
             self.tb.setHorizontalHeaderLabels(["提示", "", ""])

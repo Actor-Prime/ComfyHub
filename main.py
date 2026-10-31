@@ -36,7 +36,7 @@ if _cli_code is not None:
 from PySide6.QtWidgets import QApplication, QMessageBox
 from PySide6.QtGui import QFont, QPalette, QColor
 
-from app.ui.theme import DARK_QSS
+from app.ui.theme import DARK_QSS, apply_theme
 from app.ui.main_window import MainWindow
 
 CRASH_LOG = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")),
@@ -100,18 +100,13 @@ def main():
     # 中文界面统一字体
     font = QFont("Microsoft YaHei UI", 9)
     app.setFont(font)
-    app.setStyleSheet(DARK_QSS)
-    # 接管调色板：QSS 只覆盖了 ::item:selected，current 格等回落路径仍用系统
-    # palette（暗色系统下 highlight=黑）→ 用户实测「单击单元格变黑看不清」
-    #（2026-10-27）。统一为主题蓝底白字。
-    _pal = app.palette()
-    _pal.setColor(QPalette.Highlight, QColor("#2f4a75"))
-    _pal.setColor(QPalette.HighlightedText, QColor("#ffffff"))
-    _pal.setColor(QPalette.Base, QColor("#181c22"))
-    _pal.setColor(QPalette.AlternateBase, QColor("#1c212a"))
-    _pal.setColor(QPalette.Text, QColor("#d8dee6"))
-    _pal.setColor(QPalette.WindowText, QColor("#d8dee6"))
-    app.setPalette(_pal)
+    # 主题（2026-11-01）：深色/浅色/跟随系统/自定义统一由 theme.apply_theme 处理
+    # （QSS + 回落调色板一起给值；旧实现只设 DARK_QSS + 深色调色板，浅色下单元格会变黑）
+    try:
+        from app.config import load_config as _load_cfg
+        apply_theme(app, _load_cfg())
+    except Exception:
+        app.setStyleSheet(DARK_QSS)     # 配置读不出来也不能白屏，退回深色
 
     try:
         win = MainWindow()

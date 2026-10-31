@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 from app import instance as inst_lib
 from app import plugin_profiles as pp
 from app import plugin_store as store
+from app.i18n import T
 from app.config import save_config
 from app.workers import swap_worker
 
@@ -407,7 +408,7 @@ class PluginsPage(QWidget):
             self.lb_inst.setText("（未选择实例）")
             self.tb.setRowCount(0)
             return
-        self.lb_inst.setText(f"实例：{inst.get('name')}")
+        self.lb_inst.setText(f"{T('实例')}: {inst.get('name')}")
         rows = pp.list_plugins(inst["comfyui_path"])     # 已剥离 .disabled 后缀
         self._rows_data = rows                            # 操作列按钮回调用
         self.tb.setRowCount(len(rows))
