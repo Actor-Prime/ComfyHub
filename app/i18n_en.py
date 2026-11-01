@@ -584,8 +584,9 @@ EN_DICT = {
         "“🤖 unverified” and need manual confirmation. DeepSeek / Zhipu / Tongyi are recommended "
         "in China (all OpenAI-compatible). Leave empty to rely purely on local deterministic "
         "detection — other features are unaffected.",
-    "ComfyHub v0.8.06\nPySide6 轻量 ComfyUI 多实例管理器（46MB 便携包）\n\nPython 3.13 · PySide6 · MIT":
-        "ComfyHub v0.8.06\nPySide6 lightweight ComfyUI multi-instance manager (46MB portable build)\n\n"
+    # 关于框：版本号由代码拼在前面，这里只翻下半段（升版本不会失配）
+    "PySide6 轻量 ComfyUI 多实例管理器（46MB 便携包）\n\nPython 3.13 · PySide6 · MIT":
+        "PySide6 lightweight ComfyUI multi-instance manager (46MB portable build)\n\n"
         "Python 3.13 · PySide6 · MIT",
 
     # ================= 首页系统卡拼装词 =================

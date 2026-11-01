@@ -229,12 +229,16 @@ class SettingsPage(QWidget):
 
         g3 = QGroupBox("关于")
         v3 = QVBoxLayout(g3)
-        about = QLabel(
-            f"ComfyHub v{APP_VERSION}\n"
-            "PySide6 轻量 ComfyUI 多实例管理器（46MB 便携包）\n\n"
-            "Python 3.13 · PySide6 · MIT")
-        about.setStyleSheet("color:#9aa4b2;")
-        v3.addWidget(about)
+        # 版本号必须单独成一个控件：翻译是「控件树扫描 + 词表精确匹配」，
+        # 版本号并进同一段文本会让键每次都变，英文模式就只能退回中文
+        # （v0.8.07 实测踩到：关于框文案升版本后不再翻译）
+        lb_ver = QLabel(f"ComfyHub v{APP_VERSION}")
+        lb_ver.setStyleSheet("color:#9aa4b2;")
+        v3.addWidget(lb_ver)
+        lb_desc = QLabel("PySide6 轻量 ComfyUI 多实例管理器（46MB 便携包）\n\n"
+                         "Python 3.13 · PySide6 · MIT")
+        lb_desc.setStyleSheet("color:#9aa4b2;")
+        v3.addWidget(lb_desc)
         root.addWidget(g3)
 
         scroll.setWidget(body)
