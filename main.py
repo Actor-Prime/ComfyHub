@@ -108,8 +108,31 @@ def main():
     except Exception:
         app.setStyleSheet(DARK_QSS)     # 配置读不出来也不能白屏，退回深色
 
+    # 单实例守卫（2026-11-01）：已有实例时把它的窗口唤到前台并退出本进程，
+    # 避免重复双击堆出一串托盘图标、两套管理器抢同一批 ComfyUI 实例。
+    # 注意：第二个实例**不弹模态框**——弹了它自己就卡成一个进程等用户点确定，
+    # 反而变成"两个进程"。提示交给主实例：窗口置前 + 托盘气泡（非阻塞）。
+    from app.single_instance import SingleInstance
+    _guard = SingleInstance()
+    if not _guard.try_acquire():
+        return 0
+
     try:
         win = MainWindow()
+
+        def _on_second_instance():
+            """又有人双击了 exe：把窗口拉回前台，并在托盘提示一句"""
+            win._restore_from_tray()
+            tray = getattr(win, "tray", None)
+            if tray is not None:
+                try:
+                    tray.showMessage(
+                        "ComfyHub", "ComfyHub 已在运行，已切换到当前窗口",
+                        tray.MessageIcon.Information, 3000)
+                except Exception:
+                    pass
+
+        _guard.activated.connect(_on_second_instance)
         win.show()
         code = app.exec()
     except SystemExit:

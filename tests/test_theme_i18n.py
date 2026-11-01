@@ -203,6 +203,11 @@ check("6c 抽查译文", i18n.T("插件市场") == "Marketplace"
       and i18n.T("主题:") == "Theme:" and i18n.T("加载更多 ↓") == "Load more ↓")
 i18n.set_lang("zh")
 
+# 6d 关于框：版本号不能并进被翻译的字符串，否则每次升版本英文就失配退回中文
+check("6d 关于框描述有英文词条",
+      "PySide6 轻量 ComfyUI 多实例管理器（46MB 便携包）\n\nPython 3.13 · PySide6 · MIT"
+      in EN_DICT)
+
 # -------------------------------------------------- 汇总
 ok = sum(1 for _, c, _ in RESULTS if c)
 print(f"\n{RESULTS and ok}/{len(RESULTS)} passed")
