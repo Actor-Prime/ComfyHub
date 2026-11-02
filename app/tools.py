@@ -22,6 +22,7 @@ class KernelManager:
         self.git = find_git()
         self.proxy = (proxy or "").strip()
         self.last_fetch_ok = True   # list_versions 的 fetch 成败（UI 提示用）
+        self.last_dev_ref = "HEAD"  # 开发版列表实际读取的 git ref（UI 提示用）
 
     @property
     def is_git_repo(self) -> bool:
@@ -123,6 +124,33 @@ class KernelManager:
         except Exception as e:
             return False, str(e)
 
+    def _dev_ref(self) -> str:
+        """开发版列表应读取的 git ref。
+
+        2026-11-02 修复：原来 `git log -N` 不带 ref → 读本地 HEAD 分支历史，
+        而 fetch 只更新 origin/<branch> 远端跟踪引用、不动本地分支——本地
+        master 停在旧提交时列表全是旧日期（和其他启动器「对不上」的根因）。
+        现在优先读 @{upstream}（origin/master 等），逐级降级：
+        upstream → origin/<分支> → FETCH_HEAD → 本地 HEAD（降级时 last_dev_ref
+        标注来源，UI 显示「本地缓存」）。
+        """
+        cands = [
+            ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+            ["rev-parse", "--verify", "--quiet", "origin/" + self.stable_branch()],
+            ["rev-parse", "--verify", "--quiet", "FETCH_HEAD"],
+        ]
+        for args in cands:
+            try:
+                r = run([self.git, "-C", self.path] + args,
+                        capture_output=True, text=True, timeout=30,
+                        encoding="utf-8", errors="replace")
+                ref = (r.stdout or "").strip()
+                if ref and r.returncode == 0:
+                    return ref
+            except Exception:
+                pass
+        return "HEAD"
+
     def list_versions(self, limit=50, fetch=True) -> list:
         """版本列表（tag=稳定版优先）：[{version, hash, date, kind}]
 
@@ -131,12 +159,16 @@ class KernelManager:
         现在两类各自取 limit，互不挤占。
         2026-10-29 修复：fetch 前置（原来只读本地 refs，永远看不到远端新提交，
         与绘世等启动器列表对不上的根因）；fetch 失败降级本地缓存（last_fetch_ok=False）。
+        2026-11-02 修复：开发版改读远端跟踪引用（见 _dev_ref）——fetch 成功后
+        列表即与远端一致，不再受本地分支落后影响。
         """
         if not self.is_git_repo:
             return []
         self.last_fetch_ok = True
         if fetch:
             self.last_fetch_ok = self.fetch_remote(timeout=120)
+        ref = self._dev_ref()
+        self.last_dev_ref = ref
         tags, devs = [], []
         tag_hashes = set()      # tag 对象哈希 + peel 出的 commit 哈希（开发版去重用）
         try:
@@ -161,7 +193,7 @@ class KernelManager:
             pass
         try:
             # 最近提交（开发版）；与 tag 同 hash 的提交视为已被 tag 覆盖，跳过
-            r = run([self.git, "-C", self.path, "log", f"-{limit}",
+            r = run([self.git, "-C", self.path, "log", f"-{limit}", ref,
                      "--format=%h|%cd|%s", "--date=short"],
                     capture_output=True, text=True, timeout=60,
                     encoding="utf-8", errors="replace")

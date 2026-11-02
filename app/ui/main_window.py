@@ -363,9 +363,17 @@ class MainWindow(QMainWindow):
         self.activateWindow()
 
     def _quit_from_tray(self):
-        """托盘「退出 ComfyHub」：明确要退出，不被关闭行为的「最小化」分支截胡"""
+        """托盘「退出 ComfyHub」：明确要退出，不被关闭行为的「最小化」分支截胡。
+
+        2026-11-01 用户实测：窗口收进托盘（已隐藏）后点退出没反应——
+        Qt 的 quitOnLastWindowClosed 只统计「可见」窗口，关一个隐藏窗口
+        不会触发应用退出，必须显式 quit() 事件循环。
+        close() 返回 False 表示 closeEvent 被拦截（用户在确认框点了否），此时不退。
+        """
         self._quit_direct = True
-        self.close()
+        if self.close():
+            from PySide6.QtCore import QCoreApplication
+            QCoreApplication.quit()
 
     def _hide_to_tray(self):
         """收进托盘：直接 hide()，不经「先最小化再拦截」的中转。
@@ -568,8 +576,12 @@ class MainWindow(QMainWindow):
                    if self.procs.is_running(i)]
         if running:
             names = "、".join(running)
+            # 主窗口藏在托盘（隐藏）时，挂在它上面的模态框在 Windows 上
+            # 可能不被带到前台 → 看起来"没反应"。此时改用无父窗口弹框，
+            # 让它自己成为顶层窗口（有任务栏按钮、必到前台）。
+            parent = self if self.isVisible() else None
             r = QMessageBox.question(
-                self, "⚠️ 实例正在运行",
+                parent, "⚠️ 实例正在运行",
                 f"当前有 {len(running)} 个实例正在运行：\n{names}\n\n"
                 "关闭 ComfyHub 会一并停止这些实例（未保存的生成任务将中断），"
                 "确定要关闭吗？",
