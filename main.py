@@ -42,6 +42,12 @@ from app.ui.main_window import MainWindow
 CRASH_LOG = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")),
                          "ComfyHub", "crash.log")
 
+# 已知无害的 Qt 警告片段（只过滤这些，其他一律照记，别把真问题一起盖掉）
+_QT_NOISE = (
+    "QFont::setPointSize: Point size <= 0",
+    "libpng warning: iCCP",
+)
+
 
 def _write_crash(title: str, text: str):
     """黑匣子：任何异常落盘 %APPDATA%\\ComfyHub\\crash.log"""
@@ -62,7 +68,17 @@ def _excepthook(tp, val, tb):
 
 
 def _qt_message_handler(mode, ctx, message):
-    """Qt 层警告/错误收集（含 C++ 侧 critical）"""
+    """Qt 层警告/错误收集（含 C++ 侧 critical）
+
+    已知无害噪音直接丢弃（否则每开一次程序 crash.log 就多一行，真问题会被淹没）：
+      · QFont::setPointSize: Point size <= 0 —— QSS 里 font-size 用 px，
+        Qt 内部转点值时对无尺寸字体报的怨言，模型库页首次填表时触发一次，
+        界面字号完全正常（2026-11-02 定位：Python 侧无任何 setPointSize 调用）。
+      · libpng warning: iCCP —— 部分素材 PNG 的色度块不规范，Qt 照常解码。
+    """
+    for noise in _QT_NOISE:
+        if noise in message:
+            return
     if mode >= 1:   # Warning 及以上
         _write_crash(f"QT MSG(level={mode}) {ctx.file}:{ctx.line}", message)
 

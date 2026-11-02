@@ -225,6 +225,57 @@ check("4d 托盘恢复后窗口可见且非最小化",
 win2.cfg.setdefault("settings", {})["close_behavior"] = "close"
 win2.close()
 
+# -------------------------------------------------- 5. 托盘退出真退（2026-11-01）
+# 用户实测：窗口收进托盘（隐藏态）后点「退出 ComfyHub」没反应——
+# quitOnLastWindowClosed 只统计可见窗口，关隐藏窗口不会触发应用退出。
+# 回归：_quit_from_tray 必须在 close 被接受后显式调用 QCoreApplication.quit()。
+from PySide6.QtCore import QCoreApplication
+quit_calls = []
+orig_quit = QCoreApplication.quit
+QCoreApplication.quit = staticmethod(lambda: quit_calls.append("quit"))
+
+win3 = mw_mod.MainWindow()
+win3.cfg.setdefault("settings", {})["close_behavior"] = "minimize"
+win3.show()
+pump(0.2)
+win3.close()                     # 先收进托盘 → 隐藏态
+pump(0.15)
+check("5a 预置：窗口已收托盘隐藏", win3.isHidden())
+
+quit_calls.clear()
+win3.procs.stop_all = lambda: None
+win3._quit_from_tray()           # 模拟托盘菜单「退出 ComfyHub」
+pump(0.15)
+check("5b 隐藏态托盘退出 → 显式 quit 被调用", quit_calls == ["quit"],
+      f"quit_calls={quit_calls}")
+
+# 5c 有实例运行 + 确认框选 No → closeEvent 拦截，不许 quit
+quit_calls.clear()
+win4 = mw_mod.MainWindow()
+win4.cfg.setdefault("settings", {})["close_behavior"] = "minimize"
+win4.show()
+pump(0.2)
+win4.close()
+pump(0.15)
+win4.procs.is_running = lambda i: True
+win4.cfg["instances"] = [{"id": "i1", "name": "实例A"}]
+QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.No)
+win4._quit_from_tray()
+pump(0.15)
+check("5c 实例运行确认 No → 不 quit 留在后台", quit_calls == [],
+      f"quit_calls={quit_calls}")
+# 5d 顺带验证：隐藏态下确认框父窗口应为 None（避免模态框弹不到前台）
+captured = {}
+def _cap_question(*a, **k):
+    captured["parent"] = a[0] if a else k.get("parent")
+    return QMessageBox.Yes
+QMessageBox.question = staticmethod(_cap_question)
+win4._quit_from_tray()
+pump(0.15)
+check("5d 隐藏态确认框父窗口为 None（可到前台）", captured.get("parent") is None,
+      f"parent={captured.get('parent')}")
+QCoreApplication.quit = orig_quit
+
 # -------------------------------------------------- 汇总
 fails = [r for r in RESULTS if not r[1]]
 print("=" * 50)

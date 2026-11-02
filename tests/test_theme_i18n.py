@@ -106,7 +106,9 @@ check("3h 返回替换条数", n >= 2, str(n))
 check("3i 下拉不被误译（保留取值语义）", cb.itemText(0) == "深色", cb.itemText(0))
 
 n2 = i18n.apply_language(host, "zh")
-check("3j 中文模式不替换", n2 == 0 and lb.text() == "Theme:")
+# 2026-11-02 行为变更：中文模式现在会用反向表把英文翻回中文（支持不重启切回），
+# 所以这里断言的是"英文被还原成中文"，而不是老版本的"什么都不做"。
+check("3j 中文模式反向还原英文", lb.text().startswith("主题") and btn.text() == "保存设置", lb.text())
 
 # -------------------------------------------------- 4. 设置页
 from app.ui.pages import settings_page as sp_mod
@@ -140,8 +142,10 @@ st = cfg["settings"]
 check("4h 保存主题=custom", st.get("theme") == "custom", str(st.get("theme")))
 check("4i 保存透明度=50", st.get("bg_opacity") == 50, str(st.get("bg_opacity")))
 check("4j 保存语言=en", st.get("lang") == "en", str(st.get("lang")))
-check("4k 语言改动提示重启",
-      any("重启" in str(x[1]) for x in _shown), str(_shown[-1:]))
+# 2026-11-02 行为变更：语言改为保存即生效，提示语里不再要求重启
+check("4k 语言改动立即生效（提示不含重启）",
+      any("已切换" in str(x[1]) for x in _shown)
+      and not any("重启" in str(x[1]) for x in _shown), str(_shown[-1:]))
 
 page._clear_bg()
 check("4l 清除背景图置空", page._bg_value == "")
@@ -195,7 +199,11 @@ for _p in _pathlib.Path("app/ui").rglob("*.py"):
                     and _CJK.search(_a.value) and len(_a.value) < 90):
                 _found.setdefault(_a.value, _p.name)
 
-_missing = [k for k in _found if k not in EN_DICT and k not in {"简体中文"}]
+# 2026-11-02：改查运行时合并表（i18n._EN = 首批 + i18n_en.EN_DICT），
+# 因为设置页新提示语落在首批词表里，只查 EN_DICT 会误报缺失。
+_MERGED = dict(EN_DICT)
+_MERGED.update(i18n._EN)
+_missing = [k for k in _found if k not in _MERGED and k not in {"简体中文"}]
 check("6a 可扫描文案全部有英文", not _missing, str(_missing[:3]))
 check("6b 词表规模 ≥ 300", len(EN_DICT) >= 300, str(len(EN_DICT)))
 i18n.set_lang("en")

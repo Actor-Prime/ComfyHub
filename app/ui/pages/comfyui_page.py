@@ -4,6 +4,8 @@ import os
 import time
 
 from PySide6.QtCore import Qt, QThread, Signal
+
+_KVER_PAGE = 20   # 内核版本列表一次加载行数（2026-11-02 用户定：分页 + 「加载更多」）
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
     QComboBox, QSpinBox, QCheckBox, QFileDialog, QMessageBox, QFrame,
@@ -92,7 +94,7 @@ class _KernelWorker(QThread):
         try:
             if self.action == "versions":
                 self.sig_log.emit("[内核] 正在拉取远端更新（git fetch）…")
-                versions = self.km.list_versions(50)   # 内部已前置 fetch
+                versions = self.km.list_versions(200)   # 内部已前置 fetch；UI 分页每次画 20
                 if getattr(self.km, "last_fetch_ok", True):
                     self.sig_log.emit(f"[内核] 远端已是最新，取到 {len(versions)} 个版本")
                 else:
@@ -358,6 +360,13 @@ class ComfyuiPage(QWidget):
         self.tb_kver.setSelectionBehavior(QTableWidget.SelectRows)
         # 不再设最大高度：列表向下撑满到窗口底部操作栏（2026-10-27 报障改）
         t2v.addWidget(self.tb_kver, 1)
+        # 「加载更多」（2026-11-02 用户定）：一次只画 20 行，拉到底点按钮再追加；
+        # 滚动条触底也会自动追加。无剩余时按钮隐藏。
+        self.b_kmore = QPushButton("加载更多")
+        self.b_kmore.clicked.connect(self._load_more)
+        self.b_kmore.setVisible(False)
+        t2v.addWidget(self.b_kmore)
+        self.tb_kver.verticalScrollBar().valueChanged.connect(self._on_kver_scroll)
         self.tabs.addTab(t2, "🧬 内核版本")
 
         # ---- 底部：保存 / 删除（全局）----
@@ -514,28 +523,90 @@ class ComfyuiPage(QWidget):
     def _on_versions(self, versions):
         self._all_versions = versions
         self._kver_last_refresh = time.time()   # 自动刷新节流基准
+        # 记录取数来源（2026-11-02）：列表读哪个 ref、fetch 是否成功——
+        # 显示在计数行，让用户一眼看出列表和「远端」是否真的对得上
+        km = getattr(getattr(self, "_kw", None), "km", None)
+        self._kver_ref = getattr(km, "last_dev_ref", "") or ""
+        self._kver_fetch_ok = getattr(km, "last_fetch_ok", True)
         self._filter_versions()
         self._refresh_kernel_info()
         self.lb_kver.setText(self.lb_kver.text() + f"　·　{len(versions)} 个版本")
 
-    def _filter_versions(self):
+    def _filter_versions(self, reset=True):
+        """按类型筛选渲染版本表。reset=True 重新分页（回 20 行），
+        reset=False 由「加载更多」追加（2026-11-02 分页改造）。
+        渲染期置 _kver_rendering 防重入：setRowCount 会触发滚动条信号，
+        钻进 _load_more 做嵌套渲染会让行数/文案互相覆盖（同日实测踩坑）。"""
+        if getattr(self, "_kver_rendering", False):
+            return
+        self._kver_rendering = True
+        try:
+            self._filter_versions_impl(reset)
+        finally:
+            self._kver_rendering = False
+
+    def _filter_versions_impl(self, reset):
         kind = self.cb_kkind.currentText()
         allv = getattr(self, "_all_versions", [])
         rows = [v for v in allv
                 if kind == "全部" or v["kind"] == kind]
-        self.tb_kver.setRowCount(len(rows))
-        for i, v in enumerate(rows):
+        self._kver_filtered = rows
+        if reset:
+            self._kver_shown = _KVER_PAGE
+        shown = getattr(self, "_kver_shown", _KVER_PAGE)
+        page = rows[:shown]
+        self.tb_kver.setRowCount(len(page))
+        for i, v in enumerate(page):
             self.tb_kver.setItem(i, 0, QTableWidgetItem(v["version"]))
             self.tb_kver.setItem(i, 1, QTableWidgetItem(v["date"]))
             k = QTableWidgetItem(v["kind"])
             k.setForeground(Qt.green if v["kind"] == "稳定版" else Qt.gray)
             self.tb_kver.setItem(i, 2, k)
             b = QPushButton("切换并装依赖")
-            b.clicked.connect(lambda _c=False, tag=v["version"]: self._switch_kernel(tag))
+            # 2026-11-02 修复：开发版行 version 是提交标题（不是 ref！），
+            # git checkout 会直接失败——检出用 hash，弹窗文案仍显示标题
+            ref = v["version"] if v["kind"] == "稳定版" else (v.get("hash") or v["version"])
+            b.clicked.connect(
+                lambda _c=False, v=v, ref=ref: self._switch_kernel(v["version"], ref))
             self.tb_kver.setCellWidget(i, 3, b)
-        # 计数反馈：让用户看见筛选生效（显示 X / 共 Y）
-        self.lb_kcount.setText(f"显示 {len(rows)} / 共 {len(allv)}" if allv else "")
-        self.tb_kver.verticalScrollBar().setValue(0)
+        # 「加载更多」按钮：有剩余才显示，文案带剩余条数
+        remain = len(rows) - len(page)
+        self.b_kmore.setVisible(remain > 0)
+        self.b_kmore.setText(f"加载更多（还有 {remain} 条）")
+        # 计数反馈：让用户看见筛选生效（显示 X / 共 Y）+ 列表来源（对得上远端吗）
+        if allv:
+            ref = getattr(self, "_kver_ref", "") or ""
+            ok = getattr(self, "_kver_fetch_ok", True)
+            if ref and ref != "HEAD":
+                note = (f"　·　列表：{ref}" if ok else
+                        f"　·　⚠️ 远端拉取失败，以下为 {ref} 本地缓存")
+            else:
+                note = ("　·　列表：本地 HEAD" if ok else
+                        "　·　⚠️ 远端拉取失败，以下为本地历史")
+            self.lb_kcount.setText(f"显示 {len(page)} / 共 {len(allv)}{note}")
+        else:
+            self.lb_kcount.setText("")
+        if reset:
+            self.tb_kver.verticalScrollBar().setValue(0)
+
+    def _load_more(self):
+        """再加载一页（20 行）。渲染中被信号闯入时直接让路（防重入）"""
+        if getattr(self, "_kver_rendering", False):
+            return
+        self._kver_shown = getattr(self, "_kver_shown", _KVER_PAGE) + _KVER_PAGE
+        self._filter_versions(reset=False)
+
+    def _on_kver_scroll(self, v):
+        """滚动条触底自动追加一页（2026-11-02 用户定「滚到底部就加载」）。
+        maximum<=0（内容没溢出）不触发，防止初次渲染时连环自动加载。
+        守卫用 isHidden()（自身显隐标志）而非 isVisible()——后者受父链
+        可见性影响，页面不在导航栈顶时恒 False 会把自动加载整个吞掉。"""
+        if getattr(self, "_kver_rendering", False):
+            return
+        sb = self.tb_kver.verticalScrollBar()
+        if (sb.maximum() > 0 and v >= sb.maximum()
+                and not self.b_kmore.isHidden()):
+            self._load_more()
 
     def _update_stable(self):
         inst = self.mainwin.current_inst()
@@ -557,26 +628,30 @@ class ComfyuiPage(QWidget):
         self._kw.start()
         self.lb_kver.setText("正在更新至最新稳定版…（含依赖安装，可能需要几分钟）")
 
-    def _switch_kernel(self, tag):
+    def _switch_kernel(self, label, ref=None):
+        """切换内核。label=弹窗显示名（tag 名或提交标题），ref=git 检出用 ref
+        （开发版传短 hash——提交标题不是合法 ref，2026-11-02 修复）"""
+        ref = ref or label
         inst = self.mainwin.current_inst()
-        if not inst or not tag:
+        if not inst or not label:
             return
         if self.mainwin.procs.is_running(inst):
             QMessageBox.warning(self, "内核版本", "请先停止该实例再切换内核版本")
             return
+        hint = f"（提交 {ref}）" if ref != label else ""
         ans = QMessageBox.question(
             self, "切换内核",
-            f"将把内核切换到 {tag}，并自动安装该版本要求的依赖。\n"
+            f"将把内核切换到 {label}{hint}，并自动安装该版本要求的依赖。\n"
             "当前未提交的改动会被 git stash 暂存。继续？")
         if ans != QMessageBox.Yes:
             return
         if getattr(self, "_kw", None) and self._kw.isRunning():
             return
-        self._kw = _KernelWorker(self._km(), "switch", tag, inst.get("python_path") or "")
+        self._kw = _KernelWorker(self._km(), "switch", ref, inst.get("python_path") or "")
         self._kw.sig_log.connect(self.mainwin.console_page.append_line)
         self._kw.sig_switch.connect(self._on_switched)
         self._kw.start()
-        self.lb_kver.setText(f"正在切换到 {tag} …（含依赖安装，可能需要几分钟）")
+        self.lb_kver.setText(f"正在切换到 {label} …（含依赖安装，可能需要几分钟）")
 
     def _on_switched(self, ok, msg):
         self._refresh_kernel_info()

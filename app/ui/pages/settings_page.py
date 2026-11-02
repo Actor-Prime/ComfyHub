@@ -107,7 +107,7 @@ class SettingsPage(QWidget):
         _il = self.cb_lang.findData(str(st.get("lang", "zh")))
         self.cb_lang.setCurrentIndex(_il if _il >= 0 else 0)
         f2.addRow("语言:", self.cb_lang)
-        tip_lang = QLabel("切换语言后需重启 ComfyHub 生效")
+        tip_lang = QLabel("保存后立即生效（表格行/日志等动态文案切页后对齐）")
         tip_lang.setStyleSheet("color:#888;")
         f2.addRow("", tip_lang)
 
@@ -379,8 +379,15 @@ class SettingsPage(QWidget):
                 "新路径于下次装机/修复生效；确认无误后可手动删除旧目录。")
             return
         if st.get("lang", "zh") != old_lang:
+            # 2026-11-02：改为**即时生效**。运行时翻译引擎（词表 + 控件树扫描）
+            # 本来就支持双向切换（见 app/i18n.py 的 _EN_REV），原来却让人重启一次，
+            # 用户会以为"切了没反应"。保存后立刻扫一遍整窗，顺带清掉旧语言的残留。
+            from app import i18n as _i18n
+            win = self.window()
+            n = _i18n.apply_language(win, st["lang"])
             QMessageBox.information(
                 self, "ComfyHub",
-                "设置已保存。\n\n语言切换将在重启 ComfyHub 后生效。")
+                f"设置已保存。\n\n界面语言已切换（替换 {n} 处文案）。\n"
+                "少数动态文案（表格行、运行日志）切换页面后会对齐。")
         else:
             QMessageBox.information(self, "ComfyHub", "设置已保存")
