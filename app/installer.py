@@ -254,7 +254,7 @@ class PlanExecutor:
 
     def run(self, steps: list, log=print, on_step_done=None) -> dict:
         """按序执行。返回 {done: n, total: n, failed_step: idx|None, snapshot: name}"""
-        snap = self.rescue.snapshot(log=log)   # 安装前自动快照（对标管理大师）
+        snap = self.rescue.snapshot(log=log, event="插件安装前")   # 安装前自动快照（对标管理大师）
         done, failed = 0, None
         for i, step in enumerate(steps):
             if self.stopped:

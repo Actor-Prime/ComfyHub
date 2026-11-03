@@ -72,10 +72,14 @@ check("返回时间戳", bool(ts1), str(ts1))
 check("日志报 2 个插件（修复前恒 0）", "2 个插件" in logs[-1], logs[-1])
 p1 = os.path.join(r.snap_dir, ts1 + ".json")
 check("快照文件已写", os.path.isfile(p1), p1)
-state = json.load(open(p1, encoding="utf-8")) if os.path.isfile(p1) else []
+data = json.load(open(p1, encoding="utf-8")) if os.path.isfile(p1) else {}
+# 新 dict 格式（2026-11-02 详情化）：plugins 键存状态；旧 list 直接存
+state = data["plugins"] if isinstance(data, dict) else data
 names = [s["name"] for s in state]
 check("名称剥离 .disabled 后缀", names == ["plugA", "plugB"], str(names))
 check("启停状态正确", [s["enabled"] for s in state] == [True, False], str(state))
+check("快照 dict 含 event 键", isinstance(data, dict) and "event" in data,
+      str(type(data)))
 check("跳过 __pycache__ 与非目录文件",
       "__pycache__" not in names and "notes.txt" not in names, str(names))
 
@@ -295,8 +299,13 @@ while time.time() - t0 < 3 and "线程日志OK" not in page.log.toPlainText():
     pump(0.05)
 check("工作线程 _log 安全送达", "线程日志OK" in page.log.toPlainText())
 
-# 11.4 快照按钮（同步路径）+ 列表刷新 + 选中校验
+# 11.4 快照按钮（v0.8.10 起走 _RunTask 后台线程）+ 列表刷新 + 选中校验
 page._snapshot()
+t0 = time.time()
+while time.time() - t0 < 10 and not any(
+        page.tb.item(i, 0) and page.tb.item(i, 0).text() == "快照"
+        for i in range(page.tb.rowCount())):
+    pump(0.05)
 kinds = [page.tb.item(i, 0).text() for i in range(page.tb.rowCount())]
 check("快照行已入表", "快照" in kinds, str(kinds))
 check("备份行也在表", "备份" in kinds, str(kinds))

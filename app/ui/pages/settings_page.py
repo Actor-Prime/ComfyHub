@@ -11,7 +11,7 @@ from PySide6.QtCore import Qt, Signal, QThread
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QComboBox,
     QPushButton, QGroupBox, QFormLayout, QMessageBox, QScrollArea,
-    QFileDialog, QCheckBox, QSlider,
+    QFileDialog, QCheckBox, QSlider, QSpinBox,
 )
 
 from app.config import save_config, APP_VERSION
@@ -35,6 +35,28 @@ class _AiTestWorker(QThread):
             res = {"ok": False, "models": [], "model": "", "latency_ms": 0,
                    "reply": "", "msg": "%s: %s" % (type(e).__name__, e)}
         self.sig_done.emit(res)
+
+
+def _mcp_snippets() -> tuple:
+    """生成两段 MCP 配置：①ComfyHub 自带（零依赖）②comfyui-mcp（需 node）
+    返回 (comfyhub片段, comfyui-mcp片段, 实例端口)"""
+    import sys as _sys
+    import json as _json
+    from app.config import load_config
+    from app import ai_tools
+    cfg = load_config()
+    inst = ai_tools.current_instance(cfg) or {}
+    port = int(inst.get("port") or 8188)
+    exe = os.path.abspath(_sys.argv[0])
+    a = _json.dumps({"comfyhub": {
+        "command": exe, "args": ["mcp"]}}, ensure_ascii=False, indent=2)
+    b = _json.dumps({"comfyui": {
+        "command": "node",
+        "args": ["C:/path/to/node_modules/comfyui-mcp/dist/index.js"],
+        "env": {"COMFYUI_URL": f"http://127.0.0.1:{port}",
+                "COMFYUI_CODE_PATH": inst.get("comfyui_path", "")}}},
+        ensure_ascii=False, indent=2)
+    return a, b, port
 
 
 class SettingsPage(QWidget):
@@ -208,6 +230,42 @@ class SettingsPage(QWidget):
                 "模型名，如 mimo-v2.6-pro / deepseek-chat")
         f_ai.addRow("模型名:", self.cb_ai_model)
 
+        # ---- 思考强度 / 输出上限 / 上下文（2026-11-03）----
+        # 参数名各家不同（thinking.type / enable_thinking / reasoning_effort），
+        # 由 app/ai_models.py 按模型画像翻译，这里只给三档语义
+        self.cb_ai_think = QComboBox()
+        for label, val in (("关闭（最快，推荐）", "off"),
+                           ("标准思考", "normal"),
+                           ("深度思考", "deep")):
+            self.cb_ai_think.addItem(label, val)
+        _cur_think = str(st.get("ai_think", "") or "")
+        _i = self.cb_ai_think.findData(_cur_think)
+        self.cb_ai_think.setCurrentIndex(_i if _i >= 0 else 0)
+        f_ai.addRow("思考强度:", self.cb_ai_think)
+
+        self.sp_ai_max = QSpinBox()
+        self.sp_ai_max.setRange(256, 32768)
+        self.sp_ai_max.setSingleStep(256)
+        self.sp_ai_max.setValue(int(st.get("ai_max_tokens") or 4000))
+        self.sp_ai_max.setToolTip("单次回复的最大 token。开思考时要给足，否则正文会被思考过程挤空")
+        f_ai.addRow("最大输出:", self.sp_ai_max)
+
+        self.cb_ai_ctx = QComboBox()
+        for n in (6, 12, 20, 40):
+            self.cb_ai_ctx.addItem(f"最近 {n} 条消息", n)
+        _cur_ctx = int(st.get("ai_ctx_msgs") or 12)
+        _i = self.cb_ai_ctx.findData(_cur_ctx)
+        self.cb_ai_ctx.setCurrentIndex(_i if _i >= 0 else 1)
+        self.cb_ai_ctx.setToolTip("带多少历史消息进上下文。越多越慢也越贵，但多轮对话更连贯")
+        f_ai.addRow("上下文:", self.cb_ai_ctx)
+
+        self.lb_ai_profile = QLabel("")
+        self.lb_ai_profile.setWordWrap(True)
+        self.lb_ai_profile.setStyleSheet("color:#7f8894; font-size:11px;")
+        f_ai.addRow("", self.lb_ai_profile)
+        self.cb_ai_model.currentTextChanged.connect(self._refresh_ai_profile)
+        self._refresh_ai_profile(self.cb_ai_model.currentText())
+
         self.lb_ai_state = QLabel("")
         self.lb_ai_state.setWordWrap(True)
         self.lb_ai_state.setStyleSheet("color:#888;")
@@ -219,6 +277,12 @@ class SettingsPage(QWidget):
         tip_ai.setWordWrap(True)
         tip_ai.setStyleSheet("color:#888;")
         f_ai.addRow("", tip_ai)
+
+        self.b_ai_mcp = QPushButton("外部 Agent 接入（MCP）…")
+        self.b_ai_mcp.setToolTip("生成 MCP 配置片段，让 WorkBuddy / Claude 等外部 AI 客户端"
+                                 "通过 MCP 协议操作 ComfyHub 管理的实例")
+        self.b_ai_mcp.clicked.connect(self._open_mcp_dialog)
+        f_ai.addRow("", self.b_ai_mcp)
         root.addWidget(g_ai)
 
         b_save = QPushButton("保存设置")
@@ -239,6 +303,28 @@ class SettingsPage(QWidget):
                          "Python 3.13 · PySide6 · MIT")
         lb_desc.setStyleSheet("color:#9aa4b2;")
         v3.addWidget(lb_desc)
+
+        # ---- 版本更新（2026-11-04）----
+        row_up = QHBoxLayout()
+        self.b_check_upd = QPushButton("检查更新")
+        self.b_check_upd.clicked.connect(self._check_updates)
+        row_up.addWidget(self.b_check_upd)
+        self.ck_upd_auto = QCheckBox("启动时自动检查")
+        self.ck_upd_auto.setChecked(bool(st.get("update_auto_check", True)))
+        self.ck_upd_auto.toggled.connect(self._save_update_prefs)
+        row_up.addWidget(self.ck_upd_auto)
+        self.b_upd_skip = QPushButton("清除「跳过版本」")
+        self.b_upd_skip.setVisible(bool(st.get("update_skipped_version")))
+        self.b_upd_skip.clicked.connect(self._clear_skipped_version)
+        row_up.addWidget(self.b_upd_skip)
+        row_up.addStretch(1)
+        v3.addLayout(row_up)
+
+        self.lb_upd_state = QLabel("")
+        self.lb_upd_state.setWordWrap(True)
+        self.lb_upd_state.setStyleSheet("color:#7f8894; font-size:11px;")
+        v3.addWidget(self.lb_upd_state)
+        self._refresh_update_state()
         root.addWidget(g3)
 
         scroll.setWidget(body)
@@ -307,6 +393,55 @@ class SettingsPage(QWidget):
             self.cb_close.blockSignals(False)
 
     # ---------------- AI 接口测试 ----------------
+    # ---------- 版本更新（2026-11-04）----------
+    def _refresh_update_state(self):
+        from app import updater
+        st = self.cfg.get("settings") or {}
+        parts = ["更新源：Gitee（主）→ GitHub（备用）",
+                 "运行形态：" + ("便携版" if updater.is_portable() else "安装版")]
+        ts = st.get("update_last_check")
+        if ts:
+            import time as _t
+            parts.append("上次检查：" + _t.strftime("%m-%d %H:%M", _t.localtime(float(ts))))
+        skipped = st.get("update_skipped_version")
+        if skipped:
+            parts.append(f"已跳过版本：{skipped}")
+        self.lb_upd_state.setText("　·　".join(parts))
+
+    def _save_update_prefs(self, *_):
+        st = self.cfg.setdefault("settings", {})
+        st["update_auto_check"] = bool(self.ck_upd_auto.isChecked())
+        save_config(self.cfg)
+
+    def _clear_skipped_version(self):
+        st = self.cfg.setdefault("settings", {})
+        st.pop("update_skipped_version", None)
+        save_config(self.cfg)
+        self.b_upd_skip.setVisible(False)
+        self._refresh_update_state()
+        QMessageBox.information(self, "检查更新", "已清除「跳过版本」，下次检查会重新提示。")
+
+    def _check_updates(self):
+        """转到主窗的统一检查入口（避免两套逻辑）"""
+        win = self.mainwin
+        if hasattr(win, "check_updates"):
+            win.check_updates(manual=True)
+            self._refresh_update_state()
+
+    def _refresh_ai_profile(self, model_text: str = ""):
+        """按模型名/域名识别画像，给用户一句人话说明这套参数会怎么生效"""
+        try:
+            from app import ai_models
+            prof = ai_models.detect((model_text or "").strip(),
+                                    self.ed_ai_base.text().strip())
+            think = str(self.cb_ai_think.currentData() or "off")
+            eff_max = ai_models.max_tokens_for(prof, think, self.sp_ai_max.value())
+            self.lb_ai_profile.setText(
+                "模型画像：" + ai_models.describe(prof) +
+                f"　·　当前生效：思考={think}，输出上限={eff_max}")
+        except Exception:
+            self.lb_ai_profile.setText("")
+
     def _test_ai(self):
         """测连通 + 拉模型清单 + 把选中模型绑定到下拉（2026-11-01）"""
         base = self.ed_ai_base.text().strip()
@@ -344,6 +479,51 @@ class SettingsPage(QWidget):
             self.lb_ai_state.setStyleSheet("color:#e8635a;")
             self.lb_ai_state.setText(res.get("msg") or "连接失败")
 
+    def _open_mcp_dialog(self):
+        """方案 B：外部 Agent 接入配置片段（2026-11-03）"""
+        from PySide6.QtWidgets import (QDialog, QPlainTextEdit, QGroupBox,
+                                       QApplication)
+        try:
+            a, b, port = _mcp_snippets()
+        except Exception as e:
+            QMessageBox.warning(self, "生成配置失败", f"{type(e).__name__}: {e}")
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle("外部 Agent 接入（MCP）")
+        v = QVBoxLayout(dlg)
+        lb1 = QLabel(
+            f"方式一：ComfyHub 自带 MCP 服务（推荐，零依赖）——\n"
+            f"把下面片段加进 AI 客户端的 mcp.json（当前实例端口 {port}）：")
+        lb1.setWordWrap(True)
+        v.addWidget(lb1)
+        ed1 = QPlainTextEdit(a)
+        ed1.setReadOnly(True)
+        ed1.setFixedHeight(96)
+        v.addWidget(ed1)
+        b1 = QPushButton("复制方式一")
+        b1.clicked.connect(lambda: (QApplication.clipboard().setText(a),
+                                    b1.setText("已复制")))
+        v.addWidget(b1)
+        lb2 = QLabel(
+            "方式二：comfyui-mcp（需已装 node 与 comfyui-mcp 包）——\n"
+            "把路径改成实际安装位置后加入 mcp.json：")
+        lb2.setWordWrap(True)
+        v.addWidget(lb2)
+        ed2 = QPlainTextEdit(b)
+        ed2.setReadOnly(True)
+        ed2.setFixedHeight(120)
+        v.addWidget(ed2)
+        b2 = QPushButton("复制方式二")
+        b2.clicked.connect(lambda: (QApplication.clipboard().setText(b),
+                                    b2.setText("已复制")))
+        v.addWidget(b2)
+        tip = QLabel("两种方式二选一即可。配置写好后到 AI 客户端里重新加载/信任连接器才生效。")
+        tip.setWordWrap(True)
+        tip.setStyleSheet("color:#888;")
+        v.addWidget(tip)
+        dlg.resize(560, 420)
+        dlg.exec()
+
     def _save(self):
         # 工具目录校验：非空必须是绝对路径（防手滑相对路径落到诡异位置）
         new_tools = self.ed_tools.text().strip().rstrip("\\/")
@@ -363,6 +543,9 @@ class SettingsPage(QWidget):
         st["ai_base_url"] = self.ed_ai_base.text().strip()
         st["ai_api_key"] = self.ed_ai_key.text().strip()
         st["ai_model"] = self.cb_ai_model.currentText().strip() or "deepseek-chat"
+        st["ai_think"] = str(self.cb_ai_think.currentData() or "off")
+        st["ai_max_tokens"] = int(self.sp_ai_max.value())
+        st["ai_ctx_msgs"] = int(self.cb_ai_ctx.currentData() or 12)
         # 主题与语言（2026-11-01）：主题即时重绘，语言需重启
         old_lang = str(st.get("lang", "zh"))
         st["theme"] = self.cb_theme.currentData() or "dark"

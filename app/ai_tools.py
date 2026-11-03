@@ -1,0 +1,592 @@
+# -*- coding: utf-8 -*-
+"""ai_tools.py - AI 助手工具层（2026-11-03）
+
+「AI 助手」页（方案 A）与 `ComfyHub.exe --mcp` 外挂模式（方案 B）共用的工具层。
+Python 直接调当前实例的 ComfyUI HTTP API，不经过任何中间进程。
+
+设计原则（借鉴 comfyui-mcp 的两条思想，实现全部独立）：
+  1. 单工具多动作，控制工具总数；
+  2. 破坏性操作（取消任务）做验证与降级提示。
+
+每个工具 = dict(name, desc, schema, fn)；fn(args, ctx) 返回可 JSON 序列化的 dict。
+ctx 携带 cfg / 实例信息 / 可选 UI 钩子（下载中心），保证 MCP 模式（无 Qt）同样可用。
+"""
+import json
+import os
+import time
+import urllib.request
+
+from app import model_store
+from app import workflow_scan
+from app.ui2api import build as ui2api_build, fetch_obj_info
+
+
+# ---------------------------------------------------------------- 基础设施
+class ToolCtx:
+    """工具执行上下文；MCP 模式下 mainwin=None"""
+
+    def __init__(self, cfg: dict, inst: dict, mainwin=None, log=print):
+        self.cfg = cfg or {}
+        self.inst = inst or {}
+        self.mainwin = mainwin            # GUI 模式才有：用于后台下载队列
+        self.log = log
+        self.api = f"http://127.0.0.1:{int(self.inst.get('port') or 8188)}"
+        self.comfyui_path = self.inst.get("comfyui_path") or ""
+        self.models_dir = os.path.join(self.comfyui_path, "models") if self.comfyui_path else ""
+        self.workflows_dir = (os.path.join(self.comfyui_path, "user", "default", "workflows")
+                              if self.comfyui_path else "")
+        self.output_dir = os.path.join(self.comfyui_path, "output") if self.comfyui_path else ""
+
+    def ok(self, **kw):
+        kw.setdefault("ok", True)
+        return kw
+
+    def fail(self, msg: str, **kw):
+        kw.update({"ok": False, "error": msg})
+        return kw
+
+
+class InstanceDown(RuntimeError):
+    """实例端口无人监听（WinError 10061）：工具层统一翻译成人话，别把 urlopen 栈丢给用户"""
+
+    def __init__(self, port):
+        self.port = port
+        super().__init__(f"实例未运行：端口 {port} 无监听")
+
+
+def _http(ctx: ToolCtx, path: str, data: dict = None, timeout: int = 30) -> dict:
+    """直连实例；显式空 ProxyHandler 绕系统代理（127.0.0.1 走代理会 10054）"""
+    body = json.dumps(data).encode("utf-8") if data is not None else None
+    req = urllib.request.Request(ctx.api + path, data=body, headers={
+        "Content-Type": "application/json", "User-Agent": "ComfyHub"})
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(req, timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8", "ignore"))
+    except urllib.error.URLError as e:
+        reason = getattr(e, "reason", e)
+        txt = str(reason).lower()
+        if (isinstance(reason, ConnectionRefusedError) or "10061" in txt
+                or "refused" in txt or "积极拒绝" in str(reason)):
+            raise InstanceDown(int(ctx.inst.get("port") or 8188)) from e
+        raise
+    except ConnectionRefusedError as e:
+        raise InstanceDown(int(ctx.inst.get("port") or 8188)) from e
+
+
+def _log_tail(path: str, lines: int, keyword: str = "") -> list:
+    """读文件尾部 N 行（编码容错：aki 包日志可能混多编码）"""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 512 * 1024))       # 最多回读 512KB
+            chunk = f.read().decode("utf-8", "ignore")
+    except OSError:
+        return []
+    arr = chunk.splitlines()
+    arr = arr[-lines:] if len(arr) > lines else arr
+    if keyword:
+        low = keyword.lower()
+        arr = [ln for ln in arr if low in ln.lower()]
+    return arr
+
+
+# ---------------------------------------------------------------- 工具实现
+def _t_health(args, ctx: ToolCtx):
+    stats = _http(ctx, "/system_stats", timeout=15)
+    q = _http(ctx, "/queue", timeout=15)
+    sysinfo = stats.get("system") or {}
+    dev = (stats.get("devices") or [{}])[0]
+    return ctx.ok(
+        comfyui_version=sysinfo.get("comfyui_version"),
+        python_version=sysinfo.get("python_version"),
+        pytorch_version=sysinfo.get("pytorch_version"),
+        gpu=dev.get("name"),
+        vram_free_gb=round((dev.get("vram_free") or 0) / 1024 ** 3, 2),
+        vram_total_gb=round((dev.get("vram_total") or 0) / 1024 ** 3, 2),
+        queue_running=len(q.get("queue_running") or []),
+        queue_pending=len(q.get("queue_pending") or []),
+    )
+
+
+def _t_logs(args, ctx: ToolCtx):
+    path = os.path.join(ctx.comfyui_path, "user", f"comfyui_{ctx.inst.get('port') or 8188}.log")
+    if not os.path.isfile(path):
+        return ctx.fail(f"日志文件不存在：{path}")
+    arr = _log_tail(path, int(args.get("lines") or 50), str(args.get("keyword") or ""))
+    return ctx.ok(log_file=path, lines=arr)
+
+
+def _t_queue_list(args, ctx: ToolCtx):
+    q = _http(ctx, "/queue", timeout=15)
+    running = [{"prompt_id": it[1], "number": it[0]} for it in (q.get("queue_running") or [])]
+    pending = [{"prompt_id": it[1], "number": it[0]} for it in (q.get("queue_pending") or [])]
+    return ctx.ok(running=running, pending=pending)
+
+
+def _t_queue_cancel(args, ctx: ToolCtx):
+    _http(ctx, "/interrupt", data={}, timeout=15)
+    time.sleep(1.0)
+    q = _http(ctx, "/queue", timeout=15)
+    still = len(q.get("queue_running") or [])
+    if still:
+        return ctx.ok(stopped=False,
+                      note=f"中断已发出但仍有 {still} 个任务在跑——ComfyUI 只在采样步间响应中断，"
+                           f"长步进任务需再等或重启实例")
+    return ctx.ok(stopped=True)
+
+
+def _t_models_list(args, ctx: ToolCtx):
+    """优先实例 API（能覆盖 extra_model_paths 挂载目录），失败退回文件系统扫描"""
+    try:
+        data = _http(ctx, "/models", timeout=20)
+        if isinstance(data, dict):
+            out = {k: len(v or []) for k, v in data.items() if isinstance(v, list)}
+            detail = {k: (v or [])[:20] for k, v in data.items() if isinstance(v, list)}
+            return ctx.ok(source="api", counts=out, samples=detail)
+    except Exception:
+        pass
+    root = ctx.models_dir
+    if not root or not os.path.isdir(root):
+        return ctx.fail(f"模型目录不存在：{root}")
+    out, samples = {}, {}
+    for d in sorted(os.listdir(root)):
+        p = os.path.join(root, d)
+        if os.path.isdir(p):
+            fs = [f for f in os.listdir(p) if os.path.isfile(os.path.join(p, f))]
+            if fs:
+                out[d] = len(fs)
+                samples[d] = fs[:20]
+    return ctx.ok(source="filesystem", counts=out, samples=samples,
+                  note="仅本机 models 目录，未含 extra_model_paths 挂载")
+
+
+def _t_models_search(args, ctx: ToolCtx):
+    kw = str(args.get("keyword") or "").strip()
+    if not kw:
+        return ctx.fail("keyword 不能为空")
+    res = model_store.search_models(kw, limit=int(args.get("limit") or 10))
+    items = [{"id": m["id"], "downloads": m["downloads"], "pipeline": m["pipeline"]}
+             for m in res]
+    return ctx.ok(keyword=kw, results=items, next_cursor=getattr(res, "next_cursor", None),
+                  note="用 list_repo_files 查看某仓库的权重文件")
+
+
+def _t_repo_files(args, ctx: ToolCtx):
+    rid = str(args.get("repo_id") or "").strip()
+    if not rid:
+        return ctx.fail("repo_id 不能为空")
+    files = model_store.list_weight_files(rid)
+    return ctx.ok(repo_id=rid, files=files,
+                  note="文件可直接 download_model 下载")
+
+
+def _t_model_download(args, ctx: ToolCtx):
+    rid = str(args.get("repo_id") or "").strip()
+    fp = str(args.get("file_path") or "").strip()
+    if not rid or not fp:
+        return ctx.fail("repo_id 与 file_path 必填")
+    cat = str(args.get("category") or "").strip() or model_store.guess_category(fp)
+    dest = os.path.join(ctx.models_dir, cat) if ctx.models_dir else ""
+    if not dest:
+        return ctx.fail("实例未配置 comfyui_path")
+    os.makedirs(dest, exist_ok=True)
+    if ctx.mainwin is not None:
+        dl = getattr(getattr(ctx.mainwin, "models_page", None), "dl_center", None)
+        if dl is not None:
+            dl.enqueue([(rid, fp, dest)])
+            return ctx.ok(queued=True, dest=dest,
+                          note="已加入下载中心后台队列（右上角 ⬇ 可看进度），稍后用 get_health/文件确认")
+    model_store.download_file(rid, fp, dest, log=ctx.log)
+    return ctx.ok(queued=False, dest=os.path.join(dest, os.path.basename(fp)),
+                  note="同步下载完成")
+
+
+def _t_workflows_list(args, ctx: ToolCtx):
+    d = ctx.workflows_dir
+    if not d or not os.path.isdir(d):
+        return ctx.fail(f"工作流目录不存在：{d}")
+    out = []
+    for fn in os.listdir(d):
+        p = os.path.join(d, fn)
+        if fn.lower().endswith(".json") and os.path.isfile(p):
+            out.append({"name": fn, "size_kb": round(os.path.getsize(p) / 1024, 1),
+                        "mtime": time.strftime("%Y-%m-%d %H:%M", time.localtime(os.path.getmtime(p)))})
+    out.sort(key=lambda x: x["mtime"], reverse=True)
+    return ctx.ok(directory=d, workflows=out[:30], total=len(out))
+
+
+def _t_workflow_check(args, ctx: ToolCtx):
+    name = str(args.get("name") or "").strip()
+    path = os.path.join(ctx.workflows_dir, name) if ctx.workflows_dir else ""
+    if not name or not os.path.isfile(path):
+        return ctx.fail(f"工作流不存在：{name}（用 list_workflows 查列表）")
+    r = workflow_scan.analyze_workflow(ctx.comfyui_path, path, log=ctx.log)
+    return ctx.ok(
+        name=name,
+        kernel_version=r.get("kernel_ver"),
+        node_types=r.get("class_types"),
+        required_plugins=r.get("required"),
+        missing_or_unknown=r.get("missing"),
+        models_needed=r.get("models"),
+    )
+
+
+def _t_workflow_run(args, ctx: ToolCtx):
+    name = str(args.get("name") or "").strip()
+    path = os.path.join(ctx.workflows_dir, name) if ctx.workflows_dir else ""
+    if not name or not os.path.isfile(path):
+        return ctx.fail(f"工作流不存在：{name}（用 list_workflows 查列表）")
+    with open(path, encoding="utf-8") as f:
+        wf = json.load(f)
+    if isinstance(wf.get("nodes"), list):          # UI 格式 → 转 API
+        obj = fetch_obj_info(ctx.api)
+        prompt, warns = ui2api_build(wf, obj)
+    elif isinstance(wf, dict) and any(isinstance(v, dict) and "class_type" in v
+                                      for v in wf.values()):
+        prompt, warns = wf, ["API 格式，直接提交"]   # 已是 API 格式
+    else:
+        return ctx.fail("工作流格式无法识别（既无 nodes 数组，也无 class_type）")
+    body = {"prompt": prompt, "client_id": "comfyhub-ai"}
+    r = _http(ctx, "/prompt", data=body, timeout=60)
+    return ctx.ok(prompt_id=r.get("prompt_id"), queue_number=r.get("number"),
+                  node_errors=r.get("node_errors") or {},
+                  warnings=warns,
+                  note="用 get_job 查询进度与出图结果")
+
+
+def _t_job_status(args, ctx: ToolCtx):
+    pid = str(args.get("prompt_id") or "").strip()
+    if not pid:
+        return ctx.fail("prompt_id 必填")
+    try:
+        h = _http(ctx, f"/history/{pid}", timeout=15)
+    except Exception as e:
+        return ctx.fail(f"查询失败：{e}")
+    entry = (h or {}).get(pid)
+    if not entry:
+        q = _http(ctx, "/queue", timeout=15)
+        running = [it[1] for it in (q.get("queue_running") or [])]
+        pending = [it[1] for it in (q.get("queue_pending") or [])]
+        if pid in running:
+            return ctx.ok(state="running")
+        if pid in pending:
+            return ctx.ok(state="pending")
+        return ctx.ok(state="not_found",
+                      note="历史与队列都没有它（实例重启会清空历史）")
+    st = entry.get("status") or {}
+    imgs = []
+    for o in (entry.get("outputs") or {}).values():
+        for im in o.get("images", []):
+            sub = (im.get("subfolder") or "").replace("\\", "/").strip("/")
+            imgs.append(os.path.join(ctx.output_dir, sub, im.get("filename", "")))
+    err = ""
+    for m in st.get("messages", []):
+        if m[0] == "execution_error":
+            d = m[1]
+            err = f"{d.get('node_type')}#{d.get('node_id')}: {d.get('exception_message', '')[:300]}"
+    return ctx.ok(state=st.get("status_str"), images=imgs, error=err)
+
+
+
+# ---------------------------------------------------------------- 工作流编辑（AI 出图闭环）
+TEXT_NODE_HINTS = ("textencode", "cliptextencode", "t5", "prompt")
+LATENT_NODE_HINTS = ("emptylatent", "emptysd3latent", "emptysdxllatent", "imageparams")
+SAMPLER_HINTS = ("ksampler", "sampler")
+
+
+def _wf_path(ctx, name):
+    name = str(name or "").strip()
+    if not name:
+        raise ValueError("工作流名不能为空")
+    if not name.lower().endswith(".json"):
+        name += ".json"
+    p = os.path.join(ctx.workflows_dir, os.path.basename(name))
+    if not os.path.isfile(p):
+        raise FileNotFoundError(f"工作流不存在：{name}")
+    return p
+
+
+def _iter_nodes(wf):
+    """遍历 (key, node)：顶层 key=节点id；子图 key='sg:<子图id>:<节点id>'"""
+    for n in wf.get("nodes") or []:
+        yield str(n.get("id")), n
+    for sg in (wf.get("definitions") or {}).get("subgraphs") or []:
+        for n in sg.get("nodes") or []:
+            yield f"sg:{sg.get('id')}:{n.get('id')}", n
+
+
+def _node_hint(ntype: str) -> str:
+    t = (ntype or "").lower()
+    if any(k in t for k in LATENT_NODE_HINTS):
+        return "画布尺寸"
+    if any(k in t for k in SAMPLER_HINTS):
+        return "采样器"
+    if any(k in t for k in TEXT_NODE_HINTS):
+        return "提示词"
+    if "loader" in t or "load" in t:
+        return "模型加载"
+    return ""
+
+
+def _t_inspect_workflow(args, ctx: ToolCtx):
+    """给 AI 看工作流结构：哪些节点能改、当前值是什么"""
+    path = _wf_path(ctx, args.get("name"))
+    with open(path, encoding="utf-8") as f:
+        wf = json.load(f)
+    nodes = []
+    for key, n in _iter_nodes(wf):
+        wv = n.get("widgets_values")
+        vals = []
+        if isinstance(wv, list):
+            vals = [(str(v)[:120] + "…") if isinstance(v, str) and len(str(v)) > 120 else v
+                    for v in wv]
+        nodes.append({"key": key, "type": n.get("type"),
+                      "title": n.get("title") or "", "hint": _node_hint(n.get("type")),
+                      "widgets": vals})
+    has_sub = bool((wf.get("definitions") or {}).get("subgraphs"))
+    return ctx.ok(
+        name=os.path.basename(path), node_count=len(nodes), nodes=nodes,
+        note=("节点 key 直接用于 patch_workflow 的 ops[].node；widgets 顺序即 index。"
+              + (" 该工作流含子图，子图节点的 key 形如 sg:<子图id>:<节点id>。" if has_sub else "")),
+    )
+
+
+def _widget_index(obj_info, ntype, field):
+    """按字段名找 widget 序号（object_info 的 required/optional 顺序）"""
+    info = obj_info.get(ntype) or {}
+    idx = 0
+    for sec in ("required", "optional"):
+        for k, spec in (info.get("input", {}).get(sec) or {}).items():
+            if not isinstance(spec, list) or not spec:
+                continue
+            t = spec[0]
+            is_w = isinstance(t, list) or (isinstance(t, str)
+                                           and (t in ("INT", "FLOAT", "STRING", "BOOLEAN")
+                                                or t == "COMBO"))
+            if not is_w:
+                continue
+            if k == field:
+                return idx
+            idx += 1
+            if k == "seed" or (len(spec) > 1 and isinstance(spec[1], dict)
+                               and spec[1].get("control_after_generate")):
+                idx += 1        # control_after_generate 占一个槽
+    return None
+
+
+def _t_patch_workflow(args, ctx: ToolCtx):
+    """改工作流副本（绝不覆盖原文件）：ops=[{node, index|field, value}]"""
+    src_path = _wf_path(ctx, args.get("name"))
+    ops = args.get("ops") or []
+    if not ops:
+        return ctx.fail("ops 不能为空：[{node, index|field, value}]")
+    with open(src_path, encoding="utf-8") as f:
+        wf = json.load(f)
+    index = {k: n for k, n in _iter_nodes(wf)}
+    obj = None
+    applied, failed = [], []
+    for op in ops:
+        key = str(op.get("node") or "")
+        node = index.get(key)
+        if node is None:
+            failed.append(f"节点 {key} 不存在")
+            continue
+        wv = node.setdefault("widgets_values", [])
+        if not isinstance(wv, list):
+            wv = []
+            node["widgets_values"] = wv
+        idx = op.get("index")
+        if idx is None and op.get("field"):
+            if obj is None:
+                obj = fetch_obj_info(ctx.api)
+            idx = _widget_index(obj, node.get("type"), str(op["field"]))
+            if idx is None:
+                failed.append(f"节点 {key} 找不到字段 {op.get('field')}")
+                continue
+        idx = int(idx or 0)
+        while len(wv) <= idx:
+            wv.append("")
+        wv[idx] = op.get("value")
+        applied.append(f"{key}.#{idx}={str(op.get('value'))[:40]}")
+    if not applied:
+        return ctx.fail("没有任何改动生效：" + "；".join(failed))
+    stem = os.path.splitext(os.path.basename(src_path))[0]
+    out_name = stem + "_ai.json"
+    out_path = os.path.join(ctx.workflows_dir, out_name)
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(wf, f, ensure_ascii=False, indent=2)
+    return ctx.ok(name=out_name, applied=applied, failed=failed,
+                  note="改的是副本，原工作流未被修改；用 run_workflow 跑这个新名字")
+
+
+def _t_import_workflow(args, ctx: ToolCtx):
+    """把用户粘贴的 JSON 存成工作流（支持 UI 格式与 API 格式）"""
+    raw = args.get("json_text") or ""
+    name = str(args.get("name") or "").strip()
+    if not raw.strip():
+        return ctx.fail("json_text 不能为空")
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        return ctx.fail(f"JSON 解析失败：{e}")
+    if not isinstance(data, dict):
+        return ctx.fail("JSON 必须是对象")
+    if isinstance(data.get("nodes"), list):
+        fmt = "ui"
+    elif any(isinstance(v, dict) and "class_type" in v for v in data.values()):
+        fmt = "api"
+    else:
+        return ctx.fail("无法识别的格式：既不是 ComfyUI UI 工作流（含 nodes 数组），"
+                        "也不是 API 格式（含 class_type）")
+    if not name:
+        name = "导入工作流"
+    name = "".join(c for c in name if c not in '\\/:*?"<>|').strip() or "导入工作流"
+    if not name.lower().endswith(".json"):
+        name += ".json"
+    path = os.path.join(ctx.workflows_dir, name)
+    os.makedirs(ctx.workflows_dir, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    return ctx.ok(name=name, format=fmt, path=path,
+                  note="API 格式可直接由 run_workflow 提交（内部会识别），UI 格式会先转换")
+
+
+def _t_wait_job(args, ctx: ToolCtx):
+    """等任务跑完（轮询），返回出图绝对路径。省得模型反复自己查。"""
+    pid = str(args.get("prompt_id") or "").strip()
+    if not pid:
+        return ctx.fail("prompt_id 必填")
+    limit = max(10, min(1800, int(args.get("timeout_s") or 300)))
+    t0 = time.time()
+    while time.time() - t0 < limit:
+        try:
+            h = _http(ctx, f"/history/{pid}", timeout=15)
+        except InstanceDown:
+            raise
+        except Exception:
+            h = {}
+        entry = (h or {}).get(pid)
+        if entry:
+            st = entry.get("status") or {}
+            imgs = []
+            for o in (entry.get("outputs") or {}).values():
+                for im in o.get("images", []):
+                    sub = (im.get("subfolder") or "").replace("\\", "/").strip("/")
+                    imgs.append(os.path.join(ctx.output_dir, sub, im.get("filename", "")))
+            err = ""
+            for m in st.get("messages", []):
+                if m[0] == "execution_error":
+                    d = m[1]
+                    err = f"{d.get('node_type')}#{d.get('node_id')}: " \
+                          f"{str(d.get('exception_message'))[:300]}"
+            return ctx.ok(state=st.get("status_str"), images=imgs, error=err,
+                          elapsed_s=round(time.time() - t0, 1))
+        time.sleep(2)
+    return ctx.ok(state="timeout", images=[],
+                  note=f"等了 {limit}s 还没完成，可用 get_job 再查")
+
+
+TOOLS = [
+    {"name": "get_health", "desc": "实例体检：ComfyUI/torch 版本、GPU 与显存、队列深度。排查或派任务前先调这个。",
+     "schema": {"type": "object", "properties": {}, "required": []}, "fn": _t_health},
+    {"name": "get_logs", "desc": "读实例日志尾部（可按关键词过滤）。报错时用它找 traceback。",
+     "schema": {"type": "object", "properties": {
+         "lines": {"type": "integer", "description": "尾部行数，默认 50"},
+         "keyword": {"type": "string", "description": "只保留含该关键词的行"}}, "required": []},
+     "fn": _t_logs},
+    {"name": "queue_list", "desc": "查看当前队列：正在跑与排队的任务 prompt_id。",
+     "schema": {"type": "object", "properties": {}, "required": []}, "fn": _t_queue_list},
+    {"name": "queue_cancel", "desc": "中断当前正在执行的任务。",
+     "schema": {"type": "object", "properties": {}, "required": []}, "fn": _t_queue_cancel},
+    {"name": "list_models", "desc": "列出实例已装的模型（按分类计数与样例）。",
+     "schema": {"type": "object", "properties": {}, "required": []}, "fn": _t_models_list},
+    {"name": "search_models", "desc": "在 HuggingFace（hf-mirror 镜像）搜索模型仓库。",
+     "schema": {"type": "object", "properties": {
+         "keyword": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["keyword"]},
+     "fn": _t_models_search},
+    {"name": "list_repo_files", "desc": "列出某模型仓库里的权重文件（配合 download_model）。",
+     "schema": {"type": "object", "properties": {
+         "repo_id": {"type": "string", "description": "如 Comfy-Org/Qwen-Image-2.1"}},
+         "required": ["repo_id"]}, "fn": _t_repo_files},
+    {"name": "download_model", "desc": "下载模型文件到实例模型目录（大文件走下载中心后台队列）。",
+     "schema": {"type": "object", "properties": {
+         "repo_id": {"type": "string"}, "file_path": {"type": "string"},
+         "category": {"type": "string", "description": "checkpoints/loras/vae 等，缺省自动猜测"}},
+         "required": ["repo_id", "file_path"]}, "fn": _t_model_download},
+    {"name": "list_workflows", "desc": "列出实例工作流目录里的工作流文件。",
+     "schema": {"type": "object", "properties": {}, "required": []}, "fn": _t_workflows_list},
+    {"name": "check_workflow", "desc": "静态体检某工作流：节点注册、插件依赖、所需模型清单（不执行）。",
+     "schema": {"type": "object", "properties": {
+         "name": {"type": "string", "description": "list_workflows 里的文件名"}}, "required": ["name"]},
+     "fn": _t_workflow_check},
+    {"name": "run_workflow", "desc": "把工作流提交到实例执行（自动转 API 格式），返回 prompt_id。",
+     "schema": {"type": "object", "properties": {
+         "name": {"type": "string"}}, "required": ["name"]}, "fn": _t_workflow_run},
+    {"name": "inspect_workflow", "desc": "读取工作流结构：每个节点的 key、类型、widgets 当前值。"
+                                        "改提示词/尺寸前先用它确认改哪个节点。",
+     "schema": {"type": "object", "properties": {
+         "name": {"type": "string"}}, "required": ["name"]}, "fn": _t_inspect_workflow},
+    {"name": "patch_workflow", "desc": "修改工作流副本（不覆盖原文件），返回新文件名 _ai.json。"
+                                      "ops 示例：[{\"node\":\"34\",\"index\":0,\"value\":\"新提示词\"}]，"
+                                      "也可用 field 指定字段名（如 width/height/seed/steps）。",
+     "schema": {"type": "object", "properties": {
+         "name": {"type": "string"},
+         "ops": {"type": "array", "items": {"type": "object",
+                                            "properties": {"node": {"type": "string"},
+                                                           "index": {"type": "integer"},
+                                                           "field": {"type": "string"},
+                                                           "value": {}},
+                                            "required": ["node", "value"]}}},
+         "required": ["name", "ops"]}, "fn": _t_patch_workflow},
+    {"name": "import_workflow", "desc": "把用户给的 JSON 保存成工作流（自动识别 UI 格式/API 格式）。",
+     "schema": {"type": "object", "properties": {
+         "json_text": {"type": "string"}, "name": {"type": "string"}},
+         "required": ["json_text"]}, "fn": _t_import_workflow},
+    {"name": "wait_job", "desc": "等任务跑完并返回出图绝对路径（内部轮询，别自己反复 get_job）。",
+     "schema": {"type": "object", "properties": {
+         "prompt_id": {"type": "string"}, "timeout_s": {"type": "integer"}},
+         "required": ["prompt_id"]}, "fn": _t_wait_job},
+    {"name": "get_job", "desc": "按 prompt_id 查任务状态：排队/执行中/完成/报错，完成时给出成图绝对路径。",
+     "schema": {"type": "object", "properties": {
+         "prompt_id": {"type": "string"}}, "required": ["prompt_id"]}, "fn": _t_job_status},
+]
+
+
+def build_ctx(cfg: dict, inst: dict, mainwin=None, log=print) -> ToolCtx:
+    return ToolCtx(cfg, inst, mainwin=mainwin, log=log)
+
+
+def schemas() -> list:
+    """OpenAI function-calling 格式的 tools 参数"""
+    return [{"type": "function", "function": {
+        "name": t["name"], "description": t["desc"], "parameters": t["schema"]}}
+        for t in TOOLS]
+
+
+def execute(name: str, args: dict, ctx: ToolCtx) -> dict:
+    for t in TOOLS:
+        if t["name"] == name:
+            try:
+                return t["fn"](args or {}, ctx)
+            except InstanceDown as e:
+                return {"ok": False, "code": "instance_down",
+                        "error": f"实例未运行：端口 {e.port} 无监听（连接被拒绝）",
+                        "hint": "请先在 ComfyHub「工作台」点「启动」把实例跑起来，然后让我重试"}
+            except Exception as e:
+                return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    return {"ok": False, "error": f"未知工具：{name}"}
+
+
+def current_instance(cfg: dict) -> dict:
+    """取当前实例：last_instance_id → 第一个"""
+    insts = cfg.get("instances") or []
+    if not insts:
+        return {}
+    last = (cfg.get("last_instance_id")
+            or (cfg.get("settings") or {}).get("last_instance_id"))
+    for i in insts:
+        if i.get("id") == last:
+            return i
+    return insts[0]

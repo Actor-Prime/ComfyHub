@@ -12,7 +12,7 @@ Unicode true
 ; ---------- 基本信息 ----------
 !define APP_NAME       "ComfyHub"
 !define APP_NAME_CN    "ComfyHub 多实例管理器"
-!define APP_VERSION    "0.8.09"
+!define APP_VERSION    "0.8.10"
 !define APP_PUBLISHER  "LeiMengStudio"
 !define APP_URL        "https://gitee.com/yzdydwdd/ComfyHub"
 !define APP_EXE        "ComfyHub.exe"
@@ -81,6 +81,14 @@ VIAddVersionKey "LegalCopyright"  "MIT License"
 
 ; ---------- onInit：读回安装路径 + 处理运行中的实例 ----------
 Var RunLabelChecked
+
+; ---- silent install (/S): launch the new version after success ----
+; Interactive install uses MUI_FINISHPAGE_RUN; silent mode has no finish page.
+Function .onInstSuccess
+    ${If} ${Silent}
+        Exec '"$INSTDIR\${APP_EXE}"'
+    ${EndIf}
+FunctionEnd
 
 Function .onInit
     ReadRegStr $0 HKCU "Software\${APP_NAME}" "InstallDir"

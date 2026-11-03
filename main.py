@@ -14,11 +14,19 @@ import traceback
 os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
 
 # ★ CLI 模式必须在导入 PySide6 之前判断，避免无谓加载 Qt
-_CLI_CMDS = {"list", "start", "stop", "status", "info", "logs", "batch", "-h", "--help"}
+_CLI_CMDS = {"list", "start", "stop", "status", "info", "logs", "batch", "mcp", "-h", "--help"}
 
 
 def _maybe_cli() -> int | None:
     """若首个参数是 CLI 子命令 → 走命令行，返回退出码；否则返回 None 表示进 GUI"""
+    if len(sys.argv) > 1 and sys.argv[1] == "mcp":
+        # 方案 B（2026-11-03）：外挂 MCP server 模式，暴露 AI 助手工具层给外部 Agent
+        try:
+            from app.mcp_server import main as mcp_main
+            return mcp_main()
+        except Exception as e:
+            print(f"MCP 模式执行失败: {e}", file=sys.stderr)
+            return 1
     if len(sys.argv) > 1 and sys.argv[1] in _CLI_CMDS:
         try:
             from app.cli import main as cli_main
