@@ -285,19 +285,46 @@ def _stop_instances(log=print) -> None:
 
 
 def apply_installer(setup_path: str, log=print) -> dict:
-    """静默安装并让主程序退出（安装器自己会 taskkill 残留进程）。
-    注意：以分离方式启动（cmd start），我们随后立即退出，不等待子进程。"""
+    """静默安装：先派一个等待脚本，等本进程真正退出后再跑安装器。
+
+    为什么不直接启动安装器（2026-11-04 实测事故）：本进程还在跑 → ComfyHub.exe 被占用
+    → 安装器覆盖失败 → 装成"新 _internal + 旧 exe"的半破状态，版本号还是旧的。
+    等自己退出后再装，文件必然全部空闲。
+    """
     if not os.path.isfile(setup_path):
         return {"ok": False, "error": f"安装包不存在：{setup_path}"}
     sig = verify_signature(setup_path)
     if not sig.get("ok"):
         return {"ok": False, "error": sig.get("error") or "签名校验失败"}
     _stop_instances(log)
+    work = tempfile.mkdtemp(prefix="comfyhub_inst_", dir=updates_dir())
+    cmd_path = os.path.join(work, "run_installer.cmd")
+    log_path = os.path.join(updates_dir(), "update.log")
+    script = f"""@echo off
+chcp 65001 >nul
+set "PID={os.getpid()}"
+set "SETUP={setup_path}"
+set "LOG={log_path}"
+echo [%date% %time%] 等待主进程退出 >> "%LOG%"
+:waitloop
+tasklist /FI "PID eq %PID%" 2>nul | findstr /C:"%PID%" >nul
+if not errorlevel 1 (
+    timeout /t 1 /nobreak >nul
+    goto waitloop
+)
+echo [%date% %time%] 启动静默安装 >> "%LOG%"
+start "" "%SETUP%" /S
+timeout /t 3 /nobreak >nul
+del /f /q "%~f0" >nul 2>&1
+"""
     try:
-        subprocess.Popen(f'cmd /c start "" "{setup_path}" /S', shell=True)
+        with open(cmd_path, "w", encoding="utf-8", newline="\r\n") as f:
+            f.write(script)
+        subprocess.Popen(["cmd", "/c", "start", "", "/min", cmd_path], shell=False)
     except Exception as e:
-        return {"ok": False, "error": f"启动安装器失败：{e}"}
-    return {"ok": True, "launched": True, "warning": sig.get("detail")}
+        return {"ok": False, "error": f"启动更新脚本失败：{e}"}
+    return {"ok": True, "launched": True, "script": cmd_path,
+            "warning": sig.get("detail")}
 
 
 def make_portable_updater(zip_path: str, log=print) -> dict:

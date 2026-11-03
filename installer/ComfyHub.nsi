@@ -12,7 +12,7 @@ Unicode true
 ; ---------- 基本信息 ----------
 !define APP_NAME       "ComfyHub"
 !define APP_NAME_CN    "ComfyHub 多实例管理器"
-!define APP_VERSION    "0.8.10"
+!define APP_VERSION    "0.8.11"
 !define APP_PUBLISHER  "LeiMengStudio"
 !define APP_URL        "https://gitee.com/yzdydwdd/ComfyHub"
 !define APP_EXE        "ComfyHub.exe"
@@ -96,24 +96,32 @@ Function .onInit
         StrCpy $INSTDIR $0
     ${EndIf}
 
-    ; 用 CSV 输出判断进程：前 13 字符是否为 "ComfyHub.exe"
-    ; （不比较 tasklist 的提示语，那会随系统语言变化而误判）
-    nsExec::ExecToStack 'tasklist /FI "IMAGENAME eq ${APP_EXE}" /NH /FO CSV'
-    Pop $0
-    Pop $1
-    StrCpy $2 $1 13
-    ${If} $2 == '"${APP_EXE}"'
-        IfSilent silentKill 0
-        MessageBox MB_YESNO|MB_ICONQUESTION \
-            "${APP_NAME} 正在运行。安装前需要先关闭它。$\r$\n$\r$\n现在自动结束它并继续？" \
-            IDYES silentKill IDNO abortInstall
-        abortInstall:
-            Abort
-        silentKill:
-            nsExec::ExecToStack 'taskkill /IM ${APP_EXE} /F'
-            Pop $0
-            Pop $1
-            Sleep 1500
+    ; 静默安装（自动更新）一律先结束运行中的进程，不依赖 tasklist 输出解析。
+    ; 2026-11-04 实测事故：旧实现 StrCpy 取 13 字符，而 '"ComfyHub.exe"' 是 14 字符，
+    ; 比较永远不成立 → 进程没被杀 → 覆盖 ComfyHub.exe 失败 →
+    ; 装成"新 _internal + 旧 exe"的半破状态（升级完版本号还是旧的）。
+    ${If} ${Silent}
+        nsExec::ExecToStack 'taskkill /IM ${APP_EXE} /F'
+        Pop $0
+        Pop $1
+        Sleep 2000
+    ${Else}
+        nsExec::ExecToStack 'tasklist /FI "IMAGENAME eq ${APP_EXE}" /NH /FO CSV'
+        Pop $0
+        Pop $1
+        StrCpy $2 $1 14
+        ${If} $2 == '"${APP_EXE}"'
+            MessageBox MB_YESNO|MB_ICONQUESTION \
+                "${APP_NAME} 正在运行。安装前需要先关闭它。$\r$\n$\r$\n现在自动结束它并继续？" \
+                IDYES askKill IDNO abortInstall
+            abortInstall:
+                Abort
+            askKill:
+                nsExec::ExecToStack 'taskkill /IM ${APP_EXE} /F'
+                Pop $0
+                Pop $1
+                Sleep 2000
+        ${EndIf}
     ${EndIf}
 FunctionEnd
 
