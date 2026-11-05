@@ -602,6 +602,24 @@ EN_DICT = {
     "PySide6 轻量 ComfyUI 多实例管理器（46MB 便携包）\n\nPython 3.13 · PySide6 · MIT":
         "PySide6 lightweight ComfyUI multi-instance manager (46MB portable build)\n\n"
         "Python 3.13 · PySide6 · MIT",
+    "Gitee 仓库": "Gitee repository",
+    "GitHub 仓库": "GitHub repository",
+    # 更新横幅（0.8.11 漏词表，2026-11-05 补）
+    "立即更新": "Update now",
+    "跳过此版本": "Skip this version",
+    "更新 ComfyHub": "Update ComfyHub",
+    "正在取消…": "Cancelling…",
+    "更新失败": "Update failed",
+    "未知错误": "Unknown error",
+    "新版本已就绪": "New version ready",
+    "程序即将关闭，更新脚本会自动覆盖文件并重新启动。":
+        "The app will close shortly; the update script will replace files and relaunch it.",
+    "安装程序已启动": "Installer launched",
+    "ComfyHub 即将关闭，安装完成后会自动重新打开。":
+        "ComfyHub will close now and reopen automatically after installation.",
+    "即将重启完成更新": "Restarting to finish the update",
+    "（该版本没有填写说明）": "(No release notes for this version)",
+    "便携": "Portable",
 
     # ================= 首页系统卡拼装词 =================
     "内存": "Memory",
@@ -616,6 +634,40 @@ EN_DICT = {
     "未检测到": "not detected",
     "可用": "free",
     "共": "of",
+
+    # ================= 0.8.11 存量补译（2026-11-05，i18n 静态扫描查出 20 条）=================
+    "上下文:": "Context:",
+    "思考强度:": "Thinking effort:",
+    "最大输出:": "Max output:",
+    "单次回复的最大 token。开思考时要给足，否则正文会被思考过程挤空":
+        "Max tokens per reply. Leave enough headroom when thinking is on, "
+        "otherwise the visible answer gets squeezed out.",
+    "带多少历史消息进上下文。越多越慢也越贵，但多轮对话更连贯":
+        "How many past messages go into the context. More = slower and pricier, "
+        "but follow-ups stay coherent.",
+    "两种方式二选一即可。配置写好后到 AI 客户端里重新加载/信任连接器才生效。":
+        "Pick either method — no need for both. After saving, reload/trust the "
+        "connector in your AI client for it to take effect.",
+    "外部 Agent 接入（MCP）": "External agent access (MCP)",
+    "方式二：comfyui-mcp（需已装 node 与 comfyui-mcp 包）——\n把路径改成实际安装位置后加入 mcp.json：":
+        "Option 2: comfyui-mcp (requires node and the comfyui-mcp package) —\n"
+        "point the paths at your actual install location, then add to mcp.json:",
+    "生成 MCP 配置片段，让 WorkBuddy / Claude 等外部 AI 客户端通过 MCP 协议操作 ComfyHub 管理的实例":
+        "Generate an MCP config snippet so external AI clients (WorkBuddy / Claude, etc.) "
+        "can drive ComfyHub-managed instances over the MCP protocol",
+    "检查更新": "Check for updates",
+    "启动时自动检查": "Check on startup",
+    "清除「跳过版本」": "Clear skipped version",
+    "加载更多": "Load more",
+    "复制": "Copy",
+    "重跑": "Re-run",
+    "未选择实例": "No instance selected",
+    "移除这个附件": "Remove this attachment",
+    "点右下 ✕ 或直接点这张卡片即可移除附件":
+        "Click the ✕ at the lower right, or click the card itself, to remove the attachment",
+    "问点什么…（回车发送，Shift+回车换行；可直接粘贴图片或工作流 JSON）":
+        "Ask anything… (Enter sends, Shift+Enter adds a line; paste images or workflow JSON directly)",
+    "思考中… 0.0s": "Thinking… 0.0s",
 
     # ================= 其余表头 =================
     "版本": "Version",
@@ -645,4 +697,50 @@ EN_DICT = {
     # ================= 实例前缀拼装 =================
     "（未选择）": "(none selected)",
     "检测完成": "check finished",
+
+    # ================= 反馈与诊断（2026-11-06 方案A）=================
+    "反馈与诊断…": "Feedback & diagnostics…",
+    "反馈与诊断": "Feedback & diagnostics",
+    "诊断文本在本机生成并已脱敏（路径与密钥已隐藏，不含机器名/IP）。\n"
+    "可直接编辑，然后复制或保存发给开发者；不会自动上传任何内容。":
+        "This report is generated locally and sanitized (paths & secrets hidden, "
+        "no hostname/IP).\nEdit freely, then copy or save and send it to the "
+        "developer yourself. Nothing is uploaded automatically.",
+    "重新生成": "Regenerate",
+    "复制到剪贴板": "Copy to clipboard",
+    "保存为文件…": "Save as file…",
+    "提交到 Gitee Issues": "Open Gitee Issues",
+    "已复制到剪贴板，可直接粘贴到 Issues / 群聊 / 邮件":
+        "Copied. Paste it into Issues / group chat / email",
+    "已复制诊断文本，请在打开的页面粘贴（Ctrl+V）并提交":
+        "Report copied. Paste (Ctrl+V) into the opened page and submit",
+    "保存诊断文件": "Save diagnostics file",
+    "保存失败": "Save failed",
+
+    # ---- 匿名提交（2026-11-06 云函数中转）----
+    "诊断文本在本机生成并已脱敏（路径与密钥已隐藏，不含机器名/IP）。\n"
+    "可直接编辑；只有点「匿名提交」才会发送，其余操作都不联网。":
+        "This report is generated locally and sanitized (paths & secrets hidden, "
+        "no hostname/IP).\nEdit freely — it is sent only when you click Submit; "
+        "nothing else goes online.",
+    "邮箱 / QQ（选填，方便回访，可留空完全匿名）":
+        "Email / QQ (optional, for follow-up; leave blank to stay anonymous)",
+    "匿名提交": "Submit anonymously",
+    "直接发送给开发者，无需登录；失败会自动保存到文件":
+        "Send straight to the developer, no login needed. On failure it is saved to a file.",
+    "内容太短，请补充问题描述后再提交":
+        "Too short — please describe the problem before submitting",
+    "提交中…": "Submitting…",
+    "已提交，感谢反馈！开发者会尽快查看":
+        "Submitted. Thanks! The developer will take a look soon",
+    "未配置提交地址": "No submit endpoint configured",
+    "问题描述 / 建议": "What happened / your suggestion",
+    "请描述遇到的问题、期望的功能，或任何建议（至少 6 个字）…\n"
+    "例如：启动实例后界面一直显示“未运行”，要手动刷新才正常。":
+        "Describe the problem, a feature you want, or any suggestion (6+ characters)…\n"
+        "e.g. after starting the instance the UI still says \"not running\" until I refresh.",
+    "诊断信息（自动生成，已脱敏，可编辑）":
+        "Diagnostics (auto-generated, sanitized, editable)",
+    "请先填写问题描述或建议（至少 6 个字）":
+        "Please describe the problem first (at least 6 characters)",
 }

@@ -93,6 +93,104 @@ def _log_tail(path: str, lines: int, keyword: str = "") -> list:
 
 
 # ---------------------------------------------------------------- 工具实现
+def _probe_ok(port: int) -> bool:
+    """轻探针：端口 HTTP 是否就绪（不带 InstanceDown 翻译，失败返回 False）"""
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/system_stats", headers={"User-Agent": "ComfyHub"})
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(req, timeout=4):
+            return True
+    except Exception:
+        return False
+
+
+def _t_control_instance(args, ctx: ToolCtx):
+    """启动/停止/重启当前实例。
+
+    线程纪律：ComfyProcess 内部是 QProcess，只能在创建它的 UI 线程操作；
+    start/stop 通过 QTimer.singleShot(0, mainwin, fn) 编组回主线程执行，
+    本工具线程只做轮询等待（is_running 是状态枚举的只读检查，跨线程读可接受）。
+    """
+    action = str(args.get("action") or "").strip().lower()
+    if action not in ("start", "stop", "restart"):
+        return ctx.fail("action 只支持 start / stop / restart")
+    mw = ctx.mainwin
+    if mw is None or not hasattr(mw, "procs"):
+        return ctx.fail("--mcp 外挂模式没有主窗口，无法启停实例；请在 ComfyHub 主界面操作")
+    from PySide6.QtCore import QTimer      # 延迟导入：MCP 无 Qt 环境不炸
+    procs = mw.procs
+    inst = ctx.inst
+    iid = inst["id"]
+
+    def _ui(fn):
+        QTimer.singleShot(0, mw, fn)       # 编组回 mainwin 所在的 UI 线程
+
+    def _brief_tail():
+        lines = [t for _, t in procs.tail(iid, 10)][-3:]
+        return " | ".join(ln.strip() for ln in lines if ln.strip()) or "（无日志）"
+
+    # ---- stop ----
+    if action == "stop":
+        if not procs.is_running(inst):
+            return ctx.ok(action="stop", already=True, msg="实例本来就未运行")
+        _ui(lambda: procs.get(inst).stop())
+        for _ in range(30):                          # 最多 15s
+            if not procs.is_running(inst):
+                break
+            time.sleep(0.5)
+        stopped = not procs.is_running(inst)
+        return ctx.ok(action="stop", stopped=stopped,
+                      msg="实例已停止" if stopped else
+                      f"停止超时（15s），进程可能卡住。日志尾部：{_brief_tail()}")
+
+    # ---- start：已在跑就直接回报 ----
+    if action == "start" and procs.is_running(inst):
+        port = procs.actual_port(inst) or int(inst.get("port") or 8188)
+        return ctx.ok(action="start", already=True, port=port,
+                      msg=f"实例已在运行（端口 {port}），无需重复启动")
+
+    # ---- restart：先停旧的 ----
+    if action == "restart":
+        r = _t_control_instance({"action": "stop"}, ctx)
+        if not (r.get("stopped") or r.get("already")):
+            return ctx.fail("重启失败：旧实例停不下来。"
+                            + str(r.get("error") or r.get("msg") or ""))
+        time.sleep(1.0)                              # 给端口释放留点时间
+
+    _ui(lambda: procs.get(inst).start(inst))
+    for _ in range(20):                              # 最多 10s 等进程起来
+        if procs.is_running(inst):
+            break
+        time.sleep(0.5)
+    if not procs.is_running(inst):
+        return ctx.fail("启动失败：进程没有起来（常见原因：Python 路径无效、"
+                        f"端口全被占用）。日志尾部：{_brief_tail()}")
+
+    # ---- 等 HTTP 就绪（模型导入可能要几十秒）----
+    timeout_s = max(30, min(int(args.get("timeout_s") or 180), 300))
+    deadline = time.time() + timeout_s
+    port = int(inst.get("port") or 8188)
+    ready = False
+    while time.time() < deadline:
+        ap = procs.actual_port(inst) or port         # 端口被占自动顺延后的真实端口
+        port = ap
+        if _probe_ok(ap):
+            ready = True
+            break
+        time.sleep(2.0)
+    pid = procs.get(inst).pid
+    if not ready:
+        return ctx.ok(action=action, pid=pid, port=port, ready=False,
+                      msg=f"进程已启动（PID {pid}）但 {timeout_s}s 内 HTTP 未就绪"
+                          "（大模型首次加载较慢），稍后可用 get_health 复查")
+    shifted = port != int(inst.get("port") or 8188)
+    return ctx.ok(action=action, pid=pid, port=port, ready=True,
+                  msg=f"实例已就绪：http://127.0.0.1:{port}"
+                      + ("（注意：端口被占自动顺延了，其他工具若连不上以这个端口为准）"
+                         if shifted else ""))
+
+
 def _t_health(args, ctx: ToolCtx):
     stats = _http(ctx, "/system_stats", timeout=15)
     q = _http(ctx, "/queue", timeout=15)
@@ -491,6 +589,12 @@ def _t_wait_job(args, ctx: ToolCtx):
 TOOLS = [
     {"name": "get_health", "desc": "实例体检：ComfyUI/torch 版本、GPU 与显存、队列深度。排查或派任务前先调这个。",
      "schema": {"type": "object", "properties": {}, "required": []}, "fn": _t_health},
+    {"name": "control_instance", "desc": "启动/停止/重启当前 ComfyUI 实例（action: start/stop/restart）。"
+                                         "实例没在跑时直接调它拉起来，不要让用户去工作台手动点。",
+     "schema": {"type": "object", "properties": {
+         "action": {"type": "string", "enum": ["start", "stop", "restart"]},
+         "timeout_s": {"type": "integer", "description": "启动后等 HTTP 就绪的秒数，默认 180"}},
+         "required": ["action"]}, "fn": _t_control_instance},
     {"name": "get_logs", "desc": "读实例日志尾部（可按关键词过滤）。报错时用它找 traceback。",
      "schema": {"type": "object", "properties": {
          "lines": {"type": "integer", "description": "尾部行数，默认 50"},
@@ -573,7 +677,8 @@ def execute(name: str, args: dict, ctx: ToolCtx) -> dict:
             except InstanceDown as e:
                 return {"ok": False, "code": "instance_down",
                         "error": f"实例未运行：端口 {e.port} 无监听（连接被拒绝）",
-                        "hint": "请先在 ComfyHub「工作台」点「启动」把实例跑起来，然后让我重试"}
+                        "hint": "可调用 control_instance(action='start') 自行启动实例，"
+                                "等返回 ready 后继续原任务，无需用户手动操作"}
             except Exception as e:
                 return {"ok": False, "error": f"{type(e).__name__}: {e}"}
     return {"ok": False, "error": f"未知工具：{name}"}

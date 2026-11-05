@@ -141,6 +141,15 @@ def main():
     if not _guard.try_acquire():
         return 0
 
+    # 运行记录（2026-11-06）：会话流水 + 上次是否异常退出 + 卡死看门狗
+    try:
+        from app import runtime_log
+        from app.config import APP_VERSION as _ver
+        runtime_log.session_start(_ver)
+        runtime_log.start_watchdog()
+    except Exception:
+        runtime_log = None
+
     try:
         win = MainWindow()
 
@@ -163,10 +172,20 @@ def main():
         raise
     except Exception:
         _write_crash("FATAL IN MAINLOOP", traceback.format_exc())
+        try:
+            from app import runtime_log as _rl
+            _rl.mark_crash("主循环致命异常")
+        except Exception:
+            pass
         QMessageBox.critical(None, "ComfyHub 遇到错误",
                              "程序遇到未处理的错误已退出。\n"
                              f"详细日志：{CRASH_LOG}")
         return 1
+    try:                       # 正常退出：记账 + 清哨兵
+        from app import runtime_log as _rl
+        _rl.session_end()
+    except Exception:
+        pass
     return code
 
 

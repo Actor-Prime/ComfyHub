@@ -11,7 +11,7 @@ from PySide6.QtCore import Qt, Signal, QThread
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QComboBox,
     QPushButton, QGroupBox, QFormLayout, QMessageBox, QScrollArea,
-    QFileDialog, QCheckBox, QSlider, QSpinBox,
+    QFileDialog, QCheckBox, QSlider, QSpinBox, QDialog, QPlainTextEdit,
 )
 
 from app.config import save_config, APP_VERSION
@@ -57,6 +57,205 @@ def _mcp_snippets() -> tuple:
                 "COMFYUI_CODE_PATH": inst.get("comfyui_path", "")}}},
         ensure_ascii=False, indent=2)
     return a, b, port
+
+
+class _SubmitWorker(QThread):
+    """后台上传诊断文本：网络请求绝不能跑在 UI 线程（会整个界面卡住）"""
+
+    sig_done = Signal(bool, str)
+
+    def __init__(self, report: str, contact: str, message: str, parent=None):
+        super().__init__(parent)
+        self._args = (report, contact, message)
+
+    def run(self):
+        from app.feedback import submit
+        try:
+            ok, msg = submit(*self._args)
+        except Exception as e:            # submit 内部已兜底，这里再保一层
+            ok, msg = False, f"{type(e).__name__}: {e}"
+        self.sig_done.emit(ok, msg)
+
+
+class FeedbackDialog(QDialog):
+    """反馈与诊断（方案A，2026-11-06）：本地生成诊断文本，用户预览/编辑后自行发出。
+
+    铁律：不主动回传——只有用户点「匿名提交」才发送；文本默认脱敏
+    （见 app/feedback.py 顶部注释），保留可编辑，用户看到什么发什么。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("反馈与诊断")
+        self.resize(760, 600)
+        v = QVBoxLayout(self)
+
+        # 有提交通道时才声明“点按钮会发送”，没配好就老实说不填
+        from app.feedback import endpoint
+        self._can_submit = bool(endpoint())
+        tip = QLabel(
+            "诊断文本在本机生成并已脱敏（路径与密钥已隐藏，不含机器名/IP）。\n"
+            "可直接编辑；只有点「匿名提交」才会发送，其余操作都不联网。"
+            if self._can_submit else
+            "诊断文本在本机生成并已脱敏（路径与密钥已隐藏，不含机器名/IP）。\n"
+            "可直接编辑，然后复制或保存发给开发者；不会自动上传任何内容。")
+        tip.setWordWrap(True)
+        tip.setStyleSheet("color:#9aa4b2;")
+        v.addWidget(tip)
+
+        # ---- 用户自己的话（必填；和诊断报告分开，邮件里一眼能看懂）----
+        lb_msg = QLabel("问题描述 / 建议")
+        lb_msg.setStyleSheet("color:#c8d2de;")
+        v.addWidget(lb_msg)
+        self.ed_msg = QPlainTextEdit()
+        self.ed_msg.setPlaceholderText(
+            "请描述遇到的问题、期望的功能，或任何建议（至少 6 个字）…\n"
+            "例如：启动实例后界面一直显示“未运行”，要手动刷新才正常。")
+        self.ed_msg.setFixedHeight(96)
+        v.addWidget(self.ed_msg)
+
+        lb_diag = QLabel("诊断信息（自动生成，已脱敏，可编辑）")
+        lb_diag.setStyleSheet("color:#c8d2de;")
+        v.addWidget(lb_diag)
+
+        self.txt = QPlainTextEdit()
+        self.txt.setPlainText(self._gen())
+        f = self.txt.font()
+        f.setFamily("Consolas")
+        self.txt.setFont(f)
+        v.addWidget(self.txt, 1)
+
+        # ---- 选填联系方式 + 匿名提交（地址未配置时整行隐藏，不打扰用户）----
+        self.ed_contact = QLineEdit()
+        self.ed_contact.setPlaceholderText("邮箱 / QQ（选填，方便回访，可留空完全匿名）")
+        self.ed_contact.setMaxLength(120)
+        v.addWidget(self.ed_contact)
+        self.ed_contact.setVisible(self._can_submit)
+
+        self.lb_state = QLabel("")
+        self.lb_state.setStyleSheet("color:#5aa2ff;")
+        v.addWidget(self.lb_state)
+
+        row = QHBoxLayout()
+        b_re = QPushButton("重新生成")
+        b_re.clicked.connect(lambda: self.txt.setPlainText(self._gen()))
+        row.addWidget(b_re)
+        row.addStretch(1)
+        self.b_submit = QPushButton("匿名提交")
+        self.b_submit.setProperty("accent", True)
+        self.b_submit.setToolTip("直接发送给开发者，无需登录；失败会自动保存到文件")
+        self.b_submit.clicked.connect(self._submit)
+        self.b_submit.setVisible(self._can_submit)
+        row.addWidget(self.b_submit)
+        b_copy = QPushButton("复制到剪贴板")
+        b_copy.clicked.connect(self._copy)
+        row.addWidget(b_copy)
+        b_save = QPushButton("保存为文件…")
+        b_save.clicked.connect(self._save)
+        row.addWidget(b_save)
+        b_issue = QPushButton("提交到 Gitee Issues")
+        b_issue.clicked.connect(self._open_issue)
+        row.addWidget(b_issue)
+        v.addLayout(row)
+
+    # ---------------------------------------------------------- 匿名提交
+    def _submit(self):
+        if not self._can_submit:
+            return
+        message = self.ed_msg.toPlainText().strip()[:2000]
+        if len(message) < 6:
+            self.lb_state.setText("请先填写问题描述或建议（至少 6 个字）")
+            self.ed_msg.setFocus()
+            return
+        text = self.txt.toPlainText()
+        # 单机防刷：频率/每日/每月/重复内容（按用户描述去重；状态只存哈希）
+        from app.feedback import quota_check
+        allowed, why = quota_check(text, key=message)
+        if not allowed:
+            self.lb_state.setText(why)
+            return
+        self.b_submit.setEnabled(False)
+        self.b_submit.setText("提交中…")
+        self._pending = (text, message)   # 成功后按这两个内容记账
+        self._worker = _SubmitWorker(text, self.ed_contact.text().strip(), message, self)
+        self._worker.sig_done.connect(self._on_submitted)
+        self._worker.start()
+
+    def _on_submitted(self, ok: bool, msg: str):
+        self.b_submit.setEnabled(True)
+        self.b_submit.setText("匿名提交")
+        if ok:
+            try:
+                from app.feedback import quota_record
+                report, message = getattr(self, "_pending", (self.txt.toPlainText(), ""))
+                quota_record(report, key=message)
+            except Exception:
+                pass
+            self.lb_state.setText("已提交，感谢反馈！开发者会尽快查看")
+            return
+        # 失败兜底：先自动落盘，落盘也失败就塞剪贴板，绝不让用户白写
+        path = self._auto_save()
+        if path:
+            self.lb_state.setText(f"提交失败（{msg}），已自动保存到 {path}")
+        else:
+            self._copy()
+            self.lb_state.setText(f"提交失败（{msg}），内容已复制到剪贴板")
+
+    def _full_text(self) -> str:
+        """导出/复制用：把用户描述放前面，诊断报告附在后面"""
+        msg = self.ed_msg.toPlainText().strip()
+        rep = self.txt.toPlainText()
+        return f"{msg}\n\n{rep}" if msg else rep
+
+    def _auto_save(self) -> str:
+        import datetime as _dt
+        try:
+            d = os.path.join(os.path.expanduser("~"), "Desktop")
+            if not os.path.isdir(d):
+                d = os.path.expanduser("~")
+            path = os.path.join(d, f"ComfyHub_feedback_{_dt.datetime.now():%Y%m%d_%H%M%S}.txt")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(self._full_text())
+            return path
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _gen() -> str:
+        from app.feedback import collect
+        try:
+            return collect()
+        except Exception as e:               # 收集失败也要给用户能发的东西
+            import traceback
+            from app.feedback import sanitize_text
+            return (f"（诊断收集失败：{e}）\n\n"
+                    + sanitize_text(traceback.format_exc()))
+
+    def _copy(self):
+        from PySide6.QtWidgets import QApplication
+        QApplication.clipboard().setText(self._full_text())
+        self.lb_state.setText("已复制到剪贴板，可直接粘贴到 Issues / 群聊 / 邮件")
+
+    def _save(self):
+        import datetime as _dt
+        default = os.path.join(
+            os.path.expanduser("~"), "Desktop",
+            f"ComfyHub_diag_{_dt.datetime.now():%Y%m%d_%H%M%S}.txt")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "保存诊断文件", default, "文本文件 (*.txt)")
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(self._full_text())
+            self.lb_state.setText(f"已保存：{path}")
+        except Exception as e:
+            QMessageBox.warning(self, "保存失败", str(e))
+
+    def _open_issue(self):
+        self._copy()   # 先把文本塞剪贴板，用户到页面 Ctrl+V 即可
+        from app.feedback import issues_url
+        SettingsPage._open_url(issues_url())
+        self.lb_state.setText("已复制诊断文本，请在打开的页面粘贴（Ctrl+V）并提交")
 
 
 class SettingsPage(QWidget):
@@ -304,6 +503,37 @@ class SettingsPage(QWidget):
         lb_desc.setStyleSheet("color:#9aa4b2;")
         v3.addWidget(lb_desc)
 
+        # ---- 仓库超链接（2026-11-05 用户要求把 Gitee / GitHub 放上来）----
+        # 用扁平按钮而不是 QLabel 富文本 <a>：i18n 是「控件树扫描 + 词表精确
+        # 匹配」且会 setText(text())，富文本 HTML 会把整段当 key 永不命中；
+        # 按钮文本是纯词条，英文模式正常替换。
+        from app import updater as _upd
+        row_links = QHBoxLayout()
+        row_links.setSpacing(14)
+        for _txt, _url in (
+                ("Gitee 仓库", f"https://gitee.com/{_upd.OWNER}/{_upd.REPO}"),
+                ("GitHub 仓库", f"https://github.com/{_upd.GITHUB_SLUG}")):
+            _b = QPushButton(_txt)
+            _b.setFlat(True)
+            _b.setCursor(Qt.PointingHandCursor)
+            _b.setToolTip(_url)
+            _b.setStyleSheet(
+                "QPushButton{border:none;background:transparent;color:#5aa2ff;"
+                "text-align:left;padding:0;background-color:transparent;}"
+                "QPushButton:hover{color:#8cc0ff;text-decoration:underline;}")
+            _b.clicked.connect(lambda _=False, u=_url: self._open_url(u))
+            row_links.addWidget(_b)
+        row_links.addStretch(1)
+        v3.addLayout(row_links)
+
+        # ---- 反馈与诊断（2026-11-06 方案A：本地收集+脱敏，零网络回传）----
+        b_fb = QPushButton("反馈与诊断…")
+        b_fb.clicked.connect(self._open_feedback)
+        row_fb = QHBoxLayout()
+        row_fb.addWidget(b_fb)
+        row_fb.addStretch(1)
+        v3.addLayout(row_fb)
+
         # ---- 版本更新（2026-11-04）----
         row_up = QHBoxLayout()
         self.b_check_upd = QPushButton("检查更新")
@@ -329,6 +559,18 @@ class SettingsPage(QWidget):
 
         scroll.setWidget(body)
         outer.addWidget(scroll)
+
+    # ------------------------------------------------------------ 打开链接
+    @staticmethod
+    def _open_url(url: str):
+        """用系统默认浏览器打开仓库地址"""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        QDesktopServices.openUrl(QUrl(url))
+
+    # ------------------------------------------------------------ 反馈与诊断
+    def _open_feedback(self):
+        FeedbackDialog(self).exec()
 
     # ------------------------------------------------------------ 保存
     def _pick_tools_dir(self):

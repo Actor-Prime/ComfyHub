@@ -226,6 +226,7 @@ class MainWindow(QMainWindow):
 
         self._init_tray()
         self._init_task_watch()
+        self._init_heartbeat()
 
         self._sync_instances()
         self.nav.setCurrentRow(0)
@@ -276,6 +277,17 @@ class MainWindow(QMainWindow):
 
         self._theme_timer.timeout.connect(_tick)
         self._theme_timer.start()
+
+    # ---------- 运行心跳（卡死检测）----------
+    def _init_heartbeat(self):
+        """2 秒一次心跳：定时器跑不动 = 主线程被卡住，由 runtime_log 的
+        watchdog 线程记一条 hang 事件（进诊断报告，用户报「卡死」时才有据可查）"""
+        from app import runtime_log
+        self._heartbeat_timer = QTimer(self)
+        self._heartbeat_timer.setInterval(2000)
+        self._heartbeat_timer.timeout.connect(runtime_log.beat)
+        self._heartbeat_timer.start()
+        runtime_log.beat()
 
     # ---------- 系统托盘 ----------
     def _init_tray(self):

@@ -35,7 +35,8 @@ def _system_prompt(ctx) -> str:
         f"当前实例：{inst.get('name') or '未命名'}（端口 {inst.get('port')}，"
         f"目录 {inst.get('comfyui_path') or '未知'}）。\n"
         "注意事项：\n"
-        "1. 提交生成前先 get_health 确认实例在跑；报错时用 get_logs 找 traceback；\n"
+        "1. 提交生成前先 get_health 确认实例在跑；实例没跑就 control_instance(action='start') "
+        "自己拉起来（用户说「帮我启动」也用它），报错时用 get_logs 找 traceback；\n"
         "2. 跑新工作流前建议先 check_workflow 看缺什么；\n"
         "3. 下载大模型用 download_model（自动走后台队列），不要催进度，让用户看下载中心；\n"
         "4. 工具报错时如实转述 error 字段，不要编造原因；\n"
@@ -305,8 +306,14 @@ def _brief(name: str, result: dict) -> str:
     """工具结果的 UI 单行摘要"""
     if not result.get("ok", True):
         if result.get("code") == "instance_down":
-            return "实例未运行（先在「工作台」点启动）"
+            return "实例未运行（可让我自动启动）"
         return "失败：" + str(result.get("error", ""))[:80]
+    if name == "control_instance":
+        if result.get("action") == "stop":
+            return "已停止" if result.get("stopped") else str(result.get("msg", ""))[:60]
+        if result.get("ready"):
+            return f"已就绪 · 端口 {result.get('port')}"
+        return str(result.get("msg", ""))[:60]
     if name == "get_health":
         return (f"{result.get('gpu')} · 显存 {result.get('vram_free_gb')}/"
                 f"{result.get('vram_total_gb')}GB · 队列 {result.get('queue_running')}"

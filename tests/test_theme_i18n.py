@@ -135,6 +135,12 @@ check("4e 语言下拉两项", [page.cb_lang.itemData(i) for i in range(page.cb_
 check("4f 背景图默认空", page._bg_value == "")
 check("4g 透明度默认 72", page.sl_alpha.value() == 72, str(page.sl_alpha.value()))
 
+# ---- 关于框仓库链接（2026-11-05 用户要求把 Gitee / GitHub 放上来）----
+_links = [b for b in page.findChildren(QPushButton)
+          if b.text() in ("Gitee 仓库", "GitHub 仓库")]
+check("4m 关于框含 Gitee/GitHub 两个链接", len(_links) == 2,
+      str([b.text() for b in page.findChildren(QPushButton) if "仓库" in b.text()]))
+
 page.sl_alpha.setValue(50)
 page.cb_lang.setCurrentIndex(page.cb_lang.findData("en"))
 page._save()
@@ -149,6 +155,20 @@ check("4k 语言改动立即生效（提示不含重启）",
 
 page._clear_bg()
 check("4l 清除背景图置空", page._bg_value == "")
+
+# ---- 链接点击 + 英文翻译（此时页面已切 en）----
+_opened = []
+_orig_open = sp_mod.SettingsPage._open_url
+sp_mod.SettingsPage._open_url = staticmethod(lambda u: _opened.append(u))
+for _b in _links:
+    _b.click()
+check("4n 点击打开对应仓库地址",
+      _opened == ["https://gitee.com/yzdydwdd/ComfyHub",
+                  "https://github.com/Actor-Prime/ComfyHub"], str(_opened))
+sp_mod.SettingsPage._open_url = staticmethod(_orig_open)
+check("4o 链接文案已英译",
+      [b.text() for b in _links] == ["Gitee repository", "GitHub repository"],
+      str([b.text() for b in _links]))
 
 # -------------------------------------------------- 5. 主窗（自定义主题 + 缺失底图）
 from app.config import load_config, save_config as real_save  # noqa: E402
