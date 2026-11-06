@@ -19,11 +19,12 @@ import os
 from PySide6.QtCore import (QBuffer, QEvent, QRect, QSize, Qt, QThread,
                             QTime, QTimer, Signal)
 from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import (QApplication, QDialog, QFrame, QHBoxLayout, QLabel,
+from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFrame,
+                               QHBoxLayout, QInputDialog, QLabel,
                                QPushButton, QScrollArea, QSizePolicy, QStyle,
                                QTextEdit, QToolButton, QVBoxLayout, QWidget)
 
-from app import ai_agent
+from app import ai_agent, ai_chat_store
 
 
 # ---------------------------------------------------------------- 图片预览
@@ -190,7 +191,9 @@ class AiPage(QWidget):
         self._atts = []             # 待发送附件：[{kind:'image'|'text',...}]
         self._stream = None         # 流式中的卡片状态
         self._stream_timer = None
+        self._chat_id = ""          # 当前会话 id（2026-11-06 多会话持久化）
         self._build()
+        self._boot_chats()
 
     # -------------------------------------------------- UI
     def _build(self):
@@ -208,11 +211,21 @@ class AiPage(QWidget):
         self.lb_inst.setStyleSheet("color:#a9b1bd; font-size:12px;")
         head.addWidget(self.lb_inst)
         head.addStretch(1)
-        b_clear = QPushButton("清空对话")
-        b_clear.setStyleSheet(self.ST_LINK)
-        b_clear.setCursor(Qt.PointingHandCursor)
-        b_clear.clicked.connect(self._clear)
-        head.addWidget(b_clear)
+        # ---- 会话切换（2026-11-06：多对话 + 重启不丢）----
+        self.cb_chat = QComboBox()
+        self.cb_chat.setMinimumWidth(190)
+        self.cb_chat.setToolTip("选择历史对话；切换后当前对话会自动保存")
+        self.cb_chat.currentIndexChanged.connect(self._on_chat_changed)
+        head.addWidget(self.cb_chat)
+        for _txt, _tip, _fn in (("＋ 新建", "开一个新对话（当前对话自动保存）", self._new_chat),
+                                ("重命名", "给当前对话改个名字", self._rename_chat),
+                                ("删除", "删除当前对话", self._delete_chat)):
+            _b = QPushButton(_txt)
+            _b.setStyleSheet(self.ST_LINK)
+            _b.setCursor(Qt.PointingHandCursor)
+            _b.setToolTip(_tip)
+            _b.clicked.connect(lambda _=False, f=_fn: f())
+            head.addWidget(_b)
         root.addLayout(head)
 
         # ---- 消息流 ----
@@ -607,6 +620,7 @@ class AiPage(QWidget):
         self._refresh_atts()
         self._last_user = text
         self._history.append({"role": "user", "content": text})
+        self._save_chat()               # 先落盘：即便进程被杀，这句也不会丢
         self._worker = _AgentWorker(self.cfg, inst, text, list(self._history), atts,
                                     mainwin=self.mainwin)
         self._worker.sig_event.connect(self._on_event)
@@ -631,18 +645,111 @@ class AiPage(QWidget):
         if self._worker is not None:
             self._worker.stop_flag.set()
 
-    def _clear(self):
+    # -------------------------------------------------- 会话（2026-11-06）
+    def _boot_chats(self):
+        """启动时恢复上次的对话；没有就开一个新的"""
+        self._reload_chat_list()
+        cid = self._chat_id or ai_chat_store.latest_id()
+        if cid:
+            self._open_chat(cid)
+        else:
+            self._chat_id = ai_chat_store.new_id()
+            self._greet()
+
+    def _reload_chat_list(self, select: str = ""):
+        self.cb_chat.blockSignals(True)
+        self.cb_chat.clear()
+        chats = ai_chat_store.list_chats()
+        for c in chats:
+            label = c.get("title") or "新对话"
+            if c.get("count"):
+                label += f"（{c['count']} 条）"
+            self.cb_chat.addItem(label, c["id"])
+        if not chats:
+            self.cb_chat.addItem("（新对话）", "")
+        if select:
+            i = self.cb_chat.findData(select)
+            if i >= 0:
+                self.cb_chat.setCurrentIndex(i)
+        self.cb_chat.blockSignals(False)
+
+    def _open_chat(self, cid: str):
+        if not cid:
+            return
+        self._save_chat()                 # 切走前先存旧对话
+        self._chat_id = cid
+        d = ai_chat_store.load(cid)
+        self._history = [m for m in (d.get("messages") or [])
+                         if m.get("role") in ("user", "assistant")]
+        self._clear_flow()
+        if self._history:
+            for m in self._history:
+                if m["role"] == "user":
+                    self._user_bubble(m["content"])
+                else:
+                    self._ai_card(m["content"])
+            self._last_user = next(
+                (m["content"] for m in reversed(self._history)
+                 if m["role"] == "user"), "")
+        else:
+            self._greet()
+
+    def _save_chat(self):
+        if not self._chat_id or not self._history:
+            return
+        ai_chat_store.save(self._chat_id, self._history)
+
+    def _on_chat_changed(self, idx: int):
+        if self._worker is not None:      # 正在回答时不许切，免得串台
+            return
+        cid = self.cb_chat.itemData(idx) or ""
+        if cid and cid != self._chat_id:
+            self._open_chat(cid)
+
+    def _new_chat(self):
         if self._worker is not None:
             return
-        self._history.clear()
+        self._save_chat()
+        self._chat_id = ai_chat_store.new_id()
+        self._history = []
         self._last_user = ""
+        self._clear_flow()
+        self._greet()
+        self._reload_chat_list()
+
+    def _rename_chat(self):
+        if not self._chat_id or self._worker is not None:
+            return
+        cur = next((c["title"] for c in ai_chat_store.list_chats()
+                    if c["id"] == self._chat_id), "")
+        name, ok = QInputDialog.getText(self, "重命名对话", "对话名称：", text=cur)
+        if ok and name.strip():
+            ai_chat_store.rename(self._chat_id, name.strip())
+            self._reload_chat_list(select=self._chat_id)
+
+    def _delete_chat(self):
+        if self._worker is not None:
+            return
+        if self._chat_id:
+            from PySide6.QtWidgets import QMessageBox
+            if QMessageBox.question(self, "删除对话",
+                                    "删除当前对话？此操作不可恢复。") != QMessageBox.Yes:
+                return
+            ai_chat_store.delete(self._chat_id)
+        self._chat_id = ai_chat_store.new_id()
+        self._history = []
+        self._last_user = ""
+        self._clear_flow()
+        self._greet()
+        self._reload_chat_list()
+
+    def _clear_flow(self):
         self._tl_widget = None
         while self.flow.count() > 1:
             it = self.flow.takeAt(0)
             w = it.widget()
             if w is not None:
                 w.deleteLater()
-        self._greet()
 
     def _on_event(self, ev: dict):
         kind = ev.get("kind")
@@ -659,6 +766,7 @@ class AiPage(QWidget):
         elif kind == "assistant":
             self._stream_finalize(ev.get("text", ""))
             self._history.append({"role": "assistant", "content": ev.get("text", "")})
+            self._save_chat()
         elif kind == "tool":
             self._tool_item(ev.get("name", "?"), ev.get("args") or {})
         elif kind == "tool_result":
@@ -674,6 +782,8 @@ class AiPage(QWidget):
         self.b_send.setEnabled(True)
         self.b_stop.setEnabled(False)
         self._worker = None
+        self._save_chat()
+        self._reload_chat_list(select=self._chat_id)   # 刷新标题/条数
 
     # ---------- 流式渲染 ----------
     def _stream_begin(self):

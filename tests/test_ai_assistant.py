@@ -19,6 +19,11 @@ import sys
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# 会话存档隔离：AI 页初始化会读 ai_chats，别让测试把用户的真实对话读进界面/写脏
+import tempfile as _tf  # noqa: E402
+os.environ.setdefault("COMFYHUB_CHAT_DIR",
+                      _tf.mkdtemp(prefix="ch_chats_"))
+
 RESULTS = []
 
 

@@ -747,4 +747,20 @@ EN_DICT = {
     # ---- 图片预览（2026-11-06）----
     "图片预览": "Image preview",
     "点击查看大图": "Click to view full size",
+
+    # ---- AI 多会话（2026-11-06）----
+    "＋ 新建": "+ New",
+    "重命名": "Rename",
+    "删除": "Delete",
+    "（新对话）": "(new chat)",
+    "选择历史对话；切换后当前对话会自动保存":
+        "Pick a past conversation; the current one is saved automatically",
+    "开一个新对话（当前对话自动保存）": "Start a new chat (current one is saved)",
+    "给当前对话改个名字": "Rename this conversation",
+    "删除当前对话": "Delete this conversation",
+    "重命名对话": "Rename conversation",
+    "对话名称：": "Conversation name:",
+    "删除对话": "Delete conversation",
+    "删除当前对话？此操作不可恢复。":
+        "Delete this conversation? This cannot be undone.",
 }
