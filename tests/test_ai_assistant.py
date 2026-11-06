@@ -865,6 +865,33 @@ check("10h 20~45s 提示仍在等待", "仍在等待" in _pg._think_lb.text(), _
 _pg._think_stop()
 _pg.close()
 
+# ================================================== 11. 自定义背景图下的可读性（2026-11-06）
+# 用户报障：换了背景图后 AI 页输入框/快捷指令/顶栏跟着透明，文字浮在图上像 UI 丢了
+_pg2 = _AP({"settings": {"bg_image": "F:/fake/bg.jpg", "bg_opacity": 40}}, _FakeWin())
+_pg2.refresh_backdrop({"mode": "custom"})
+check("11a 有背景图时加了底板", "AiPage" in _pg2.styleSheet()
+      and "background:rgba(12,16,22," in _pg2.styleSheet(), _pg2.styleSheet()[:60])
+check("11b 底板用 StyledBackground 才画得出来",
+      _pg2.testAttribute(Qt.WA_StyledBackground) is True)
+_pg2.refresh_backdrop({"mode": "dark"})
+check("11c 非自定义主题时去掉底板", _pg2.styleSheet() == ""
+      and _pg2.testAttribute(Qt.WA_StyledBackground) is False)
+_pg2.close()
+
+_pg3 = _AP({"settings": {}}, _FakeWin())
+check("11d 没设背景图时不留底板", _pg3.styleSheet() == "")
+_pg3.close()
+
+# 透明度随面板不透明度变化：面板越透 → 底板越实
+_pg4 = _AP({"settings": {"bg_image": "F:/b.jpg", "bg_opacity": 0}}, _FakeWin())
+_pg4.refresh_backdrop({"mode": "custom"})
+_a0 = _pg4.styleSheet()
+_pg4.cfg["settings"]["bg_opacity"] = 100
+_pg4.refresh_backdrop({"mode": "custom"})
+_a100 = _pg4.styleSheet()
+check("11e 面板越不透明、底板越透（可反向调节）", _a0 != _a100, f"{_a0[:40]} vs {_a100[:40]}")
+_pg4.close()
+
 # --------------------------------------------------
 print("-" * 60)
 fails = [n for n, ok, _ in RESULTS if not ok]

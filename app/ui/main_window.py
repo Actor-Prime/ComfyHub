@@ -265,6 +265,14 @@ class MainWindow(QMainWindow):
         custom = info["mode"] == "custom"
         for sa in self.findChildren(QAbstractScrollArea):
             sa.viewport().setAutoFillBackground(not custom)
+        # 页面自己决定要不要加"底板"压住背景图（AI 页在自定义背景下会看不清）
+        for w in self.findChildren(QWidget):
+            fn = getattr(w, "refresh_backdrop", None)
+            if callable(fn):
+                try:
+                    fn(info)
+                except Exception:
+                    pass
 
     def _init_theme_watch(self):
         """「跟随系统」：Windows 深浅色切换后自动重绘（15s 轮询，开销可忽略）"""

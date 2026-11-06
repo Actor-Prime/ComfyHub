@@ -292,6 +292,32 @@ class AiPage(QWidget):
         root.addLayout(row)
 
         self._greet()
+        self.refresh_backdrop()
+
+    def refresh_backdrop(self, info: dict = None):
+        """自定义背景图时给整页加一层半透明底板（2026-11-06 用户报障）
+
+        现象：换了自定义背景图后，AI 页的输入框、快捷指令、顶部状态行都跟着变透明，
+        文字直接浮在背景图上，看着像"UI 丢了"。
+        做法：页面范围内铺一层深色半透明底板（透明度跟面板不透明度挂钩），
+        既压住花哨背景保证可读，又还能隐约看到图。
+        """
+        st = (self.cfg.get("settings") or {})
+        custom = bool(str(st.get("bg_image") or "").strip())
+        if info is not None and info.get("mode"):
+            custom = custom and info.get("mode") == "custom"
+        if not custom:
+            self.setAttribute(Qt.WA_StyledBackground, False)
+            self.setStyleSheet("")
+            return
+        op = max(0, min(100, int(st.get("bg_opacity") or 30)))
+        alpha = max(0.72, min(0.93, 0.72 + (1 - op / 100.0) * 0.21))
+        self.setObjectName("AiPage")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet(
+            f"QWidget#AiPage{{background:rgba(12,16,22,{alpha:.2f});}}"
+            "QWidget#AiPage QScrollArea{background:transparent;}"
+            "QWidget#AiPage QScrollArea>QWidget>QWidget{background:transparent;}")
 
     # -------------------------------------------------- 键盘：回车发送 / Shift+回车换行
     def eventFilter(self, obj, event):
