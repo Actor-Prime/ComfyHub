@@ -77,9 +77,18 @@ importlib.reload(st)
 check("5a 重载后仍能列出会话", st.list_chats() and st.list_chats()[0]["id"] == c1)
 check("5b 重载后内容完整", len(st.load(c1)["messages"]) == st.MAX_MSGS)
 
-# ---- 6. 界面能恢复（离屏构造 AiPage）----
+# ---- 5.5 压缩摘要随会话一起存（2026-11-06）----
+st.save(c1, [{"role": "user", "content": "长对话"}], summary="要点A；要点B", upto=7)
+_d = st.load(c1)
+check("5c 摘要与覆盖条数可持久化", _d["summary"] == "要点A；要点B" and _d["summary_upto"] == 7,
+      str((_d["summary"], _d["summary_upto"])))
+st.save(c1, _d["messages"])          # 普通保存（不传摘要）
+check("5d 普通保存不会清掉摘要", st.load(c1)["summary"] == "要点A；要点B",
+      st.load(c1)["summary"])
 st.save(c1, [{"role": "user", "content": "重启前的问题"},
              {"role": "assistant", "content": "重启前的回答"}])
+
+# ---- 6. 界面能恢复（离屏构造 AiPage）----
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 from PySide6.QtWidgets import QApplication  # noqa: E402
 app = QApplication.instance() or QApplication([])

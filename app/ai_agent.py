@@ -14,6 +14,7 @@ OpenAI 兼容 /chat/completions + function calling，驱动 app/ai_tools.py 的�
 import json
 
 from app import ai_assist
+from app import ai_context
 from app import ai_models
 from app import ai_tools
 
@@ -225,7 +226,7 @@ def _user_content(user_text: str, attachments=None):
 
 def run_agent(cfg: dict, inst: dict, user_text: str, history: list,
               emit, stop_flag=None, log=print, attachments=None,
-              mainwin=None) -> None:
+              mainwin=None, summary: str = "", summary_upto: int = 0) -> None:
     """处理一次用户提问。history 为 UI 侧已有对话（仅 user/assistant 文本消息）。
 
     emit(kind, **kw) 事件回调；stop_flag 为 threading.Event，轮间检查。
@@ -233,6 +234,7 @@ def run_agent(cfg: dict, inst: dict, user_text: str, history: list,
 
     mainwin：GUI 模式下必须传主窗口——工具里的启停实例、下载队列都靠它
     （2026-11-06 修：之前没传，导致界面里点「帮忙启动实例」被误判成 --mcp 外挂模式）。
+    summary / summary_upto：已压缩的早期对话摘要与覆盖到的条数（由会话存档提供）。
     """
     st = cfg.get("settings") or {}
     if not (st.get("ai_enabled") and st.get("ai_base_url") and st.get("ai_api_key")):
@@ -250,7 +252,32 @@ def run_agent(cfg: dict, inst: dict, user_text: str, history: list,
         emit("notice", text=tip)
 
     messages = [{"role": "system", "content": _system_prompt(ctx)}]
-    for m in (history or [])[-ctx_msgs:]:      # 上下文窗口（设置页可调，默认 12 条）
+
+    # ---- 上下文压缩（2026-11-06）：早期对话压成摘要，避免截断把最初目标弄丢 ----
+    hist = list(history or [])
+    lvl = str(st.get("ai_compress") or "off")
+    summary = (summary or "").strip()
+    upto = max(0, int(summary_upto or 0))
+    if ai_context.needed(hist, upto, lvl):
+        cut = ai_context.split_point(hist, upto, lvl)
+        chunk = hist[upto:cut]
+        if chunk:
+            emit("compress", count=len(chunk))
+            summary = ai_context.compress(
+                summary, chunk, lvl,
+                call=lambda msgs: (_round_chat(
+                    st, msgs, [], extra=extra,
+                    max_tokens=min(800, max_tokens), emit=None, log=log
+                ) or {}).get("content") or "",
+                log=log)
+            upto = cut
+            emit("compress_done", summary=summary, upto=upto, chars=len(summary))
+
+    if summary:
+        messages.append({"role": "system",
+                         "content": "【较早对话的压缩摘要】（原文已省略，需要细节就问用户）\n"
+                                    + summary})
+    for m in hist[upto:][-ctx_msgs:]:      # 上下文窗口（设置页可调，默认 12 条）
         role = m.get("role")
         if role in ("user", "assistant") and m.get("content"):
             messages.append({"role": role, "content": str(m["content"])[:4000]})

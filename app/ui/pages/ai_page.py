@@ -134,11 +134,14 @@ class _AgentWorker(QThread):
     sig_event = Signal(dict)
     sig_done = Signal()
 
-    def __init__(self, cfg, inst, text, history, attachments=None, mainwin=None):
+    def __init__(self, cfg, inst, text, history, attachments=None, mainwin=None,
+                 summary="", summary_upto=0):
         super().__init__()
         self.cfg, self.inst, self.text, self.history = cfg, inst, text, history
         self.attachments = attachments or []
         self.mainwin = mainwin          # 工具里启停实例要用（QTimer 编组回 UI 线程）
+        self.summary = summary          # 已压缩的早期对话摘要（2026-11-06）
+        self.summary_upto = summary_upto
         self.stop_flag = threading.Event()
 
     def run(self):
@@ -148,7 +151,9 @@ class _AgentWorker(QThread):
                                    {"kind": kind, **kw}),
                                stop_flag=self.stop_flag,
                                attachments=self.attachments,
-                               mainwin=self.mainwin)
+                               mainwin=self.mainwin,
+                               summary=self.summary,
+                               summary_upto=self.summary_upto)
         finally:
             self.sig_done.emit()
 
@@ -192,6 +197,8 @@ class AiPage(QWidget):
         self._stream = None         # 流式中的卡片状态
         self._stream_timer = None
         self._chat_id = ""          # 当前会话 id（2026-11-06 多会话持久化）
+        self._summary = ""          # 早期对话压缩摘要（2026-11-06）
+        self._summary_upto = 0
         self._build()
         self._boot_chats()
 
@@ -622,7 +629,9 @@ class AiPage(QWidget):
         self._history.append({"role": "user", "content": text})
         self._save_chat()               # 先落盘：即便进程被杀，这句也不会丢
         self._worker = _AgentWorker(self.cfg, inst, text, list(self._history), atts,
-                                    mainwin=self.mainwin)
+                                    mainwin=self.mainwin,
+                                    summary=self._summary,
+                                    summary_upto=self._summary_upto)
         self._worker.sig_event.connect(self._on_event)
         self._worker.sig_done.connect(self._on_done)
         self.b_send.setEnabled(False)
@@ -681,6 +690,8 @@ class AiPage(QWidget):
         d = ai_chat_store.load(cid)
         self._history = [m for m in (d.get("messages") or [])
                          if m.get("role") in ("user", "assistant")]
+        self._summary = str(d.get("summary") or "")
+        self._summary_upto = int(d.get("summary_upto") or 0)
         self._clear_flow()
         if self._history:
             for m in self._history:
@@ -697,7 +708,8 @@ class AiPage(QWidget):
     def _save_chat(self):
         if not self._chat_id or not self._history:
             return
-        ai_chat_store.save(self._chat_id, self._history)
+        ai_chat_store.save(self._chat_id, self._history,
+                           summary=self._summary, upto=self._summary_upto)
 
     def _on_chat_changed(self, idx: int):
         if self._worker is not None:      # 正在回答时不许切，免得串台
@@ -712,6 +724,8 @@ class AiPage(QWidget):
         self._save_chat()
         self._chat_id = ai_chat_store.new_id()
         self._history = []
+        self._summary = ""
+        self._summary_upto = 0
         self._last_user = ""
         self._clear_flow()
         self._greet()
@@ -738,6 +752,8 @@ class AiPage(QWidget):
             ai_chat_store.delete(self._chat_id)
         self._chat_id = ai_chat_store.new_id()
         self._history = []
+        self._summary = ""
+        self._summary_upto = 0
         self._last_user = ""
         self._clear_flow()
         self._greet()
@@ -763,6 +779,14 @@ class AiPage(QWidget):
             self._stream_append(ev.get("text", ""))
         elif kind == "notice":
             self._notice(ev.get("text", ""))
+        elif kind == "compress":
+            self._notice(f"上下文较长，正在压缩较早的 {int(ev.get('count') or 0)} 条对话…")
+        elif kind == "compress_done":
+            self._summary = str(ev.get("summary") or "")
+            self._summary_upto = int(ev.get("upto") or 0)
+            self._save_chat()
+            self._notice(f"已把早期对话压缩为 {int(ev.get('chars') or 0)} 字摘要，"
+                         f"后续问答会带着它继续")
         elif kind == "assistant":
             self._stream_finalize(ev.get("text", ""))
             self._history.append({"role": "assistant", "content": ev.get("text", "")})

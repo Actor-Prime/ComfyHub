@@ -458,6 +458,21 @@ class SettingsPage(QWidget):
         self.cb_ai_ctx.setToolTip("带多少历史消息进上下文。越多越慢也越贵，但多轮对话更连贯")
         f_ai.addRow("上下文:", self.cb_ai_ctx)
 
+        # ---- 上下文压缩（2026-11-06）----
+        self.cb_ai_compress = QComboBox()
+        for label, val in (("关闭（只保留最近几条）", "off"),
+                           ("轻度（24 条触发，保留 14 条）", "light"),
+                           ("中度（16 条触发，保留 9 条，推荐）", "mid"),
+                           ("激进（10 条触发，保留 5 条）", "strong")):
+            self.cb_ai_compress.addItem(label, val)
+        _cur_cp = str(st.get("ai_compress") or "mid")
+        _ic = self.cb_ai_compress.findData(_cur_cp)
+        self.cb_ai_compress.setCurrentIndex(_ic if _ic >= 0 else 2)
+        self.cb_ai_compress.setToolTip(
+            "对话变长时自动把较早内容压成摘要，之后只带摘要+最近几条原文；"
+            "档位越高保留的原文越少、省得越多")
+        f_ai.addRow("上下文压缩:", self.cb_ai_compress)
+
         self.lb_ai_profile = QLabel("")
         self.lb_ai_profile.setWordWrap(True)
         self.lb_ai_profile.setStyleSheet("color:#7f8894; font-size:11px;")
@@ -788,6 +803,7 @@ class SettingsPage(QWidget):
         st["ai_think"] = str(self.cb_ai_think.currentData() or "off")
         st["ai_max_tokens"] = int(self.sp_ai_max.value())
         st["ai_ctx_msgs"] = int(self.cb_ai_ctx.currentData() or 12)
+        st["ai_compress"] = str(self.cb_ai_compress.currentData() or "mid")
         # 主题与语言（2026-11-01）：主题即时重绘，语言需重启
         old_lang = str(st.get("lang", "zh"))
         st["theme"] = self.cb_theme.currentData() or "dark"

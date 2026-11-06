@@ -714,6 +714,70 @@ finally:
     if _orig_search is not None:
         _ms.search_models = _orig_search
 
+# ================================================== 9. 上下文压缩（2026-11-06）
+from app import ai_context as _ac  # noqa: E402
+
+check("9a 关闭档不压缩", _ac.params("off") is None and not _ac.needed([{}] * 99, 0, "off"))
+check("9b 三档参数正确",
+      _ac.params("mid")["trigger"] == 16 and _ac.params("mid")["keep"] == 9
+      and _ac.params("strong")["chars"] == 160, str(_ac.params("mid")))
+check("9c 未到阈值不触发", _ac.needed([{}] * 10, 0, "mid") is False)
+check("9d 超过阈值触发", _ac.needed([{}] * 17, 0, "mid") is True)
+check("9e 已摘要的部分不重复计数",
+      _ac.needed([{}] * 20, 15, "mid") is False and _ac.needed([{}] * 40, 15, "mid") is True)
+check("9f 切分点保留最近几条", _ac.split_point([{}] * 20, 0, "mid") == 11, str(_ac.split_point([{}] * 20, 0, "mid")))
+
+_msgs = [{"role": "user", "content": "把耳朵改成老虎那种"},
+         {"role": "assistant", "content": "好的，已生成 00003"}]
+_sum = _ac.compress("", _msgs, "mid", call=lambda m: "要点：目标是老虎耳朵；已出图 00003")
+check("9g 正常压缩用模型输出", _sum.startswith("要点：") and "00003" in _sum, _sum)
+_fb = _ac.compress("旧摘要", _msgs, "mid", call=lambda m: (_ for _ in ()).throw(RuntimeError("断网")))
+check("9h 压缩失败回落机械摘要", "旧摘要" in _fb and "老虎" in _fb, _fb)
+_long = _ac.compress("", _msgs, "mid", call=lambda m: "x" * 5000)
+check("9i 超长摘要被裁剪", len(_long) <= _ac.params("mid")["chars"] * 2, str(len(_long)))
+
+# 端到端：20 条历史 + 中度档 → 触发压缩，且摘要进入 system 消息
+_hist20 = []
+for i in range(10):
+    _hist20.append({"role": "user", "content": f"问题{i}"})
+    _hist20.append({"role": "assistant", "content": f"回答{i}"})
+_seen_msgs, _compress_ev = [], []
+_orig_round9 = _ag2._round_chat
+
+
+def _fake_round9(_st, messages, tools, **kw):
+    _seen_msgs.append(list(messages))
+    if not tools:
+        return {"content": "摘要：用户问了 10 个问题，已答 9 个，还剩配置没确认"}
+    return {"content": "（回答）"}
+
+
+_ag2._round_chat = _fake_round9
+try:
+    _ag2.run_agent({"settings": {"ai_enabled": True, "ai_base_url": "http://x",
+                                 "ai_api_key": "k", "ai_model": "t",
+                                 "ai_compress": "mid", "ai_ctx_msgs": 12}},
+                   {"id": "a", "port": 8188}, "继续", _hist20,
+                   emit=lambda k, **kw: _compress_ev.append((k, kw)))
+finally:
+    _ag2._round_chat = _orig_round9
+
+check("9j 触发压缩事件",
+      any(k == "compress" for k, _ in _compress_ev)
+      and any(k == "compress_done" for k, _ in _compress_ev),
+      str([k for k, _ in _compress_ev]))
+_done = next((kw for k, kw in _compress_ev if k == "compress_done"), {})
+check("9k compress_done 带摘要与覆盖条数",
+      _done.get("summary") and _done.get("upto") == 11, str(_done)[:120])
+_last_call = _seen_msgs[-1]
+check("9l 摘要以 system 消息注入",
+      any(m.get("role") == "system" and "压缩摘要" in str(m.get("content"))
+          for m in _last_call), str([m.get("role") for m in _last_call]))
+check("9m 只带摘要之后的原文",
+      not any("问题0" in str(m.get("content")) for m in _last_call
+              if m.get("role") == "user"),
+      "问题0 不应出现在上下文里")
+
 # --------------------------------------------------
 print("-" * 60)
 fails = [n for n, ok, _ in RESULTS if not ok]

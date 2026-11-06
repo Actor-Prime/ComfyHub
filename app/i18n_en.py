@@ -763,4 +763,16 @@ EN_DICT = {
     "删除对话": "Delete conversation",
     "删除当前对话？此操作不可恢复。":
         "Delete this conversation? This cannot be undone.",
+
+    # ---- 上下文压缩（2026-11-06）----
+    "关闭（只保留最近几条）": "Off (keep only recent messages)",
+    "轻度（24 条触发，保留 14 条）": "Light (trigger 24, keep 14)",
+    "中度（16 条触发，保留 9 条，推荐）": "Medium (trigger 16, keep 9) — recommended",
+    "激进（10 条触发，保留 5 条）": "Aggressive (trigger 10, keep 5)",
+    "上下文压缩:": "Context compression:",
+    "对话变长时自动把较早内容压成摘要，之后只带摘要+最近几条原文；"
+    "档位越高保留的原文越少、省得越多":
+        "When the chat grows long, older turns are summarized automatically and only "
+        "the summary plus recent messages are sent. Higher levels keep less raw text "
+        "and save more tokens.",
 }

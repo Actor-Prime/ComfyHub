@@ -53,21 +53,32 @@ def title_of(msgs: list, fallback: str = "新对话") -> str:
     return fallback
 
 
-def save(cid: str, messages: list, title: str = "") -> None:
-    """写一个会话；messages 只保留 role/content"""
+def save(cid: str, messages: list, title: str = "",
+         summary: str = None, upto: int = None) -> None:
+    """写一个会话；messages 只保留 role/content。
+
+    summary / upto 为「上下文压缩」产物（2026-11-06）：
+    传 None 表示沿用文件里已有的值（普通保存不会把摘要清掉）。
+    """
     try:
         msgs = _clip(messages)
         now = time.time()
         path = _path(cid)
         created = now
+        old_summary, old_upto = "", 0
         if os.path.isfile(path):
             try:
                 with open(path, encoding="utf-8") as f:
-                    created = json.load(f).get("created") or now
+                    prev = json.load(f)
+                created = prev.get("created") or now
+                old_summary = prev.get("summary") or ""
+                old_upto = int(prev.get("summary_upto") or 0)
             except Exception:
                 pass
         data = {"id": cid, "title": (title or title_of(msgs)), "created": created,
-                "updated": now, "messages": msgs}
+                "updated": now, "messages": msgs,
+                "summary": old_summary if summary is None else str(summary),
+                "summary_upto": old_upto if upto is None else max(0, int(upto))}
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False)
@@ -84,10 +95,13 @@ def load(cid: str) -> dict:
         if isinstance(d, dict):
             d.setdefault("id", cid)
             d.setdefault("messages", [])
+            d.setdefault("summary", "")
+            d.setdefault("summary_upto", 0)
             return d
     except Exception:
         pass
-    return {"id": cid, "title": "新对话", "messages": [], "updated": 0}
+    return {"id": cid, "title": "新对话", "messages": [],
+            "summary": "", "summary_upto": 0, "updated": 0}
 
 
 def delete(cid: str) -> None:
