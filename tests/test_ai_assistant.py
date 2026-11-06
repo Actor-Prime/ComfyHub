@@ -892,6 +892,71 @@ _a100 = _pg4.styleSheet()
 check("11e 面板越不透明、底板越透（可反向调节）", _a0 != _a100, f"{_a0[:40]} vs {_a100[:40]}")
 _pg4.close()
 
+# ================================================== 12. 保存前改动确认（2026-11-06）
+from app.ui.changes_dialog import diff_changes as _dc  # noqa: E402
+
+_ch = _dc({"a": 1, "b": "旧", "k": "secret123", "t": "短文本", "u": False},
+          {"a": 2, "b": "新", "k": "new456789", "t": "更长的文本内容", "u": True, "c": ""},
+          {"a": "数值", "b": "文本", "k": "密钥", "t": "长文", "u": "开关", "c": "新增"},
+          secret_keys=("k",), long_keys=("t",))
+check("12a 只列有差异的字段", len(_ch) == 5, str(_ch))
+check("12b 密钥只显示已修改不给明文",
+      any(x[0] == "密钥" and x[1] == "已设置" and x[2] == "已修改" for x in _ch), str(_ch))
+check("12c 长文本显示字数变化", any(x[0] == "长文" and "字" in x[1] for x in _ch), str(_ch))
+check("12d 布尔显示开/关", any(x[0] == "开关" and x[2] == "开" for x in _ch), str(_ch))
+check("12e 新增空值不算改动", not any(x[0] == "新增" for x in _ch), str(_ch))
+
+# 系统设置页：取消 → 不落盘；确认 → 落盘；无改动 → 不弹窗
+import app.ui.changes_dialog as _cdmod  # noqa: E402
+_tmpcfg = tempfile.mkdtemp(prefix="ch_save_")
+import app.ui.pages.settings_page as _spmod  # noqa: E402
+import app.config as _cfgmod  # noqa: E402
+_orig_cpath = _cfgmod.CONFIG_PATH
+_orig_sp_save = _spmod.save_config
+_orig_confirm = _cdmod.confirm_changes
+_cfgmod.CONFIG_PATH = os.path.join(_tmpcfg, "config.json")
+# 初始配置必须与控件默认值一致，否则 pending vs old 会产生一堆假差异
+from app.ai_persona import resolve as _persona_resolve  # noqa: E402
+_base_settings = {"mirror": "阿里云", "gh_proxy": "", "git_proxy": "",
+                  "tools_dir": "", "close_behavior": "ask", "ai_enabled": False,
+                  "ai_base_url": "", "ai_api_key": "", "ai_model": "deepseek-chat",
+                  "ai_think": "off", "ai_max_tokens": 4000, "ai_ctx_msgs": 12,
+                  "ai_compress": "mid", "ai_persona": _persona_resolve(""),
+                  "ai_direct": True, "theme": "dark", "bg_image": "",
+                  "bg_opacity": 72, "lang": "zh"}
+_saved_calls = []
+_spmod.save_config = lambda c: _saved_calls.append(1)
+_sp2 = SettingsPage({"settings": dict(_base_settings)}, _FakeWin())
+_sp2.show()
+for _ in range(6):
+    app.processEvents()
+
+# 无改动：不应弹窗也不应写盘
+_confirm_calls = []
+_cdmod.confirm_changes = lambda *a, **k: _confirm_calls.append(1) or True
+_sp2._save()
+check("12f 无改动不弹窗不写盘",
+      not _confirm_calls and not _saved_calls
+      and "没有改动" in _sp2.lb_saved.text(), str(_confirm_calls))
+
+# 有改动 + 取消：不写盘
+_sp2.sp_ai_max.setValue(8000)
+_cdmod.confirm_changes = lambda *a, **k: False
+_sp2._save()
+check("12g 取消后不写盘", not _saved_calls
+      and "已取消" in _sp2.lb_saved.text(), str(_saved_calls))
+check("12h 取消后配置仍是旧值", _sp2.cfg["settings"]["ai_max_tokens"] == 4000)
+
+# 有改动 + 确认：写盘
+_cdmod.confirm_changes = lambda *a, **k: True
+_sp2._save()
+check("12i 确认后写盘", len(_saved_calls) == 1
+      and _sp2.cfg["settings"]["ai_max_tokens"] == 8000, str(_saved_calls))
+_sp2.close()
+_cdmod.confirm_changes = _orig_confirm
+_spmod.save_config = _orig_sp_save
+_cfgmod.CONFIG_PATH = _orig_cpath
+
 # --------------------------------------------------
 print("-" * 60)
 fails = [n for n, ok, _ in RESULTS if not ok]

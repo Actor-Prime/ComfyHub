@@ -143,6 +143,9 @@ check("4m 关于框含 Gitee/GitHub 两个链接", len(_links) == 2,
 
 page.sl_alpha.setValue(50)
 page.cb_lang.setCurrentIndex(page.cb_lang.findData("en"))
+# 2026-11-06 起保存前会弹"改动确认"模态框——测试里自动确认，否则 exec() 挂死
+import app.ui.changes_dialog as _cd  # noqa: E402
+_cd.confirm_changes = lambda *a, **k: True
 page._save()
 st = cfg["settings"]
 check("4h 保存主题=custom", st.get("theme") == "custom", str(st.get("theme")))

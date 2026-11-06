@@ -794,4 +794,8 @@ EN_DICT = {
     "操作纪律（不许编造路径、报错要如实转述等）始终生效，不会被这里覆盖":
         "This text is prepended to the system prompt as role and preferences. Safety "
         "rules (no invented paths, report errors verbatim) always stay in effect.",
+    "没有改动，无需保存": "No changes — nothing to save",
+    "已取消，未保存任何修改": "Cancelled — nothing was saved",
+    "确认无误再保存；点「取消」不会写入任何内容。":
+        "Review the changes before saving; clicking Cancel writes nothing.",
 }

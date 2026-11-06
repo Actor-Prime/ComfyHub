@@ -837,7 +837,19 @@ class SettingsPage(QWidget):
         dlg.resize(560, 420)
         dlg.exec()
 
+    # 保存前改动确认用的字段名（2026-11-06）
+    _SAVE_LABELS = {
+        "mirror": "PyPI 镜像", "gh_proxy": "GitHub 代理", "git_proxy": "Git Clone 代理",
+        "tools_dir": "共享工具目录", "close_behavior": "关闭按钮行为",
+        "ai_enabled": "AI 接入", "ai_base_url": "接口地址", "ai_api_key": "API Key",
+        "ai_model": "模型名", "ai_think": "思考强度", "ai_max_tokens": "最大输出",
+        "ai_ctx_msgs": "上下文条数", "ai_compress": "上下文压缩", "ai_persona": "助手设定",
+        "ai_direct": "AI 直连", "theme": "主题", "bg_image": "背景图",
+        "bg_opacity": "面板不透明度", "lang": "界面语言",
+    }
+
     def _save(self):
+        from app.ui.changes_dialog import diff_changes, confirm_changes
         # 工具目录校验：非空必须是绝对路径（防手滑相对路径落到诡异位置）
         new_tools = self.ed_tools.text().strip().rstrip("\\/")
         if new_tools and not os.path.isabs(new_tools):
@@ -847,27 +859,41 @@ class SettingsPage(QWidget):
             return
         old_tools = str(self.cfg["settings"].get("tools_dir", "")).strip()
         st = self.cfg["settings"]
-        st["mirror"] = self.cb_mirror.currentText()
-        st["gh_proxy"] = self.ed_ghproxy.text().strip()
-        st["git_proxy"] = self.ed_gitproxy.text().strip()
-        st["tools_dir"] = new_tools
-        st["close_behavior"] = self.cb_close.currentData() or "ask"
-        st["ai_enabled"] = self.ck_ai.isChecked()
-        st["ai_base_url"] = self.ed_ai_base.text().strip()
-        st["ai_api_key"] = self.ed_ai_key.text().strip()
-        st["ai_model"] = self.cb_ai_model.currentText().strip() or "deepseek-chat"
-        st["ai_think"] = str(self.cb_ai_think.currentData() or "off")
-        st["ai_max_tokens"] = int(self.sp_ai_max.value())
-        st["ai_ctx_msgs"] = int(self.cb_ai_ctx.currentData() or 12)
-        st["ai_compress"] = str(self.cb_ai_compress.currentData() or "mid")
-        st["ai_persona"] = self.ed_ai_persona.toPlainText().strip()[:4000]
-        st["ai_direct"] = bool(self.ck_ai_direct.isChecked())
-        # 主题与语言（2026-11-01）：主题即时重绘，语言需重启
-        old_lang = str(st.get("lang", "zh"))
-        st["theme"] = self.cb_theme.currentData() or "dark"
-        st["bg_image"] = self._bg_value
-        st["bg_opacity"] = int(self.sl_alpha.value())
-        st["lang"] = self.cb_lang.currentData() or "zh"
+        old = dict(st)
+        # 先收集到 pending，确认后才真正写入 st —— 取消则一个字节都不动
+        pending = {
+            "mirror": self.cb_mirror.currentText(),
+            "gh_proxy": self.ed_ghproxy.text().strip(),
+            "git_proxy": self.ed_gitproxy.text().strip(),
+            "tools_dir": new_tools,
+            "close_behavior": self.cb_close.currentData() or "ask",
+            "ai_enabled": self.ck_ai.isChecked(),
+            "ai_base_url": self.ed_ai_base.text().strip(),
+            "ai_api_key": self.ed_ai_key.text().strip(),
+            "ai_model": self.cb_ai_model.currentText().strip() or "deepseek-chat",
+            "ai_think": str(self.cb_ai_think.currentData() or "off"),
+            "ai_max_tokens": int(self.sp_ai_max.value()),
+            "ai_ctx_msgs": int(self.cb_ai_ctx.currentData() or 12),
+            "ai_compress": str(self.cb_ai_compress.currentData() or "mid"),
+            "ai_persona": self.ed_ai_persona.toPlainText().strip()[:4000],
+            "ai_direct": bool(self.ck_ai_direct.isChecked()),
+            "theme": self.cb_theme.currentData() or "dark",
+            "bg_image": self._bg_value,
+            "bg_opacity": int(self.sl_alpha.value()),
+            "lang": self.cb_lang.currentData() or "zh",
+        }
+        changes = diff_changes(old, pending, self._SAVE_LABELS,
+                               secret_keys=("ai_api_key",),
+                               long_keys=("ai_persona",))
+        if not changes:
+            self.lb_saved.setText("没有改动，无需保存")
+            return
+        # 用户要求（2026-11-06）：保存前列出改了什么，防手滑改错配置后无感落盘
+        if not confirm_changes(self, "系统设置", changes, "保存设置"):
+            self.lb_saved.setText("已取消，未保存任何修改")
+            return
+        st.update(pending)
+        old_lang = str(old.get("lang", "zh"))
         save_config(self.cfg)
         self.sig_saved.emit()       # 主窗接到后重设 QSS + 背景层
         try:                        # 底栏给个即时反馈，省掉一次弹窗打扰
@@ -893,5 +919,3 @@ class SettingsPage(QWidget):
                 self, "ComfyHub",
                 f"设置已保存。\n\n界面语言已切换（替换 {n} 处文案）。\n"
                 "少数动态文案（表格行、运行日志）切换页面后会对齐。")
-        else:
-            QMessageBox.information(self, "ComfyHub", "设置已保存")
