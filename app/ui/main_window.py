@@ -78,6 +78,13 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("ComfyHub — ComfyUI 多实例管理器")
         self.resize(1180, 780)
         self.cfg = load_config()
+        # 旧配置里的明文密钥 → 启动时就加密落盘（2026-11-06，一次性迁移）
+        if self.cfg.pop("_migrate_key", False):
+            try:
+                from app.config import save_config
+                save_config(self.cfg)
+            except Exception:
+                pass
         self.procs = ProcManager()
         self._quit_direct = False    # 托盘「退出」直通标志（防被关闭行为「最小化」分支截胡）
 

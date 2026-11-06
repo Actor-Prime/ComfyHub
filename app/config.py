@@ -1,4 +1,4 @@
-APP_VERSION = "0.8.17"
+APP_VERSION = "0.8.18"
 
 # -*- coding: utf-8 -*-
 """配置管理：多实例配置持久化 + 自动探测本机 ComfyUI"""
@@ -97,6 +97,19 @@ def load_config() -> dict:
                 cfg.update(data)
         except Exception:
             pass  # 配置损坏时回退默认，不崩溃
+    # 密钥解密（2026-11-06）：盘上是 DPAPI 密文，内存里用明文；
+    # 解不开（换了机器/用户）就当没填过，别把密文当 Key 发出去
+    try:
+        from app import secret_store
+        st = cfg.get("settings")
+        if isinstance(st, dict) and secret_store.is_encrypted(st.get("ai_api_key") or ""):
+            plain = secret_store.unprotect(st["ai_api_key"])
+            st["ai_api_key"] = plain or ""
+            st["_ai_key_locked"] = plain is None     # 供界面提示"密钥无法解密"
+        elif isinstance(st, dict) and str(st.get("ai_api_key") or "").strip():
+            cfg["_migrate_key"] = True               # 旧配置明文 → 下次保存时加密
+    except Exception:
+        pass
     # 用户删光实例后保持为空（显示"（无实例）"占位），不再自动生成
     _sanitize_instances(cfg)
     return cfg
@@ -159,9 +172,26 @@ def _sanitize_instances(cfg: dict) -> None:
 
 
 def save_config(cfg: dict) -> None:
+    # 密钥加密后再落盘（2026-11-06）：内存里保持明文，写出去的是 DPAPI 密文。
+    # 用深拷贝，避免把内存中的明文改成密文导致后续请求拿到密文。
+    out = cfg
+    try:
+        import copy
+        from app import secret_store
+        out = copy.deepcopy(cfg)
+        for k in [k for k in list(out) if str(k).startswith("_")]:
+            out.pop(k, None)                        # "_migrate_key" 等运行态标记不写盘
+        st = out.get("settings")
+        if isinstance(st, dict):
+            st.pop("_ai_key_locked", None)          # 运行态标记，不写盘
+            key = st.get("ai_api_key")
+            if key:
+                st["ai_api_key"] = secret_store.protect(str(key))
+    except Exception:
+        out = cfg
     tmp = CONFIG_PATH + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
+        json.dump(out, f, ensure_ascii=False, indent=2)
     os.replace(tmp, CONFIG_PATH)  # 原子写，防断电损坏
 
 

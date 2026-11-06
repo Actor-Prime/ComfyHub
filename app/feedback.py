@@ -138,7 +138,26 @@ def collect() -> str:
         pass
 
     st.append("\n==== 诊断信息结束 ====")
-    return "\n".join(st)
+    return sanitize_text(_strip_known_secrets("\n".join(st)))
+
+
+def _strip_known_secrets(s: str) -> str:
+    """把**配置里真实的**密钥值直接替换掉（2026-11-06）
+
+    正则只认 "api_key=xxx" 这类形态，日志里若出现裸 token（没有键名）就漏了。
+    这里拿当前配置里的值做精确替换，比正则可靠。
+    """
+    try:
+        from app.config import load_config
+        cfg = load_config()
+        st = cfg.get("settings") or {}
+        for k in ("ai_api_key",):
+            v = str(st.get(k) or "").strip()
+            if len(v) >= 8:
+                s = s.replace(v, "***")
+    except Exception:
+        pass
+    return s
 
 
 def _pyside_ver() -> str:
