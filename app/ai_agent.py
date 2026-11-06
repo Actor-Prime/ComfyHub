@@ -70,10 +70,11 @@ def _chat_tools(settings: dict, messages: list, tools: list,
     payload = {
         "model": settings.get("ai_model") or "deepseek-chat",
         "messages": messages,
-        "tools": tools,
         "temperature": 0.3,
         "max_tokens": int(max_tokens or 2000),
     }
+    if tools:                       # 收尾轮不带工具时不能塞空数组
+        payload["tools"] = tools
     if extra:
         payload.update(extra)
     body = json.dumps(payload).encode("utf-8")
@@ -130,11 +131,12 @@ def _stream_chat(settings: dict, messages: list, tools: list,
     payload = {
         "model": settings.get("ai_model") or "deepseek-chat",
         "messages": messages,
-        "tools": tools,
         "temperature": 0.3,
         "max_tokens": int(max_tokens or 2000),
         "stream": True,
     }
+    if tools:                       # 空数组会让部分接口报错（收尾轮不带工具）
+        payload["tools"] = tools
     if extra:
         payload.update(extra)
     body = json.dumps(payload).encode("utf-8")
@@ -255,6 +257,7 @@ def run_agent(cfg: dict, inst: dict, user_text: str, history: list,
     messages.append({"role": "user", "content": _user_content(user_text, attachments)})
 
     tools = ai_tools.schemas()
+    repeat_seen = {}            # (工具名, 参数) → 次数：拦住模型拿同一参数死循环
     for round_i in range(MAX_ROUNDS):
         if stop_flag is not None and stop_flag.is_set():
             emit("error", text="已停止")
@@ -307,9 +310,37 @@ def run_agent(cfg: dict, inst: dict, user_text: str, history: list,
             _imgs = result.get("images") or []
             if _imgs:
                 emit("image", paths=_imgs)
+
+            # 同一工具+同一参数反复调用：结果不会变，第 3 次起明确告警，
+            # 免得 8 轮全耗在一个查不到的搜索上（2026-11-06 实测踩到）
+            sig = f"{name}|{json.dumps(args, ensure_ascii=False, sort_keys=True)}"
+            repeat_seen[sig] = repeat_seen.get(sig, 0) + 1
+            content_txt = _clip(result)
+            if repeat_seen[sig] >= 3:
+                content_txt += ("\n\n[系统提示] 你已经用完全相同的参数调用这个工具 "
+                                f"{repeat_seen[sig]} 次，返回结果不会变。"
+                                "请换关键词/参数，或直接根据现有信息作答并说明限制。")
             messages.append({"role": "tool", "tool_call_id": call.get("id") or name,
-                             "content": _clip(result)})
-    emit("error", text=f"连续 {MAX_ROUNDS} 轮工具调用未得到最终回答，已停止（任务可能过于复杂）")
+                             "content": content_txt})
+
+    # 轮数用尽：不再直接掐断，强制模型基于已有结果收尾（不带工具，
+    # 保证用户至少拿到「查到了什么 / 还缺什么 / 下一步怎么办」）
+    messages.append({
+        "role": "user",
+        "content": "（系统提示）工具调用轮数已用尽，请不要调用任何工具。"
+                   "请立刻用现有信息给出结论：已经查到什么、还缺什么、"
+                   "建议我下一步怎么做；不确定的地方要明说，不要编造。"})
+    try:
+        msg = _round_chat(st, messages, [], extra=extra,
+                          max_tokens=max_tokens, emit=emit, log=log)
+        content = (msg.get("content") or "").strip()
+        if content:
+            emit("assistant", text=content)
+            return
+    except Exception as e:
+        log(f"[AI] 收尾轮失败：{type(e).__name__}: {e}")
+    emit("error", text=f"连续 {MAX_ROUNDS} 轮工具调用未得到最终回答，"
+                       f"请把问题拆小一点再问（例如先只说要看哪个模型类别）")
 
 
 def _brief(name: str, result: dict) -> str:

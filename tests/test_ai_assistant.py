@@ -649,6 +649,66 @@ check("7i 缩略图用可点击标签", issubclass(_ClickableLabel, __import__(
 
 shutil.rmtree(_tmp, ignore_errors=True)
 
+# ================================================== 8. 工具轮数用尽 → 强制收尾（2026-11-06）
+# 用户实测：连续 8 轮 search_models 后直接红字报错，什么结论都没拿到
+import app.ai_agent as _ag2  # noqa: E402
+
+_evs, _tool_rounds, _msgs_seen = [], [], []
+_orig_exec8 = ai_tools.execute
+_orig_round8 = _ag2._round_chat
+ai_tools.execute = lambda n, a, c: {"ok": True, "results": []}
+
+
+def _fake_round(_st, messages, tools, **kw):
+    _tool_rounds.append(list(tools))
+    _msgs_seen.append(list(messages))
+    if not tools:                       # 收尾轮：不带工具，必须直接给结论
+        return {"content": "结论：已查到显卡信息；模型没搜到，建议先看本地模型列表"}
+    return {"tool_calls": [{"id": f"c{len(_tool_rounds)}",
+                            "function": {"name": "search_models",
+                                         "arguments": '{"keyword":"找不到的模型"}'}}]}
+
+
+_ag2._round_chat = _fake_round
+try:
+    _ag2.run_agent({"settings": {"ai_enabled": True, "ai_base_url": "http://x",
+                                 "ai_api_key": "k", "ai_model": "test"}},
+                   {"id": "a", "port": 8188}, "帮我找模型", [],
+                   emit=lambda k, **kw: _evs.append((k, kw)))
+finally:
+    _ag2._round_chat = _orig_round8
+    ai_tools.execute = _orig_exec8
+
+check("8a 轮数用尽后强制收尾并给出结论",
+      any(k == "assistant" and "结论" in kw.get("text", "") for k, kw in _evs),
+      str(_evs[-2:]))
+check("8b 收尾轮不再携带工具", _tool_rounds and _tool_rounds[-1] == [],
+      str(_tool_rounds[-1]) if _tool_rounds else "no calls")
+check("8c 不再只丢一句红字报错", not any(k == "error" for k, _ in _evs),
+      str([k for k, _ in _evs]))
+check("8d 工具往返数受 MAX_ROUNDS 限制",
+      len(_tool_rounds) == _ag2.MAX_ROUNDS + 1, str(len(_tool_rounds)))
+check("8e 重复参数调用会被注入系统提示",
+      any("系统提示" in str(m.get("content") or "")
+          for msgs in _msgs_seen for m in msgs if m.get("role") == "tool"),
+      "未注入")
+
+# 搜索空结果要给建议，不能让模型拿同一关键词反复重试
+_orig_search = None
+try:
+    import app.model_store as _ms
+    _orig_search = _ms.search_models
+    _ms.search_models = lambda kw, limit=30, cursor=None: []
+    _r = ai_tools.execute("search_models", {"keyword": "找不到的模型"},
+                          ai_tools.build_ctx({"instances": []},
+                                             {"id": "x", "port": 8188,
+                                              "comfyui_path": "F:/X"}))
+    check("8f 搜索空结果给出改用英文关键词的建议",
+          _r.get("results") == [] and "英文" in (_r.get("hint") or ""), str(_r))
+finally:
+    if _orig_search is not None:
+        _ms.search_models = _orig_search
+
 # --------------------------------------------------
 print("-" * 60)
 fails = [n for n, ok, _ in RESULTS if not ok]

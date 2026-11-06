@@ -268,6 +268,14 @@ def _t_models_search(args, ctx: ToolCtx):
     res = model_store.search_models(kw, limit=int(args.get("limit") or 10))
     items = [{"id": m["id"], "downloads": m["downloads"], "pipeline": m["pipeline"]}
              for m in res]
+    if not items:
+        # 空结果别只回空数组：模型会拿同一关键词反复重试直到轮数耗尽
+        # （2026-11-06 实测：search_models 连调 8 次仍是 0 仓库）
+        return ctx.ok(keyword=kw, results=[], ok=True,
+                      hint="没搜到这个关键词。HF 只索引仓库名与描述，中文关键词命中率很低："
+                           "改用英文品牌词（qwen / flux / wan / sd3 / pony / hunyuan），"
+                           "或先用 list_models 看本地已经有哪些；"
+                           "不要用同样的关键词重复搜索。")
     return ctx.ok(keyword=kw, results=items, next_cursor=getattr(res, "next_cursor", None),
                   note="用 list_repo_files 查看某仓库的权重文件")
 
