@@ -569,6 +569,11 @@ page.close()
 
 check("5d 设置页有思考强度/最大输出/上下文",
       hasattr(sp, "cb_ai_think") and hasattr(sp, "sp_ai_max") and hasattr(sp, "cb_ai_ctx"))
+check("5d1 助手设定默认已填好（不留空）",
+      len(sp.ed_ai_persona.toPlainText().strip()) > 40
+      and "ComfyUI" in sp.ed_ai_persona.toPlainText(),
+      sp.ed_ai_persona.toPlainText()[:40])
+check("5d2 直连开关默认开启", sp.ck_ai_direct.isChecked() is True)
 check("5e 思考强度三档", sp.cb_ai_think.count() == 3)
 check("5f 画像提示识别出 MiMo", "MiMo" in sp.lb_ai_profile.text(), sp.lb_ai_profile.text())
 sp.close()
@@ -784,12 +789,18 @@ _ctxp = ai_tools.build_ctx({"settings": {"ai_persona": "回答必须两句话以
                            {"id": "a", "port": 8188, "comfyui_path": "F:/X"})
 _sp = _ag2._system_prompt(_ctxp)
 check("10a 助手设定被注入系统提示词", "两句话以内" in _sp and "832×1216" in _sp, _sp[:120])
-check("10b 助手设定插在最前面（角色优先）", _sp.startswith("【用户设定的助手角色与偏好】"), _sp[:40])
+check("10b 助手设定插在最前面（角色优先）", _sp.startswith("【助手设定】"), _sp[:40])
 check("10c 硬纪律仍在（不许编造路径）", "禁止自己推算文件名" in _sp)
 
 _ctxp2 = ai_tools.build_ctx({"settings": {}}, {"id": "a", "port": 8188,
                                               "comfyui_path": "F:/X"})
-check("10d 未设置时不注入空段", "用户设定的助手角色" not in _ag2._system_prompt(_ctxp2))
+_sp2 = _ag2._system_prompt(_ctxp2)
+check("10d 未设置时用出厂默认（不留空）",
+      "ComfyUI 出图与管理助手" in _sp2 and _sp2.startswith("【助手设定】"), _sp2[:60])
+check("10d2 清空设定同样回落默认",
+      "ComfyUI 出图与管理助手" in _ag2._system_prompt(
+          ai_tools.build_ctx({"settings": {"ai_persona": "   "}},
+                             {"id": "a", "port": 8188, "comfyui_path": "F:/X"})))
 
 # 直连开关：默认走直连，设置里关掉后走系统代理
 _cap_open = {}

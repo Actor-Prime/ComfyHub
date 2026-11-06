@@ -788,4 +788,10 @@ EN_DICT = {
     "如果你的电脑开着全局代理且接口在境外，取消勾选改走代理":
         "Keep this checked for China-based APIs (DeepSeek / Zhipu / Qwen / MiMo). "
         "If a global proxy is running and the API is overseas, uncheck it to use the proxy.",
+    "恢复默认": "Restore default",
+    "把助手设定改回出厂默认内容": "Reset the assistant persona to the factory default",
+    "这里的内容会作为系统提示词的开头（角色与偏好）。"
+    "操作纪律（不许编造路径、报错要如实转述等）始终生效，不会被这里覆盖":
+        "This text is prepended to the system prompt as role and preferences. Safety "
+        "rules (no invented paths, report errors verbatim) always stay in effect.",
 }

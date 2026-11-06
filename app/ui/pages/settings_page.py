@@ -474,18 +474,33 @@ class SettingsPage(QWidget):
         f_ai.addRow("上下文压缩:", self.cb_ai_compress)
 
         # ---- 助手设定 / 直连（2026-11-06）----
+        # 默认就填好一份可用的设定（不留空），用户想改再改，改坏了能一键恢复
+        from app.ai_persona import DEFAULT_PERSONA, resolve as _resolve_persona
         self.ed_ai_persona = QPlainTextEdit()
-        self.ed_ai_persona.setPlaceholderText(
-            "给助手一段固定设定，例如：\n"
-            "· 你是我的 ComfyUI 出图助手，回答尽量短，先给结论再给步骤\n"
-            "· 默认出图用 832×1216、28 步；改工作流前先给我看要改哪几个节点\n"
-            "· 提示词一律用英文视觉描述，不要出现角色名/IP 名")
-        self.ed_ai_persona.setFixedHeight(88)
-        self.ed_ai_persona.setPlainText(str(st.get("ai_persona") or ""))
+        self.ed_ai_persona.setPlainText(_resolve_persona(str(st.get("ai_persona") or "")))
+        self.ed_ai_persona.setFixedHeight(118)
         self.ed_ai_persona.setToolTip(
-            "会作为系统提示词的「角色与偏好」插到最前面；为空则使用内置默认设定。"
+            "这里的内容会作为系统提示词的开头（角色与偏好）。"
             "操作纪律（不许编造路径、报错要如实转述等）始终生效，不会被这里覆盖")
-        f_ai.addRow("助手设定:", self.ed_ai_persona)
+        _wrap_persona = QWidget()
+        _pv = QVBoxLayout(_wrap_persona)
+        _pv.setContentsMargins(0, 0, 0, 0)
+        _pv.setSpacing(4)
+        _pv.addWidget(self.ed_ai_persona)
+        _pr = QHBoxLayout()
+        _pr.setContentsMargins(0, 0, 0, 0)
+        _b_reset_persona = QPushButton("恢复默认")
+        _b_reset_persona.setStyleSheet(
+            "QPushButton{background:transparent;border:none;color:#7aa2d0;}"
+            "QPushButton:hover{text-decoration:underline;}")
+        _b_reset_persona.setCursor(Qt.PointingHandCursor)
+        _b_reset_persona.setToolTip("把助手设定改回出厂默认内容")
+        _b_reset_persona.clicked.connect(
+            lambda: self.ed_ai_persona.setPlainText(DEFAULT_PERSONA))
+        _pr.addStretch(1)
+        _pr.addWidget(_b_reset_persona)
+        _pv.addLayout(_pr)
+        f_ai.addRow("助手设定:", _wrap_persona)
 
         self.ck_ai_direct = QCheckBox("直连（不经过系统代理）")
         self.ck_ai_direct.setChecked(bool(st.get("ai_direct", True)))

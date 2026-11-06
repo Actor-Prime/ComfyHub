@@ -16,6 +16,7 @@ import json
 from app import ai_assist
 from app import ai_context
 from app import ai_models
+from app import ai_persona
 from app import ai_tools
 
 MAX_ROUNDS = 8          # 单次提问最多工具往返数
@@ -29,18 +30,15 @@ def _clip(obj) -> str:
 
 def _system_prompt(ctx) -> str:
     inst = ctx.inst
-    # 用户自定义的助手设定（2026-11-06）：设置页可写「人设/回复偏好/默认参数」，
-    # 插在最前面——模型对开头的角色设定最敏感，后面的硬规则仍然压得住它。
-    persona = ""
+    # 助手设定（2026-11-06）：设置页可改；没写就用出厂默认，**不留空**
+    raw = ""
     try:
-        persona = str((getattr(ctx, "cfg", {}) or {}).get("settings", {})
-                      .get("ai_persona") or "").strip()
+        raw = str((getattr(ctx, "cfg", {}) or {}).get("settings", {})
+                  .get("ai_persona") or "")
     except Exception:
-        persona = ""
-    head = ""
-    if persona:
-        head = ("【用户设定的助手角色与偏好】（优先遵守，但不得违反下面的操作纪律）\n"
-                + persona[:1500] + "\n\n")
+        raw = ""
+    persona = ai_persona.resolve(raw)
+    head = ai_persona.PERSONA_HEADER + "\n" + persona[:1500] + "\n\n"
     return head + (
         "你是 ComfyHub 内置的 ComfyUI 管理助手，帮助用户查看实例状态、排查报错、"
         "管理模型与工作流、提交生成任务。回答用简体中文，简洁直接，"
