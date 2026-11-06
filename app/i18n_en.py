@@ -775,4 +775,17 @@ EN_DICT = {
         "When the chat grows long, older turns are summarized automatically and only "
         "the summary plus recent messages are sent. Higher levels keep less raw text "
         "and save more tokens.",
+
+    # ---- 助手设定 / 直连（2026-11-06）----
+    "助手设定:": "Assistant persona:",
+    "直连（不经过系统代理）": "Direct connection (bypass system proxy)",
+    "会作为系统提示词的「角色与偏好」插到最前面；为空则使用内置默认设定。"
+    "操作纪律（不许编造路径、报错要如实转述等）始终生效，不会被这里覆盖":
+        "Inserted at the top of the system prompt as role and preferences. Leave empty "
+        "to use the built-in default. Safety rules (no invented paths, report errors "
+        "verbatim) always stay in effect and cannot be overridden here.",
+    "国内接口（DeepSeek/智谱/通义/MiMo 等）建议保持勾选。"
+    "如果你的电脑开着全局代理且接口在境外，取消勾选改走代理":
+        "Keep this checked for China-based APIs (DeepSeek / Zhipu / Qwen / MiMo). "
+        "If a global proxy is running and the API is overseas, uncheck it to use the proxy.",
 }

@@ -473,6 +473,27 @@ class SettingsPage(QWidget):
             "档位越高保留的原文越少、省得越多")
         f_ai.addRow("上下文压缩:", self.cb_ai_compress)
 
+        # ---- 助手设定 / 直连（2026-11-06）----
+        self.ed_ai_persona = QPlainTextEdit()
+        self.ed_ai_persona.setPlaceholderText(
+            "给助手一段固定设定，例如：\n"
+            "· 你是我的 ComfyUI 出图助手，回答尽量短，先给结论再给步骤\n"
+            "· 默认出图用 832×1216、28 步；改工作流前先给我看要改哪几个节点\n"
+            "· 提示词一律用英文视觉描述，不要出现角色名/IP 名")
+        self.ed_ai_persona.setFixedHeight(88)
+        self.ed_ai_persona.setPlainText(str(st.get("ai_persona") or ""))
+        self.ed_ai_persona.setToolTip(
+            "会作为系统提示词的「角色与偏好」插到最前面；为空则使用内置默认设定。"
+            "操作纪律（不许编造路径、报错要如实转述等）始终生效，不会被这里覆盖")
+        f_ai.addRow("助手设定:", self.ed_ai_persona)
+
+        self.ck_ai_direct = QCheckBox("直连（不经过系统代理）")
+        self.ck_ai_direct.setChecked(bool(st.get("ai_direct", True)))
+        self.ck_ai_direct.setToolTip(
+            "国内接口（DeepSeek/智谱/通义/MiMo 等）建议保持勾选。"
+            "如果你的电脑开着全局代理且接口在境外，取消勾选改走代理")
+        f_ai.addRow("", self.ck_ai_direct)
+
         self.lb_ai_profile = QLabel("")
         self.lb_ai_profile.setWordWrap(True)
         self.lb_ai_profile.setStyleSheet("color:#7f8894; font-size:11px;")
@@ -804,6 +825,8 @@ class SettingsPage(QWidget):
         st["ai_max_tokens"] = int(self.sp_ai_max.value())
         st["ai_ctx_msgs"] = int(self.cb_ai_ctx.currentData() or 12)
         st["ai_compress"] = str(self.cb_ai_compress.currentData() or "mid")
+        st["ai_persona"] = self.ed_ai_persona.toPlainText().strip()[:4000]
+        st["ai_direct"] = bool(self.ck_ai_direct.isChecked())
         # 主题与语言（2026-11-01）：主题即时重绘，语言需重启
         old_lang = str(st.get("lang", "zh"))
         st["theme"] = self.cb_theme.currentData() or "dark"

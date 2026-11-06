@@ -75,13 +75,25 @@ def make_request(url: str, api_key: str, data: bytes = None):
     })
 
 
-def open_request(req, timeout: int = 20):
-    """打开连接（证书策略与 _request 一致；国内网关证书链常不全）"""
+_DIRECT_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def open_request(req, timeout: int = 20, direct: bool = False):
+    """打开连接（证书策略与 _request 一致；国内网关证书链常不全）
+
+    direct=True：绕过系统代理直连。2026-11-06 实测踩到——系统里挂了本地代理
+    （127.0.0.1:xxxxx）时代理一抖动，请求会长时间无数据，界面就卡在「思考中」。
+    国产接口直连通常更快更稳，国外接口则需要走代理。
+    """
+    if direct:
+        return _DIRECT_OPENER.open(req, timeout=timeout)
     return urllib.request.urlopen(req, timeout=timeout, context=_ssl_ctx())
 
 
-def _request(url: str, api_key: str, data: bytes = None, timeout: int = 20) -> dict:
-    with open_request(make_request(url, api_key, data), timeout=timeout) as r:
+def _request(url: str, api_key: str, data: bytes = None, timeout: int = 20,
+             direct: bool = False) -> dict:
+    with open_request(make_request(url, api_key, data), timeout=timeout,
+                      direct=direct) as r:
         return json.loads(r.read().decode("utf-8", "ignore"))
 
 

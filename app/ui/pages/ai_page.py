@@ -911,8 +911,17 @@ class AiPage(QWidget):
 
     def _think_tick(self):
         import time
-        if self._think_lb is not None:
-            self._think_lb.setText(f"思考中… {time.time() - self._think_t0:.1f}s")
+        if self._think_lb is None:
+            return
+        sec = time.time() - self._think_t0
+        if sec > 45:
+            # 2026-11-06：实测系统代理抖动时请求会长时间无数据，用户只看到「思考中」会很懵
+            self._think_lb.setText(
+                f"已等待 {sec:.0f}s，模型还没有返回数据（常见于网络/代理不稳，可点「停止」重试）")
+        elif sec > 20:
+            self._think_lb.setText(f"仍在等待模型响应… {sec:.0f}s")
+        else:
+            self._think_lb.setText(f"思考中… {sec:.1f}s")
 
     def _think_stop(self):
         if self._think_timer is not None:

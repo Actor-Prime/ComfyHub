@@ -414,7 +414,7 @@ class _FakeReq:
 
 
 ai_assist.make_request = lambda url, key, data=None: _FakeReq()
-ai_assist.open_request = lambda req, timeout=20: _FakeResp(chunks)
+ai_assist.open_request = lambda req, timeout=20, **kw: _FakeResp(chunks)
 seen = []
 msg = ai_agent._stream_chat({"ai_base_url": "http://x/v1", "ai_api_key": "k",
                              "ai_model": "m"},
@@ -428,7 +428,7 @@ check("3f3 delta 事件逐段上报", [e["text"] for e in seen if e["kind"] == "
 check("3f4 reasoning 只通报字数", any(e["kind"] == "reasoning" for e in seen))
 
 # 不支持流式 → 回落普通请求
-ai_assist.open_request = lambda req, timeout=20: _FakeResp(
+ai_assist.open_request = lambda req, timeout=20, **kw: _FakeResp(
     [b'{"choices":[{"message":{"content":"ok"}}]}'], ctype="application/json")
 ai_agent._chat_tools = lambda *a, **k: {"choices": [{"message": {"content": "回落成功"},
                                                      "finish_reason": "stop"}]}
@@ -777,6 +777,63 @@ check("9m 只带摘要之后的原文",
       not any("问题0" in str(m.get("content")) for m in _last_call
               if m.get("role") == "user"),
       "问题0 不应出现在上下文里")
+
+# ================================================== 10. 助手设定 / 直连 / 卡顿提示（2026-11-06）
+# 用户实测：点「帮我启动一下」界面卡在「思考中 64s」——系统代理抖动导致请求无响应
+_ctxp = ai_tools.build_ctx({"settings": {"ai_persona": "回答必须两句话以内；默认 832×1216"}},
+                           {"id": "a", "port": 8188, "comfyui_path": "F:/X"})
+_sp = _ag2._system_prompt(_ctxp)
+check("10a 助手设定被注入系统提示词", "两句话以内" in _sp and "832×1216" in _sp, _sp[:120])
+check("10b 助手设定插在最前面（角色优先）", _sp.startswith("【用户设定的助手角色与偏好】"), _sp[:40])
+check("10c 硬纪律仍在（不许编造路径）", "禁止自己推算文件名" in _sp)
+
+_ctxp2 = ai_tools.build_ctx({"settings": {}}, {"id": "a", "port": 8188,
+                                              "comfyui_path": "F:/X"})
+check("10d 未设置时不注入空段", "用户设定的助手角色" not in _ag2._system_prompt(_ctxp2))
+
+# 直连开关：默认走直连，设置里关掉后走系统代理
+_cap_open = {}
+_orig_open = __import__("app.ai_assist", fromlist=["open_request"]).open_request
+
+
+def _fake_open(req, timeout=20, direct=False):
+    _cap_open["direct"] = direct
+    raise TimeoutError("测试中断")
+
+
+_aa = __import__("app.ai_assist", fromlist=["open_request"])
+_aa.open_request = _fake_open
+try:
+    _ag2._stream_chat({"ai_model": "t", "ai_base_url": "http://x", "ai_api_key": "k"},
+                      [{"role": "user", "content": "hi"}], [],
+                      emit=lambda *a, **k: None, timeout=10)
+except Exception:
+    pass
+check("10e 默认直连（绕过系统代理）", _cap_open.get("direct") is True, str(_cap_open))
+try:
+    _ag2._stream_chat({"ai_model": "t", "ai_base_url": "http://x", "ai_api_key": "k",
+                       "ai_direct": False},
+                      [{"role": "user", "content": "hi"}], [],
+                      emit=lambda *a, **k: None, timeout=10)
+except Exception:
+    pass
+check("10f 关掉后走系统代理", _cap_open.get("direct") is False, str(_cap_open))
+_aa.open_request = _orig_open
+
+# 等待超过 45s 要把「思考中」换成有信息量的提示
+from app.ui.pages.ai_page import AiPage as _AP  # noqa: E402
+import time as _t  # noqa: E402
+_pg = _AP({}, _FakeWin())
+_pg._think_start()
+_pg._think_t0 = _t.time() - 50
+_pg._think_tick()
+check("10g 长时间无响应给出可操作提示",
+      "停止" in _pg._think_lb.text() and "代理" in _pg._think_lb.text(), _pg._think_lb.text())
+_pg._think_t0 = _t.time() - 25
+_pg._think_tick()
+check("10h 20~45s 提示仍在等待", "仍在等待" in _pg._think_lb.text(), _pg._think_lb.text())
+_pg._think_stop()
+_pg.close()
 
 # --------------------------------------------------
 print("-" * 60)

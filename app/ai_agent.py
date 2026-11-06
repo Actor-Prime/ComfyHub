@@ -29,7 +29,19 @@ def _clip(obj) -> str:
 
 def _system_prompt(ctx) -> str:
     inst = ctx.inst
-    return (
+    # 用户自定义的助手设定（2026-11-06）：设置页可写「人设/回复偏好/默认参数」，
+    # 插在最前面——模型对开头的角色设定最敏感，后面的硬规则仍然压得住它。
+    persona = ""
+    try:
+        persona = str((getattr(ctx, "cfg", {}) or {}).get("settings", {})
+                      .get("ai_persona") or "").strip()
+    except Exception:
+        persona = ""
+    head = ""
+    if persona:
+        head = ("【用户设定的助手角色与偏好】（优先遵守，但不得违反下面的操作纪律）\n"
+                + persona[:1500] + "\n\n")
+    return head + (
         "你是 ComfyHub 内置的 ComfyUI 管理助手，帮助用户查看实例状态、排查报错、"
         "管理模型与工作流、提交生成任务。回答用简体中文，简洁直接，"
         "关键数字（版本/显存/队列深度）原样引用工具返回值。\n"
@@ -81,7 +93,8 @@ def _chat_tools(settings: dict, messages: list, tools: list,
     body = json.dumps(payload).encode("utf-8")
     return ai_assist._request(
         ai_assist._v1_base(settings["ai_base_url"]) + "/chat/completions",
-        settings["ai_api_key"], data=body, timeout=timeout)
+        settings["ai_api_key"], data=body, timeout=timeout,
+        direct=bool(settings.get("ai_direct", True)))
 
 
 class _StreamUnsupported(Exception):
@@ -147,7 +160,14 @@ def _stream_chat(settings: dict, messages: list, tools: list,
     req.add_header("Accept", "text/event-stream")
 
     content_parts, calls, reasoning_chars, finish = [], {}, 0, ""
-    with ai_assist.open_request(req, timeout=timeout) as resp:
+    _direct = bool(settings.get("ai_direct", True))     # 默认直连，避开本地代理抖动
+    _sock_timeout = min(timeout, 45)                    # 45s 没数据就当网络不通，别干等
+    try:
+        _resp = ai_assist.open_request(req, timeout=_sock_timeout, direct=_direct)
+    except Exception as e:
+        raise TimeoutError(f"等待模型响应超时或连接失败（{_sock_timeout}s）："
+                           f"{type(e).__name__}") from e
+    with _resp as resp:
         ctype = (resp.headers.get("Content-Type") or "").lower()
         if "json" in ctype and "event-stream" not in ctype:
             raise _StreamUnsupported(ctype)
