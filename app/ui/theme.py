@@ -556,6 +556,18 @@ def resolve_mode(mode: str) -> str:
     return "dark"
 
 
+def page_scrim_rgba(alpha: float, strength: float = 0.25) -> str:
+    """页面级底板颜色（2026-11-07）。
+
+    strength=0.25：表单页用——底下已叠分组框/卡片多层，页面层只补薄薄一层统一色调；
+    strength=1.0：聊天类页面（AI 助手）用——聊天容器被 custom 主题强制透明、
+    卡片本身很淡，需要页面层自己承担一整层（等效单层左栏）才有可读性。
+    strength 按层叠系数缩放：0.25 → eff*0.25，1.0 → eff*0.6（与全局面板同档）。
+    """
+    eff = max(0.08, min(1.0, float(alpha) ** 1.8 * 0.6))
+    return f"rgba(22,25,31,{eff * strength:.3f})"
+
+
 def build_qss(mode: str = "dark", alpha: float = 0.72) -> str:
     """按模式产出 QSS：dark 原样 / light 换调色板 / custom 深色底 + 面板半透明"""
     resolved = resolve_mode(mode)
@@ -563,8 +575,11 @@ def build_qss(mode: str = "dark", alpha: float = 0.72) -> str:
         return _replace_colors(DARK_QSS, _LIGHT_MAP)
     if resolved == "custom":
         # 面板是多层嵌套的（页面 → 分组 → 卡片），alpha 直接相乘会把背景图吃光：
-        # 三层 55% 只剩 9% 透光。这里做幂次衰减，让滑块的默认值真正肉眼可辨。
-        eff = max(0.08, min(1.0, float(alpha) ** 1.8))
+        # 三层 55% 只剩 9% 透光。幂次衰减缓解一部分。
+        # 2026-11-07 用户要求「右侧 UI 透明度跟左侧栏一致，否则自定义背景失去意义」：
+        # 实测三层 eff=0.6 叠乘后页面亮度只有左栏的 1/3（35 vs 96），
+        # 这里再乘 0.6，让叠乘后的整体透光率接近单层左栏，图能明显透出来。
+        eff = max(0.08, min(1.0, float(alpha) ** 1.8 * 0.6))
         mapping = {c: _rgba(c, eff) for c in _dark_surfaces()}
         # #Backdrop 是主窗背景层（画用户图片），必须透明才能露出图片；
         # QScrollArea 视口本身吃 palette.Base（不透明），不显式置透会把整页涂死

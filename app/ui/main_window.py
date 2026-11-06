@@ -274,22 +274,19 @@ class MainWindow(QMainWindow):
                 except Exception:
                     pass
         # 其余页面统一加底板（2026-11-06）：custom 主题把聊天区等容器强制透明，
-        # 没有底板的页面元素会浮在背景图上。透明度与"面板不透明度"滑块联动。
+        # 没有底板的页面元素会浮在背景图上。
+        # 2026-11-07 用户要求：底板透明度必须与左侧栏一致（theme.page_scrim_rgba），
+        # 不能比左栏实——否则自定义背景图就失去意义了。
         if custom:
-            try:
-                op = max(0, min(100, int((self.cfg.get("settings") or {})
-                                         .get("bg_opacity") or 72)))
-            except Exception:
-                op = 72
-            alpha = max(0.72, min(0.93, 0.72 + (1 - op / 100.0) * 0.21))
+            from app.ui.theme import page_scrim_rgba
+            scrim = page_scrim_rgba(float(info.get("alpha") or 0.72))
         for page in (self.home_page, self.comfyui_page, self.plugins_page,
                      self.env_page, self.models_page, self.workflow_page,
                      self.console_page, self.settings_page):
             if custom:
                 page.setObjectName("PageScrim")
                 page.setAttribute(Qt.WA_StyledBackground, True)
-                page.setStyleSheet(
-                    f"QWidget#PageScrim{{background:rgba(12,16,22,{alpha:.2f});}}")
+                page.setStyleSheet(f"QWidget#PageScrim{{background:{scrim};}}")
             else:
                 page.setAttribute(Qt.WA_StyledBackground, False)
                 page.setStyleSheet("")

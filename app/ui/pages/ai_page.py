@@ -310,12 +310,16 @@ class AiPage(QWidget):
             self.setAttribute(Qt.WA_StyledBackground, False)
             self.setStyleSheet("")
             return
-        op = max(0, min(100, int(st.get("bg_opacity") or 30)))
-        alpha = max(0.72, min(0.93, 0.72 + (1 - op / 100.0) * 0.21))
+        op = max(0, min(100, int(st.get("bg_opacity") or 72)))
+        from app.ui.theme import page_scrim_rgba
+        # 2026-11-07：聊天容器被 custom 主题强制透明、卡片很淡，
+        # AI 页需要整层底板（strength=1.0，等效单层左栏）才有可读性；
+        # 表单页有分组框兜底，走 main_window 里的薄层（0.25）
+        alpha = page_scrim_rgba(op / 100.0, strength=1.0)
         self.setObjectName("AiPage")
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet(
-            f"QWidget#AiPage{{background:rgba(12,16,22,{alpha:.2f});}}"
+            f"QWidget#AiPage{{background:{alpha};}}"
             "QWidget#AiPage QScrollArea{background:transparent;}"
             "QWidget#AiPage QScrollArea>QWidget>QWidget{background:transparent;}")
 

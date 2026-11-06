@@ -869,8 +869,9 @@ _pg.close()
 # 用户报障：换了背景图后 AI 页输入框/快捷指令/顶栏跟着透明，文字浮在图上像 UI 丢了
 _pg2 = _AP({"settings": {"bg_image": "F:/fake/bg.jpg", "bg_opacity": 40}}, _FakeWin())
 _pg2.refresh_backdrop({"mode": "custom"})
+# 2026-11-07：底板颜色与左侧栏同款（rgba(22,25,31,eff)），不再是自拟的更深色
 check("11a 有背景图时加了底板", "AiPage" in _pg2.styleSheet()
-      and "background:rgba(12,16,22," in _pg2.styleSheet(), _pg2.styleSheet()[:60])
+      and "rgba(22,25,31," in _pg2.styleSheet(), _pg2.styleSheet()[:80])
 check("11b 底板用 StyledBackground 才画得出来",
       _pg2.testAttribute(Qt.WA_StyledBackground) is True)
 _pg2.refresh_backdrop({"mode": "dark"})
