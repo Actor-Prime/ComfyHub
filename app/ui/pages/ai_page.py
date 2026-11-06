@@ -19,11 +19,64 @@ import os
 from PySide6.QtCore import (QBuffer, QEvent, QRect, QSize, Qt, QThread,
                             QTime, QTimer, Signal)
 from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel,
+from PySide6.QtWidgets import (QApplication, QDialog, QFrame, QHBoxLayout, QLabel,
                                QPushButton, QScrollArea, QSizePolicy, QStyle,
                                QTextEdit, QToolButton, QVBoxLayout, QWidget)
 
 from app import ai_agent
+
+
+# ---------------------------------------------------------------- 图片预览
+class _ClickableLabel(QLabel):
+    """可点击的图片缩略图（QLabel 本身没有 clicked 信号）"""
+    clicked = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setCursor(Qt.PointingHandCursor)
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self.clicked.emit()
+        super().mouseReleaseEvent(e)
+
+
+class ImagePreviewDialog(QDialog):
+    """点缩略图弹出的大图预览：自适应屏幕，点击任意处 / Esc 关闭"""
+
+    def __init__(self, pm: QPixmap, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("图片预览")
+        self.setStyleSheet("QDialog{background:#12161c;}")
+        scr = QApplication.primaryScreen().availableGeometry()
+        max_w = int(scr.width() * 0.85)
+        max_h = int(scr.height() * 0.85)
+        w = min(max(pm.width(), 420), max_w)
+        h = min(max(pm.height(), 300), max_h)
+        self.resize(w + 16, h + 40)
+
+        v = QVBoxLayout(self)
+        v.setContentsMargins(8, 8, 8, 8)
+        v.setSpacing(4)
+        lb = QLabel()
+        lb.setAlignment(Qt.AlignCenter)
+        lb.setPixmap(pm.scaled(QSize(w, h), Qt.KeepAspectRatio,
+                               Qt.SmoothTransformation))
+        v.addWidget(lb, 1)
+        hint = QLabel(f"{pm.width()} × {pm.height()} · 点击或按 Esc 关闭")
+        hint.setAlignment(Qt.AlignCenter)
+        hint.setStyleSheet("color:#8a93a3; font-size:11px;")
+        v.addWidget(hint)
+
+    def mouseReleaseEvent(self, e):
+        self.accept()
+        super().mouseReleaseEvent(e)
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key_Escape:
+            self.accept()
+            return
+        super().keyPressEvent(e)
 
 
 # ---------------------------------------------------------------- Markdown 轻渲染
@@ -80,10 +133,11 @@ class _AgentWorker(QThread):
     sig_event = Signal(dict)
     sig_done = Signal()
 
-    def __init__(self, cfg, inst, text, history, attachments=None):
+    def __init__(self, cfg, inst, text, history, attachments=None, mainwin=None):
         super().__init__()
         self.cfg, self.inst, self.text, self.history = cfg, inst, text, history
         self.attachments = attachments or []
+        self.mainwin = mainwin          # 工具里启停实例要用（QTimer 编组回 UI 线程）
         self.stop_flag = threading.Event()
 
     def run(self):
@@ -92,7 +146,8 @@ class _AgentWorker(QThread):
                                emit=lambda kind, **kw: self.sig_event.emit(
                                    {"kind": kind, **kw}),
                                stop_flag=self.stop_flag,
-                               attachments=self.attachments)
+                               attachments=self.attachments,
+                               mainwin=self.mainwin)
         finally:
             self.sig_done.emit()
 
@@ -385,9 +440,11 @@ class AiPage(QWidget):
         self._scroll_bottom()
 
     def _user_thumb(self, pm: QPixmap):
-        lb = QLabel()
+        lb = _ClickableLabel()
         lb.setPixmap(pm.scaledToHeight(90, Qt.SmoothTransformation))
+        lb.setToolTip("点击查看大图")
         lb.setStyleSheet("border:1px solid rgba(127,127,127,0.25); border-radius:6px;")
+        lb.clicked.connect(lambda p=pm: ImagePreviewDialog(p, self).exec())
         wrap = QWidget()
         h = QHBoxLayout(wrap)
         h.setContentsMargins(0, 0, 8, 0)
@@ -454,11 +511,11 @@ class AiPage(QWidget):
             pm = QPixmap(path)
             if pm.isNull():
                 continue
-            lb = QLabel()
+            lb = _ClickableLabel()          # 2026-11-06：出图也能点开看原图
             lb.setPixmap(pm.scaledToWidth(min(420, self._chat_width() - 60),
                                           Qt.SmoothTransformation))
-            lb.setToolTip(path)
-            lb.setCursor(Qt.PointingHandCursor)
+            lb.setToolTip(f"{path}\n点击查看原图")
+            lb.clicked.connect(lambda p=pm: ImagePreviewDialog(p, self).exec())
             lb.setStyleSheet("border:1px solid rgba(127,127,127,0.25);"
                              "border-radius:8px; padding:2px;")
             wrap = QWidget()
@@ -550,7 +607,8 @@ class AiPage(QWidget):
         self._refresh_atts()
         self._last_user = text
         self._history.append({"role": "user", "content": text})
-        self._worker = _AgentWorker(self.cfg, inst, text, list(self._history), atts)
+        self._worker = _AgentWorker(self.cfg, inst, text, list(self._history), atts,
+                                    mainwin=self.mainwin)
         self._worker.sig_event.connect(self._on_event)
         self._worker.sig_done.connect(self._on_done)
         self.b_send.setEnabled(False)

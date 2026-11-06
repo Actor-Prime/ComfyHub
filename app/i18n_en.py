@@ -743,4 +743,8 @@ EN_DICT = {
         "Diagnostics (auto-generated, sanitized, editable)",
     "请先填写问题描述或建议（至少 6 个字）":
         "Please describe the problem first (at least 6 characters)",
+
+    # ---- 图片预览（2026-11-06）----
+    "图片预览": "Image preview",
+    "点击查看大图": "Click to view full size",
 }

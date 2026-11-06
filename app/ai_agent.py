@@ -40,7 +40,13 @@ def _system_prompt(ctx) -> str:
         "2. 跑新工作流前建议先 check_workflow 看缺什么；\n"
         "3. 下载大模型用 download_model（自动走后台队列），不要催进度，让用户看下载中心；\n"
         "4. 工具报错时如实转述 error 字段，不要编造原因；\n"
-        "5. 出图完成后把 get_job / wait_job 返回的图片完整路径告诉用户。\n"
+        "5. 出图结果只认 wait_job / get_job 返回的 images 数组里的路径，"
+        "**逐字复制，禁止自己推算文件名或编号**；"
+        "images 为空、或只返回 missing_images / stale_images 时，"
+        "如实说明「这次没有生成新文件」并给出对应原因（文件不存在 / 命中缓存），"
+        "不许说「出图完成」；\n"
+        "6. patch_workflow 的 ops 必须是对象数组（node/index/value），"
+        "参数名不支持时先 list_workflows 看真实文件名再重试。\n"
         "\n【剧本 A：根据用户给的图片生成同风格图】\n"
         "1) 先看图，用一句话提炼「风格 + 主体 + 配色 + 构图 + 画质词」，这是给生成模型的提示词；\n"
         "2) list_workflows 看有哪些工作流（**不要凭空编造工作流名**），必要时 check_workflow 确认能跑；\n"
@@ -216,17 +222,21 @@ def _user_content(user_text: str, attachments=None):
 
 
 def run_agent(cfg: dict, inst: dict, user_text: str, history: list,
-              emit, stop_flag=None, log=print, attachments=None) -> None:
+              emit, stop_flag=None, log=print, attachments=None,
+              mainwin=None) -> None:
     """处理一次用户提问。history 为 UI 侧已有对话（仅 user/assistant 文本消息）。
 
     emit(kind, **kw) 事件回调；stop_flag 为 threading.Event，轮间检查。
     结束后由调用方把 assistant 文本追加进自己的 history。
+
+    mainwin：GUI 模式下必须传主窗口——工具里的启停实例、下载队列都靠它
+    （2026-11-06 修：之前没传，导致界面里点「帮忙启动实例」被误判成 --mcp 外挂模式）。
     """
     st = cfg.get("settings") or {}
     if not (st.get("ai_enabled") and st.get("ai_base_url") and st.get("ai_api_key")):
         emit("error", text="AI 接入未启用：请到「系统设置 → AI 接入」填写接口地址与 API Key")
         return
-    ctx = ai_tools.build_ctx(cfg, inst, log=log)
+    ctx = ai_tools.build_ctx(cfg, inst, mainwin=mainwin, log=log)
 
     # ---- 模型画像：思考强度 / 输出上限 / 上下文条数（2026-11-03）----
     prof = ai_models.detect(str(st.get("ai_model") or ""), str(st.get("ai_base_url") or ""))

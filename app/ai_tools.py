@@ -117,7 +117,8 @@ def _t_control_instance(args, ctx: ToolCtx):
         return ctx.fail("action 只支持 start / stop / restart")
     mw = ctx.mainwin
     if mw is None or not hasattr(mw, "procs"):
-        return ctx.fail("--mcp 外挂模式没有主窗口，无法启停实例；请在 ComfyHub 主界面操作")
+        return ctx.fail("无法启停实例：当前没有主界面句柄（--mcp 外挂模式）。"
+                        "请在 ComfyHub 窗口里点启动，或直接对我说「启动实例」时保持窗口打开")
     from PySide6.QtCore import QTimer      # 延迟导入：MCP 无 Qt 环境不炸
     procs = mw.procs
     inst = ctx.inst
@@ -332,10 +333,10 @@ def _t_workflow_check(args, ctx: ToolCtx):
 
 
 def _t_workflow_run(args, ctx: ToolCtx):
-    name = str(args.get("name") or "").strip()
+    name = _wf_name(args)
     path = os.path.join(ctx.workflows_dir, name) if ctx.workflows_dir else ""
     if not name or not os.path.isfile(path):
-        return ctx.fail(f"工作流不存在：{name}（用 list_workflows 查列表）")
+        return ctx.fail(f"工作流不存在：{name or '(空)'}（用 list_workflows 查列表）")
     with open(path, encoding="utf-8") as f:
         wf = json.load(f)
     if isinstance(wf.get("nodes"), list):          # UI 格式 → 转 API
@@ -348,10 +349,47 @@ def _t_workflow_run(args, ctx: ToolCtx):
         return ctx.fail("工作流格式无法识别（既无 nodes 数组，也无 class_type）")
     body = {"prompt": prompt, "client_id": "comfyhub-ai"}
     r = _http(ctx, "/prompt", data=body, timeout=60)
-    return ctx.ok(prompt_id=r.get("prompt_id"), queue_number=r.get("number"),
+    pid = r.get("prompt_id")
+    if pid:
+        _SUBMIT_TS[str(pid)] = time.time()      # 用来判断出图是新文件还是缓存旧图
+        if len(_SUBMIT_TS) > 200:               # 别无限增长
+            for k in list(_SUBMIT_TS)[:100]:
+                _SUBMIT_TS.pop(k, None)
+    return ctx.ok(prompt_id=pid, queue_number=r.get("number"),
                   node_errors=r.get("node_errors") or {},
                   warnings=warns,
                   note="用 get_job 查询进度与出图结果")
+
+
+_SUBMIT_TS = {}     # prompt_id -> 提交时间（用于识别“缓存命中、本次没真出图”）
+
+
+def _collect_images(ctx, outputs, since=None) -> tuple:
+    """从 history.outputs 抽图片绝对路径，并**逐个验存在性 + 新鲜度**。
+
+    2026-11-06 用户报障：AI 报「出图完成 + 路径」，但文件夹里没有文件。
+    三类情况分开返回，模型就没法再瞎报：
+      · found   —— 文件真存在，且（给了 since 时）是本次运行之后写的
+      · stale   —— 文件存在但 mtime 早于本次提交 → ComfyUI 缓存命中，没生成新图
+      · missing —— history 说有这么张图，磁盘上根本没有
+    """
+    found, missing, stale = [], [], []
+    for o in (outputs or {}).values():
+        for im in o.get("images", []):
+            sub = (im.get("subfolder") or "").replace("\\", "/").strip("/")
+            p = os.path.join(ctx.output_dir, sub, im.get("filename", ""))
+            if not os.path.isfile(p):
+                missing.append(p)
+                continue
+            if since is not None:
+                try:
+                    if os.path.getmtime(p) < since - 5:   # 5s 容差
+                        stale.append(p)
+                        continue
+                except OSError:
+                    pass
+            found.append(p)
+    return found, missing, stale
 
 
 def _t_job_status(args, ctx: ToolCtx):
@@ -374,17 +412,24 @@ def _t_job_status(args, ctx: ToolCtx):
         return ctx.ok(state="not_found",
                       note="历史与队列都没有它（实例重启会清空历史）")
     st = entry.get("status") or {}
-    imgs = []
-    for o in (entry.get("outputs") or {}).values():
-        for im in o.get("images", []):
-            sub = (im.get("subfolder") or "").replace("\\", "/").strip("/")
-            imgs.append(os.path.join(ctx.output_dir, sub, im.get("filename", "")))
+    imgs, missing_imgs, stale_imgs = _collect_images(
+        ctx, entry.get("outputs"), since=_SUBMIT_TS.get(pid))
     err = ""
     for m in st.get("messages", []):
         if m[0] == "execution_error":
             d = m[1]
             err = f"{d.get('node_type')}#{d.get('node_id')}: {d.get('exception_message', '')[:300]}"
-    return ctx.ok(state=st.get("status_str"), images=imgs, error=err)
+    out = ctx.ok(state=st.get("status_str"), images=imgs, error=err,
+                 verified=bool(imgs))
+    if missing_imgs:
+        out["missing_images"] = missing_imgs
+        out["note"] = ("history 报告了图片但磁盘上不存在（可能被移动/删除）"
+                       "——不要把这些路径当出图结果")
+    if stale_imgs:
+        out["stale_images"] = stale_imgs
+        out["note"] = ("命中了 ComfyUI 缓存，本次没有生成新图（提示词/参数与上次相同），"
+                       "这些是旧文件；要新图请改提示词或种子")
+    return out
 
 
 
@@ -394,15 +439,30 @@ LATENT_NODE_HINTS = ("emptylatent", "emptysd3latent", "emptysdxllatent", "imagep
 SAMPLER_HINTS = ("ksampler", "sampler")
 
 
+def _wf_name(args) -> str:
+    """取工作流名：模型偶尔会把参数写成 workflow / file / workflow_name，
+    这里统一兜住，别让它白失败三轮（2026-11-06 实测：连续 3 次参数形状错）"""
+    for k in ("name", "workflow", "workflow_name", "file", "filename"):
+        v = str(args.get(k) or "").strip()
+        if v:
+            return v
+    return ""
+
+
 def _wf_path(ctx, name):
     name = str(name or "").strip()
     if not name:
-        raise ValueError("工作流名不能为空")
+        try:
+            names = [f for f in os.listdir(ctx.workflows_dir) if f.endswith(".json")]
+        except Exception:
+            names = []
+        hint = "、".join(sorted(names)[:12]) if names else "（目录里没有工作流）"
+        raise ValueError(f"工作流名不能为空。可选：{hint}")
     if not name.lower().endswith(".json"):
         name += ".json"
     p = os.path.join(ctx.workflows_dir, os.path.basename(name))
     if not os.path.isfile(p):
-        raise FileNotFoundError(f"工作流不存在：{name}")
+        raise FileNotFoundError(f"工作流不存在：{name}（用 list_workflows 查列表）")
     return p
 
 
@@ -430,7 +490,7 @@ def _node_hint(ntype: str) -> str:
 
 def _t_inspect_workflow(args, ctx: ToolCtx):
     """给 AI 看工作流结构：哪些节点能改、当前值是什么"""
-    path = _wf_path(ctx, args.get("name"))
+    path = _wf_path(ctx, _wf_name(args))
     with open(path, encoding="utf-8") as f:
         wf = json.load(f)
     nodes = []
@@ -476,17 +536,25 @@ def _widget_index(obj_info, ntype, field):
 
 def _t_patch_workflow(args, ctx: ToolCtx):
     """改工作流副本（绝不覆盖原文件）：ops=[{node, index|field, value}]"""
-    src_path = _wf_path(ctx, args.get("name"))
-    ops = args.get("ops") or []
-    if not ops:
-        return ctx.fail("ops 不能为空：[{node, index|field, value}]")
+    src_path = _wf_path(ctx, _wf_name(args))
+    ops = args.get("ops") or args.get("patches") or args.get("changes") or []
+    if isinstance(ops, dict):            # 单个 op 没套数组
+        ops = [ops]
+    if not isinstance(ops, list) or not ops:
+        return ctx.fail('ops 不能为空，格式：[{"node":"34","index":0,"value":"新提示词"}]')
+    # 模型有时把 ops 写成字符串数组（说明它没读 schema）——直接给出可抄的格式
+    bad = [x for x in ops if not isinstance(x, dict)]
+    if bad:
+        return ctx.fail("ops 的元素必须是对象，不是字符串。正确格式："
+                        '[{"node":"节点id","index":0,"value":"值"}]；'
+                        f"收到的是：{str(bad[0])[:60]}")
     with open(src_path, encoding="utf-8") as f:
         wf = json.load(f)
     index = {k: n for k, n in _iter_nodes(wf)}
     obj = None
     applied, failed = [], []
     for op in ops:
-        key = str(op.get("node") or "")
+        key = str(op.get("node") or op.get("key") or op.get("node_id") or "").strip()
         node = index.get(key)
         if node is None:
             failed.append(f"节点 {key} 不存在")
@@ -568,19 +636,27 @@ def _t_wait_job(args, ctx: ToolCtx):
         entry = (h or {}).get(pid)
         if entry:
             st = entry.get("status") or {}
-            imgs = []
-            for o in (entry.get("outputs") or {}).values():
-                for im in o.get("images", []):
-                    sub = (im.get("subfolder") or "").replace("\\", "/").strip("/")
-                    imgs.append(os.path.join(ctx.output_dir, sub, im.get("filename", "")))
+            imgs, missing_imgs, stale_imgs = _collect_images(
+                ctx, entry.get("outputs"), since=_SUBMIT_TS.get(pid))
             err = ""
             for m in st.get("messages", []):
                 if m[0] == "execution_error":
                     d = m[1]
                     err = f"{d.get('node_type')}#{d.get('node_id')}: " \
                           f"{str(d.get('exception_message'))[:300]}"
-            return ctx.ok(state=st.get("status_str"), images=imgs, error=err,
-                          elapsed_s=round(time.time() - t0, 1))
+            out = ctx.ok(state=st.get("status_str"), images=imgs, error=err,
+                         verified=bool(imgs), elapsed_s=round(time.time() - t0, 1))
+            if missing_imgs:
+                out["missing_images"] = missing_imgs
+                out["note"] = ("history 报告了图片但磁盘上不存在（可能被移动/删除）"
+                               "——不要把这些路径当出图结果，"
+                               "可按 missing_images 里的文件名去 output 目录搜一下")
+            if stale_imgs:
+                out["stale_images"] = stale_imgs
+                out["note"] = ("命中了 ComfyUI 缓存，本次没有生成新图"
+                               "（提示词/参数与上次完全一样），返回的是旧文件；"
+                               "要新图请改动提示词或随机种子")
+            return out
         time.sleep(2)
     return ctx.ok(state="timeout", images=[],
                   note=f"等了 {limit}s 还没完成，可用 get_job 再查")
@@ -679,6 +755,9 @@ def execute(name: str, args: dict, ctx: ToolCtx) -> dict:
                         "error": f"实例未运行：端口 {e.port} 无监听（连接被拒绝）",
                         "hint": "可调用 control_instance(action='start') 自行启动实例，"
                                 "等返回 ready 后继续原任务，无需用户手动操作"}
+            except (ValueError, FileNotFoundError) as e:
+                # 参数/路径类错误：直接给模型看人话，别糊一层 "ValueError:"
+                return {"ok": False, "error": str(e)}
             except Exception as e:
                 return {"ok": False, "error": f"{type(e).__name__}: {e}"}
     return {"ok": False, "error": f"未知工具：{name}"}
