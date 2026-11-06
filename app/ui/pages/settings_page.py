@@ -535,12 +535,9 @@ class SettingsPage(QWidget):
         f_ai.addRow("", self.b_ai_mcp)
         root.addWidget(g_ai)
 
-        b_save = QPushButton("保存设置")
-        b_save.setProperty("accent", True)
-        b_save.clicked.connect(self._save)
-        root.addWidget(b_save)
+        # 保存按钮不再放在滚动内容里（2026-11-06 用户要求）：
+        # 页面很长，滚到中间就看不到按钮了；改为页面底部常驻栏（见 _build 末尾）
         root.addStretch()
-
         g3 = QGroupBox("关于")
         v3 = QVBoxLayout(g3)
         # 版本号必须单独成一个控件：翻译是「控件树扫描 + 词表精确匹配」，
@@ -609,7 +606,30 @@ class SettingsPage(QWidget):
         root.addWidget(g3)
 
         scroll.setWidget(body)
-        outer.addWidget(scroll)
+        outer.addWidget(scroll, 1)
+
+        # ---- 底部常驻栏（不随滚动走，和 ComfyUI 实例页一致）----
+        bar = QHBoxLayout()
+        bar.setContentsMargins(18, 4, 18, 12)
+        self.lb_saved = QLabel("")
+        self.lb_saved.setStyleSheet("color:#6f7885; font-size:11px;")
+        bar.addWidget(self.lb_saved)
+        bar.addStretch(1)
+        self.b_save = QPushButton("保存设置")
+        self.b_save.setObjectName("SaveBtn")
+        self.b_save.setCursor(Qt.PointingHandCursor)
+        self.b_save.setToolTip("保存本页所有设置（快捷键 Ctrl+S 也可）")
+        self.b_save.clicked.connect(self._save)
+        bar.addWidget(self.b_save)
+        outer.addLayout(bar)
+
+        # Ctrl+S 也能保存（tooltip 里承诺了就得有）
+        try:
+            from PySide6.QtGui import QKeySequence, QShortcut
+            self._sc_save = QShortcut(QKeySequence("Ctrl+S"), self)
+            self._sc_save.activated.connect(self._save)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------ 打开链接
     @staticmethod
@@ -850,6 +870,11 @@ class SettingsPage(QWidget):
         st["lang"] = self.cb_lang.currentData() or "zh"
         save_config(self.cfg)
         self.sig_saved.emit()       # 主窗接到后重设 QSS + 背景层
+        try:                        # 底栏给个即时反馈，省掉一次弹窗打扰
+            import datetime as _dt
+            self.lb_saved.setText(f"已保存 · {_dt.datetime.now():%H:%M:%S}")
+        except Exception:
+            pass
         # 变更提示：旧目录原样保留（不自动搬迁 GB 级工具链）
         if new_tools != old_tools and old_tools and os.path.isdir(old_tools):
             QMessageBox.information(

@@ -574,6 +574,25 @@ check("5d1 助手设定默认已填好（不留空）",
       and "ComfyUI" in sp.ed_ai_persona.toPlainText(),
       sp.ed_ai_persona.toPlainText()[:40])
 check("5d2 直连开关默认开启", sp.ck_ai_direct.isChecked() is True)
+
+# 2026-11-06 用户要求：保存按钮改成底部常驻，不能随内容滚走
+from PySide6.QtWidgets import QScrollArea as _QSA  # noqa: E402
+_sc = sp.findChild(_QSA)
+
+
+def _inside_scroll(w):
+    p = w.parentWidget()
+    while p is not None:
+        if p is _sc or p is _sc.viewport():
+            return True
+        p = p.parentWidget()
+    return False
+
+
+check("5d3 保存按钮不在滚动区内（底部常驻）",
+      getattr(sp, "b_save", None) is not None and not _inside_scroll(sp.b_save))
+check("5d4 保存按钮样式与实例页一致", sp.b_save.objectName() == "SaveBtn")
+check("5d5 Ctrl+S 快捷键已绑定", getattr(sp, "_sc_save", None) is not None)
 check("5e 思考强度三档", sp.cb_ai_think.count() == 3)
 check("5f 画像提示识别出 MiMo", "MiMo" in sp.lb_ai_profile.text(), sp.lb_ai_profile.text())
 sp.close()
