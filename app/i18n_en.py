@@ -488,6 +488,18 @@ EN_DICT = {
     "模型目录": "Models folder",
     "ComfyUI 的模型根目录；其他盘的模型用 extra_model_paths.yaml 挂载":
         "ComfyUI's model root; models on other drives go in extra_model_paths.yaml",
+    # ---- 实例级挂载模型目录（2026-11-08）----
+    "ComfyUI 的模型根目录（留空跟随 <根目录>/models）；"
+    "其他盘的模型库用下面的开关单独挂载，按标准类别子目录自动映射":
+        "ComfyUI's model root (empty = follow <root>/models); model libraries on "
+        "other drives can be mounted separately with the switch below "
+        "(standard subfolders are mapped automatically)",
+    "启用挂载模型目录": "Mount model folder",
+    "选择目录": "Pick folder",
+    "未选择：开启开关后可选一个外部模型根目录":
+        "Not selected — enable the switch, then pick an external model root",
+    "请点右侧「选择目录」挑一个外部模型根目录":
+        "Click \"Pick folder\" on the right to choose an external model root",
     "Python 路径": "Python path",
     "实例配套的解释器（建议用独立 venv）":
         "Interpreter for this instance (a dedicated venv is recommended)",
@@ -689,6 +701,47 @@ EN_DICT = {
     '更新': 'Update',
     '打开': 'Open',
     '类别': 'Category',
+    '来源': 'Source',
+    '内置': 'Built-in',
+    '外部挂载': 'External',
+    '实例内置': 'Instance',
+    '实例内的 models 目录 + 外部挂载的模型库都显示':
+        'Show both the instance models folder and mounted model libraries',
+    '只看当前实例自己的模型目录': 'Only show the current instance models folder',
+    '只看 extra_model_paths.yaml / 共享外挂库挂进来的目录':
+        'Only show folders mounted via extra_model_paths.yaml or the shared library',
+    # ---- 共享外挂模型库（2026-11-08）----
+    '共享外挂模型库（可选）': 'Shared external model library (optional)',
+    '共享外挂模型库': 'Shared external model library',
+    '📚 共享外挂库': '📚 Shared library',
+    '启用共享外挂库': 'Enable shared library',
+    '开启后启动任意实例都会带上这张挂载表':
+        'When on, every instance launches with this mount table',
+    '挂载根目录': 'Mounted root',
+    '目录下的标准子目录会自动映射进来，不用手写映射表':
+        'Standard subfolders under it are mapped automatically - no mapping table to write',
+    '保存共享库设置': 'Save shared library settings',
+    '启用：所有实例共用同一个外部模型库':
+        'Enable: all instances share one external model library',
+    '挂载根目录:': 'Mounted root:',
+    '如 D:\\ComfyUI-Models（标准子目录 checkpoints / loras / vae / unet …）':
+        'e.g. D:\\ComfyUI-Models (standard subfolders checkpoints / loras / vae / unet ...)',
+    '开启后，启动任意实例都会把该目录传给 ComfyUI（--extra-model-paths-config），'
+    '不用给每个实例单独写 yaml。目录下的标准子目录自动映射；实例自己的 '
+    'extra_model_paths.yaml 仍照旧生效，两者叠加。':
+        'When enabled, this folder is passed to ComfyUI on every launch '
+        '(--extra-model-paths-config), so you do not need a yaml per instance. '
+        'Standard subfolders are mapped automatically; each instance\'s own '
+        'extra_model_paths.yaml still applies on top.',
+    '未启用（各实例仍按自己的 extra_model_paths.yaml 走）':
+        'Disabled (each instance uses its own extra_model_paths.yaml)',
+    '已启用，但还没选挂载根目录 —— 保存会被拦下':
+        'Enabled, but no root selected yet - saving will be blocked',
+    '目录不存在：': 'Folder not found: ',
+    '已启用 · 将映射': 'Enabled - mapping',
+    '个类别子目录：': 'category folders:',
+    '（该目录下没有标准子目录，映射为空）':
+        '(no standard subfolders found, nothing will be mapped)',
     '文件数': 'Files',
     '总体积': 'Total size',
     '实例': 'Instance',

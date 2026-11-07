@@ -136,10 +136,20 @@ class MainWindow(QMainWindow):
         self.nav.setWrapping(False)
         self.nav.setUniformItemSizes(True)
         self.nav.setSpacing(2)
+        # 侧边栏导航绝不能拖（2026-11-08 用户报障：按钮能被拖走/拖乱）——
+        # QListWidget 在 IconMode 下默认就是 DragDrop + movement=Free，得显式关掉，
+        # 否则按一下拖一下，导航项就被拽出原位
+        self.nav.setDragDropMode(QListWidget.NoDragDrop)
+        self.nav.setDragEnabled(False)
+        self.nav.setAcceptDrops(False)
+        self.nav.setDropIndicatorShown(False)
+        self.nav.setMovement(QListWidget.Static)
         for icon, text in NAV_ITEMS:
             item = QListWidgetItem(f"{icon}\n{text}")
             item.setSizeHint(QSize(80, 56))
             item.setTextAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+            # 只剩「可选中」：去掉 ItemIsDragEnabled，双保险
+            item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
             self.nav.addItem(item)
         self.nav.currentRowChanged.connect(self._on_nav)
         sv.addWidget(self.nav, 1)

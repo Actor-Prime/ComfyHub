@@ -179,21 +179,25 @@ def is_model_file(fn: str) -> bool:
     return os.path.splitext(fn)[1].lower() in MODEL_EXTS
 
 
-def model_stats(comfyui_path: str, models_dir: str = "") -> list:
+def model_stats(comfyui_path: str, models_dir: str = "",
+                source: str = "all", mount_root: str = "") -> list:
     """统计各类模型数量与体积（仅模型格式文件）
 
     2026-11-07：不再只扫 <comfyui_path>/models —— ComfyUI 的 extra_model_paths.yaml
     会把外部盘符的模型库挂进来（秋葉整合包常见），只扫内置目录的话用户在
     ComfyUI 里看得到、在启动器里看不到（用户报障）。
+    2026-11-08：source 可限定 builtin（实例内置）/ extra（外部挂载）/ all；
+    mount_root 是实例设置里「启用挂载模型目录」选的那个根（按类别自动映射）。
     返回 [(类别, 文件数, 体积GB), ...]
     """
     from app import model_paths
     result = []
-    if not comfyui_path:
+    if not comfyui_path and not mount_root:
         return result
-    for cat in model_paths.model_dirs(comfyui_path, models_dir):
+    for cat in model_paths.model_dirs(comfyui_path, models_dir, source, mount_root):
         count, total = 0, 0
-        for d in model_paths.dirs_for(comfyui_path, cat, models_dir):
+        for d in model_paths.dirs_for(comfyui_path, cat, models_dir, source,
+                                      mount_root):
             for root, _dirs, files in os.walk(d):
                 for fn in files:
                     if not is_model_file(fn):

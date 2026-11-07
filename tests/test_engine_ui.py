@@ -120,6 +120,9 @@ try:
     check("CPU 时显存优化置灰", not p.cb_vram.isEnabled())
 
     print("\n=== 4. 保存写新字段、清旧残留 ===")
+    # 2026-11-08：保存改成「只存真改动」——界面没动过直接提示「没有改动」不落盘，
+    # 所以这里先制造一处真实改动（额外启动参数），再验证引擎字段与旧字段清理
+    p.ed_extra.setText("--preview-method none")
     p._save()   # 弹窗已拦截
     cfg2 = load_config()
     io = next(i for i in cfg2["instances"] if i.get("id") == "inst_engold")

@@ -319,6 +319,9 @@ class SettingsPage(QWidget):
         f_dir.addRow("", tip_dir)
         root.addWidget(g_dir)
 
+        # 共享外挂模型库整块已搬到「ComfyUI → 📚 共享外挂库」Tab（2026-11-08 用户要求：
+        # 模型相关设置集中在 ComfyUI 页，系统设置只留网络/目录/界面/关于）
+
         g2 = QGroupBox("界面")
         f2 = QFormLayout(g2)
         # 语言（2026-11-01 首批中英包；页面文案在构建时翻译，切换需重启）
@@ -649,6 +652,8 @@ class SettingsPage(QWidget):
             self, "选择工具目录", self.ed_tools.text().strip() or "")
         if d:
             self.ed_tools.setText(d)
+
+    # 共享外挂库的 UI/保存逻辑已搬到 ComfyuiPage（Tab3「📚 共享外挂库」）
 
     # ---------------- 自定义主题辅助 ----------------
     def _sync_custom_visible(self):

@@ -61,6 +61,7 @@ def main():
     # ---------- 环境：假实例（QSettings 隔离，防上次运行残留的范围记忆污染）
     from PySide6.QtCore import QSettings
     QSettings("LeiMengStudio", "ComfyHub").setValue("model_scope", "local")
+    QSettings("LeiMengStudio", "ComfyHub").setValue("model_source", "all")
     root = tempfile.mkdtemp(prefix="ch_models_")
     for sub in ("checkpoints", "loras"):
         os.makedirs(os.path.join(root, "models", sub), exist_ok=True)
@@ -84,7 +85,7 @@ def main():
     cols = page.tb.columnCount()
     found = any(page.tb.item(r, 0) and "sdxl" in page.tb.item(r, 0).text().lower()
                 for r in range(rows))
-    check("2 全部视图搜文件名命中", cols == 4 and found, f"rows={rows} cols={cols}")
+    check("2 全部视图搜文件名命中", cols == 5 and found, f"rows={rows} cols={cols}")
 
     # ---------- 3. 全部视图 + 类别名搜索
     page.ed_search.setText("loras")
@@ -261,6 +262,64 @@ def main():
     check("13c 双击文件行 → 资源管理器定位该文件",
           bool(opened) and opened[0].lower().endswith(".safetensors")
           and "checkpoints" in opened[0].replace("\\", "/"), str(opened))
+
+    # ---------- 14. 来源筛选：实例内置 / 外部挂载 / 全部（2026-11-08 用户要求）
+    ext_root = tempfile.mkdtemp(prefix="ch_ext_")
+    for sub in ("checkpoints", "loras"):
+        os.makedirs(os.path.join(ext_root, sub), exist_ok=True)
+    open(os.path.join(ext_root, "checkpoints", "sd15-external.safetensors"),
+         "wb").write(b"0")
+    open(os.path.join(ext_root, "loras", "ext-lora.safetensors"), "wb").write(b"0")
+    with open(os.path.join(root, "extra_model_paths.yaml"), "w",
+              encoding="utf-8") as f:
+        f.write("test_ext:\n    base_path: %s\n    checkpoints: checkpoints\n"
+                "    loras: loras\n" % ext_root.replace("\\", "/"))
+
+    page.ed_search.setText("")
+    page.chip_group.button(0).setChecked(True)      # 全部类别 → 统计表
+    pump(0.3)
+
+    from PySide6.QtCore import QSettings as _QS
+    page.src_group.button(1).setChecked(True)       # 实例内置
+    pump(0.3)
+    builtin_ck = next((r for r in range(page.tb.rowCount())
+                       if page.tb.item(r, 0) and page.tb.item(r, 0).text() == "checkpoints"), -1)
+    builtin_cnt = page.tb.item(builtin_ck, 1).text() if builtin_ck >= 0 else ""
+    check("14a 来源=实例内置：checkpoints 只算内置文件", builtin_cnt == "2", builtin_cnt)
+    check("14b 来源选择被记忆",
+          _QS("LeiMengStudio", "ComfyHub").value("model_source") == "builtin",
+          str(_QS("LeiMengStudio", "ComfyHub").value("model_source")))
+
+    page.src_group.button(2).setChecked(True)       # 外部挂载
+    pump(0.3)
+    ext_ck = next((r for r in range(page.tb.rowCount())
+                   if page.tb.item(r, 0) and page.tb.item(r, 0).text() == "checkpoints"), -1)
+    ext_cnt = page.tb.item(ext_ck, 1).text() if ext_ck >= 0 else ""
+    check("14c 来源=外部挂载：checkpoints 只算外挂文件", ext_cnt == "1", ext_cnt)
+
+    page.chip_group.button(2).setChecked(True)      # loras → 文件明细
+    pump(0.3)
+    src_cells = [page.tb.item(r, 2).text() for r in range(page.tb.rowCount())
+                 if page.tb.item(r, 2)]
+    check("14d 文件表来源列显示挂载根路径",
+          page.tb.columnCount() == 4 and bool(src_cells)
+          and ext_root.replace("/", "\\") in src_cells[0], str(src_cells))
+
+    page.src_group.button(0).setChecked(True)       # 全部
+    pump(0.3)
+    src_cells = [page.tb.item(r, 2).text() for r in range(page.tb.rowCount())
+                 if page.tb.item(r, 2)]
+    check("14e 来源=全部：同类别里内置与外挂都列出且来源可辨",
+          len(src_cells) == 2 and len(set(src_cells)) == 2, str(src_cells))
+
+    page.chip_group.button(0).setChecked(True)
+    page.src_group.button(2).setChecked(True)
+    pump(0.3)
+    total_ext = sum(int(page.tb.item(r, 1).text()) for r in range(page.tb.rowCount())
+                    if page.tb.item(r, 1) and page.tb.item(r, 1).text().isdigit())
+    check("14f 来源=全部之外挂：统计总数 = 外挂文件数", total_ext == 2, str(total_ext))
+    page.src_group.button(0).setChecked(True)
+    shutil.rmtree(ext_root, ignore_errors=True)
 
     shutil.rmtree(root, ignore_errors=True)
 

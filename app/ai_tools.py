@@ -251,16 +251,26 @@ def _t_models_list(args, ctx: ToolCtx):
     root = ctx.models_dir
     if not root or not os.path.isdir(root):
         return ctx.fail(f"模型目录不存在：{root}")
+    # 2026-11-08：文件系统兜底也把 extra_model_paths 挂载目录算进来，
+    # 否则 API 挂了以后 AI 报的模型数量会比界面少一半
+    from app import model_paths
     out, samples = {}, {}
-    for d in sorted(os.listdir(root)):
-        p = os.path.join(root, d)
-        if os.path.isdir(p):
-            fs = [f for f in os.listdir(p) if os.path.isfile(os.path.join(p, f))]
-            if fs:
-                out[d] = len(fs)
-                samples[d] = fs[:20]
+    for cat_name, dirs in model_paths.model_dirs(
+            ctx.comfyui_path, ctx.inst.get("models_dir") or "",
+            model_paths.SRC_ALL,
+            model_paths.mount_root_of(ctx.inst)).items():
+        fs = []
+        for d in dirs:
+            try:
+                fs += [f for f in os.listdir(d)
+                       if os.path.isfile(os.path.join(d, f))]
+            except OSError:
+                continue
+        if fs:
+            out[cat_name] = len(fs)
+            samples[cat_name] = fs[:20]
     return ctx.ok(source="filesystem", counts=out, samples=samples,
-                  note="仅本机 models 目录，未含 extra_model_paths 挂载")
+                  note="含实例模型根与 extra_model_paths 挂载目录")
 
 
 def _t_models_search(args, ctx: ToolCtx):

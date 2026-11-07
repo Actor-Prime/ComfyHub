@@ -132,6 +132,17 @@ def main():
     except Exception:
         app.setStyleSheet(DARK_QSS)     # 配置读不出来也不能白屏，退回深色
 
+    # 共享外挂模型库（2026-11-08）：启动时按配置自愈一次托管 yaml
+    # （用户直接从别的机器拷配置、或手滑删了文件时，模型库页才不会漏掉外挂模型）
+    try:
+        from app.config import load_config as _load_cfg2
+        from app import model_paths as _mp
+        _st = (_load_cfg2().get("settings") or {})
+        _mp.sync_shared_config(str(_st.get("shared_models_root") or ""),
+                               bool(_st.get("shared_models_enabled")))
+    except Exception:
+        pass
+
     # 单实例守卫（2026-11-01）：已有实例时把它的窗口唤到前台并退出本进程，
     # 避免重复双击堆出一串托盘图标、两套管理器抢同一批 ComfyUI 实例。
     # 注意：第二个实例**不弹模态框**——弹了它自己就卡成一个进程等用户点确定，
