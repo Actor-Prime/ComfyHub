@@ -66,15 +66,21 @@ class HomePage(QWidget):
             cards.addWidget(c)
         root.addLayout(cards)
 
-        # ---- 实例状态行 ----
+        # ---- 实例区（2026-11-07：外面套一层圆角描边框，把实例信息与目录网格收在一起）----
+        box = QFrame()
+        box.setObjectName("SectionBox")
+        box.setAttribute(Qt.WA_StyledBackground, True)
+        bx = QVBoxLayout(box)
+        bx.setContentsMargins(14, 10, 14, 14)
+        bx.setSpacing(6)
+
         self.lb_inst = QLabel("当前实例: （未选择）")
         self.lb_inst.setStyleSheet("color:#9aa4b2;")
-        root.addWidget(self.lb_inst)
+        bx.addWidget(self.lb_inst)
 
-        # ---- 目录网格 ----
         lb = QLabel("实例目录")
         lb.setObjectName("SectionLabel")
-        root.addWidget(lb)
+        bx.addWidget(lb)
         grid = QGridLayout()
         grid.setSpacing(10)
         self._dir_cards = []
@@ -89,7 +95,8 @@ class HomePage(QWidget):
         for i, (icon, name, sub) in enumerate(entries):
             card = self._dir_card(icon, name, sub)
             grid.addWidget(card, i // 3, i % 3)
-        root.addLayout(grid)
+        bx.addLayout(grid)
+        root.addWidget(box)
 
         # ---- 右下角操作按钮 ----
         root.addStretch()

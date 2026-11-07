@@ -17,6 +17,7 @@ EN_DICT = {
     "控制台": "Console",
     "系统设置": "Settings",
     "当前实例": "Current instance",
+    "外部模型库": "External model library",
     # ---- AI 助手页（2026-11-03）----
     "发送": "Send",
     "清空对话": "Clear chat",
@@ -485,8 +486,8 @@ EN_DICT = {
     "根目录": "Root folder",
     "包含 main.py 的 ComfyUI 目录": "ComfyUI folder containing main.py",
     "模型目录": "Models folder",
-    "checkpoints/loras/vae 等模型的存放位置":
-        "Where checkpoints/loras/vae and friends are stored",
+    "ComfyUI 的模型根目录；其他盘的模型用 extra_model_paths.yaml 挂载":
+        "ComfyUI's model root; models on other drives go in extra_model_paths.yaml",
     "Python 路径": "Python path",
     "实例配套的解释器（建议用独立 venv）":
         "Interpreter for this instance (a dedicated venv is recommended)",

@@ -161,7 +161,7 @@ class _AgentWorker(QThread):
 class AiPage(QWidget):
     # ---- 样式（深浅主题都用半透明底，避免白底白字）----
     ST_USER = ("background:#2f6fb2; color:#ffffff; border-radius:12px;"
-               "padding:8px 12px;")
+               "border:1px solid rgba(255,255,255,0.14); padding:8px 12px;")
     ST_ERR = ("background:rgba(226,75,74,0.14);"
               "border:1px solid rgba(226,75,74,0.45); color:#ff9c9c;"
               "border-radius:10px; padding:8px 12px;")
@@ -208,8 +208,12 @@ class AiPage(QWidget):
         root.setContentsMargins(18, 14, 18, 14)
         root.setSpacing(10)
 
-        # ---- 顶部状态行 ----
-        head = QHBoxLayout()
+        # ---- 顶部状态行（2026-11-07：套一层圆角描边容器，别让文字裸飘在背景图上）----
+        head_host = QWidget()
+        head_host.setObjectName("AiHead")
+        head_host.setAttribute(Qt.WA_StyledBackground, True)
+        head = QHBoxLayout(head_host)
+        head.setContentsMargins(10, 4, 8, 4)
         head.setSpacing(6)
         self.lb_dot = QLabel("●")
         self.lb_dot.setStyleSheet("color:#4cd47c; font-size:11px;")
@@ -233,7 +237,7 @@ class AiPage(QWidget):
             _b.setToolTip(_tip)
             _b.clicked.connect(lambda _=False, f=_fn: f())
             head.addWidget(_b)
-        root.addLayout(head)
+        root.addWidget(head_host)
 
         # ---- 消息流 ----
         self.scroll = QScrollArea()
@@ -266,7 +270,7 @@ class AiPage(QWidget):
         self.att_row = QHBoxLayout()
         self.att_row.setSpacing(6)
         self.att_row.addStretch(1)
-        self.att_host = QWidget()
+        self.att_host = self._row()
         self.att_host.setLayout(self.att_row)
         self.att_host.setVisible(False)
         root.addWidget(self.att_host)
@@ -306,9 +310,23 @@ class AiPage(QWidget):
         custom = bool(str(st.get("bg_image") or "").strip())
         if info is not None and info.get("mode"):
             custom = custom and info.get("mode") == "custom"
+        self._custom_bg = custom
+        # 2026-11-07：全局 QSS 的 `QWidget{background-color:...}` 会给每个消息行容器
+        # 刷上一层不透明/半透明底色，自定义背景下就成了一条条"横带"（用户报障）。
+        # 行容器统一 objectName=ChatRow，这里恒置透明；气泡/卡片自己带样式不受影响。
+        rows = ("QWidget#ChatRow{background:transparent;}"
+                "QLabel#ChatBody{background:transparent;}")
+        # 顶部状态条：必须是有边有角的容器，否则状态文字和下拉框裸飘在背景图上
+        if custom:
+            rows += ("QWidget#AiHead{background:rgba(14,17,22,0.50);"
+                     "border:1px solid rgba(255,255,255,0.10); border-radius:10px;}")
+        else:
+            rows += ("QWidget#AiHead{background:rgba(127,127,127,0.06);"
+                     "border:1px solid rgba(127,127,127,0.14); border-radius:10px;}")
         if not custom:
             self.setAttribute(Qt.WA_StyledBackground, False)
-            self.setStyleSheet("")
+            self.setStyleSheet(rows)
+            self._restyle_cards()
             return
         op = max(0, min(100, int(st.get("bg_opacity") or 72)))
         from app.ui.theme import page_scrim_rgba
@@ -320,8 +338,36 @@ class AiPage(QWidget):
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet(
             f"QWidget#AiPage{{background:{alpha};}}"
+            + rows +
             "QWidget#AiPage QScrollArea{background:transparent;}"
             "QWidget#AiPage QScrollArea>QWidget>QWidget{background:transparent;}")
+        self._restyle_cards()
+
+    # -------------------------------------------------- 卡片/气泡外观（2026-11-07）
+    def _card_qss(self) -> str:
+        """AI 消息卡：自定义背景下用深一档的实色 + 细描边，边界清楚但不抢背景
+
+        之前卡片只有 8% 灰 + 0.18 描边，叠在背景图上完全看不见——
+        正文和按钮就像裸飘着，用户反馈"没有边框、没有圆角、色差断层"。
+        """
+        if getattr(self, "_custom_bg", False):
+            return ("QFrame#aiCard{background:rgba(14,17,22,0.56);"
+                    "border:1px solid rgba(255,255,255,0.12);"
+                    "border-radius:12px;}")
+        return ("QFrame#aiCard{background:rgba(127,127,127,0.08);"
+                "border:1px solid rgba(127,127,127,0.18);"
+                "border-radius:12px;}")
+
+    def _restyle_cards(self):
+        """把已存在的消息卡刷成当前主题的样式（历史卡片不会自己重建）"""
+        if not hasattr(self, "flow"):
+            return
+        qss = self._card_qss()
+        for i in range(self.flow.count()):
+            it = self.flow.itemAt(i)
+            w = it.widget() if it is not None else None
+            if w is not None and w.objectName() == "aiCard":
+                w.setStyleSheet(qss)
 
     # -------------------------------------------------- 键盘：回车发送 / Shift+回车换行
     def eventFilter(self, obj, event):
@@ -465,23 +511,85 @@ class AiPage(QWidget):
     def _chat_width(self) -> int:
         return max(320, self.scroll.viewport().width() - 24)
 
+    @staticmethod
+    def _row() -> QWidget:
+        """消息行容器（透明底）
+
+        2026-11-07：全局 QSS 第一条 `QWidget{background-color:...}` 会给每个裸
+        QWidget 刷一层底色——自定义背景下每条消息外面就多出一条横带（用户报障）。
+        统一打 ChatRow 标记，由 refresh_backdrop 的 `QWidget#ChatRow{...}` 置透。
+        """
+        w = QWidget()
+        w.setObjectName("ChatRow")
+        return w
+
+    def _fit_ai_body(self, body: QLabel, html: str):
+        """AI 卡片正文按当前聊天区宽度定型（窗口缩放后需重算）"""
+        cw = self._chat_width() - 28
+        body.setFixedWidth(cw)
+        body.setFixedHeight(self._rich_height(html, cw, body.font()))
+
+    def _relayout_messages(self):
+        """窗口尺寸变化后重排已有消息（2026-11-07 用户报障）
+
+        历史对话在 __init__ 里渲染，那一刻页面还是 640x480 的默认尺寸，
+        气泡/正文宽度被 setFixedWidth 钉死；窗口放大后卡片被布局拉满、
+        正文却还是窄的，右边留一大片空白，看着像"半截横条"。
+        这里按新宽度就地重算，控件复用——不重建、不丢工具时间线。
+        """
+        if getattr(self, "_stream", None):
+            return                              # 流式中别动，等结束
+        for i in range(self.flow.count()):
+            it = self.flow.itemAt(i)
+            w = it.widget() if it is not None else None
+            if w is None:
+                continue
+            for lb in w.findChildren(QLabel):
+                kind = lb.property("chatKind")
+                if kind == "user":
+                    self._fit_user_bubble(lb, lb.property("chatText") or "")
+                elif kind == "err":
+                    self._fit_err_bubble(lb, lb.property("chatText") or "")
+                elif kind == "ai":
+                    self._fit_ai_body(lb, lb.text())
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if not hasattr(self, "flow"):
+            return
+        # 拖窗口时每帧重排会卡：停手 80ms 再算一次
+        t = getattr(self, "_relayout_timer", None)
+        if t is None:
+            t = QTimer(self)
+            t.setSingleShot(True)
+            t.setInterval(80)
+            t.timeout.connect(self._relayout_messages)
+            self._relayout_timer = t
+        t.start()
+
     # -------------------------------------------------- 消息组件
     def _greet(self):
         self._ai_card(
             "我是 ComfyHub 的 AI 助手，可以帮你查看实例状态、读日志排错、"
             "管理模型、检查和运行工作流。点上方快捷指令，或直接输入问题。")
 
-    def _user_bubble(self, text: str):
-        lb = QLabel(text)
-        lb.setWordWrap(True)
-        lb.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        lb.setStyleSheet(self.ST_USER)
+    def _fit_user_bubble(self, lb: QLabel, text: str):
+        """按当前聊天区宽度给气泡定型（2026-11-07：抽出以便窗口缩放后重排）"""
         fm = lb.fontMetrics()
         cw = min(self._chat_width() - 140, fm.horizontalAdvance(text) + 6)
         cw = max(80, cw)
         lb.setFixedWidth(cw + 24)                       # +padding
         lb.setFixedHeight(self._wrap_height(lb, text, cw + 24, 24, 16))
-        w = QWidget()
+
+    def _user_bubble(self, text: str):
+        lb = QLabel(text)
+        lb.setWordWrap(True)
+        lb.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lb.setStyleSheet(self.ST_USER)
+        lb.setProperty("chatKind", "user")
+        lb.setProperty("chatText", text)
+        self._fit_user_bubble(lb, text)
+        w = self._row()
         h = QHBoxLayout(w)
         h.setContentsMargins(0, 0, 0, 0)
         h.addStretch(1)
@@ -495,7 +603,7 @@ class AiPage(QWidget):
         lb.setToolTip("点击查看大图")
         lb.setStyleSheet("border:1px solid rgba(127,127,127,0.25); border-radius:6px;")
         lb.clicked.connect(lambda p=pm: ImagePreviewDialog(p, self).exec())
-        wrap = QWidget()
+        wrap = self._row()
         h = QHBoxLayout(wrap)
         h.setContentsMargins(0, 0, 8, 0)
         h.addStretch(1)
@@ -506,7 +614,7 @@ class AiPage(QWidget):
         model = str((self.cfg.get("settings") or {}).get("ai_model") or "") or "AI"
         card = QFrame()
         card.setObjectName("aiCard")
-        card.setStyleSheet(self.ST_CARD)
+        card.setStyleSheet(self._card_qss())
         card.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         v = QVBoxLayout(card)
         v.setContentsMargins(14, 10, 14, 10)
@@ -541,11 +649,11 @@ class AiPage(QWidget):
         body.setWordWrap(True)
         body.setTextFormat(Qt.RichText)
         body.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        cw = self._chat_width() - 28
-        body.setFixedWidth(cw)
         html = _md_to_html(text)
         body.setText(html)
-        body.setFixedHeight(self._rich_height(html, cw, body.font()))
+        body.setProperty("chatKind", "ai")
+        body.setObjectName("ChatBody")
+        self._fit_ai_body(body, html)
         v.addWidget(body)
 
         self.flow.insertWidget(self.flow.count() - 1, card)
@@ -568,7 +676,7 @@ class AiPage(QWidget):
             lb.clicked.connect(lambda p=pm: ImagePreviewDialog(p, self).exec())
             lb.setStyleSheet("border:1px solid rgba(127,127,127,0.25);"
                              "border-radius:8px; padding:2px;")
-            wrap = QWidget()
+            wrap = self._row()
             h = QHBoxLayout(wrap)
             h.setContentsMargins(16, 0, 0, 0)
             h.addWidget(lb)
@@ -578,15 +686,20 @@ class AiPage(QWidget):
         if shown:
             self._scroll_bottom()
 
+    def _fit_err_bubble(self, lb: QLabel, text: str):
+        cw = self._chat_width() - 60
+        lb.setFixedWidth(cw)
+        lb.setFixedHeight(self._wrap_height(lb, text, cw, 24, 16))
+
     def _err_bubble(self, text: str):
         lb = QLabel(text)
         lb.setWordWrap(True)
         lb.setTextInteractionFlags(Qt.TextSelectableByMouse)
         lb.setStyleSheet(self.ST_ERR)
-        cw = self._chat_width() - 60
-        lb.setFixedWidth(cw)
-        lb.setFixedHeight(self._wrap_height(lb, text, cw, 24, 16))
-        w = QWidget()
+        lb.setProperty("chatKind", "err")
+        lb.setProperty("chatText", text)
+        self._fit_err_bubble(lb, text)
+        w = self._row()
         h = QHBoxLayout(w)
         h.setContentsMargins(0, 0, 0, 0)
         h.addWidget(lb)
@@ -602,11 +715,12 @@ class AiPage(QWidget):
         h.setContentsMargins(10, 2, 0, 2)
         arg_str = ", ".join(f"{k}={v}" for k, v in list((args or {}).items())[:2])
         lb = QLabel(f"● {name}" + (f"（{arg_str}）" if arg_str else "") + " …")
+        lb.setObjectName("ChatBody")
         lb.setStyleSheet("color:#8a93a3; font-size:12px;")
         lb.setToolTip(str(args)[:500])
         h.addWidget(lb)
         h.addStretch(1)
-        wrap = QWidget()
+        wrap = self._row()
         wl = QHBoxLayout(wrap)
         wl.setContentsMargins(16, 0, 0, 0)     # 时间线缩进
         wl.addWidget(f)
@@ -826,6 +940,12 @@ class AiPage(QWidget):
         elif kind == "tool_result":
             self._finish_tool_item(ev.get("name", "?"), ev.get("ok", False),
                                    ev.get("brief", ""), int(ev.get("ms") or 0))
+            # 2026-11-07：AI 帮忙起/停实例后，顶部状态点还挂着旧结论
+            # （用户截图里 AI 说"已就绪"、上面仍写"未启动"）→ 立刻重探一次，
+            # 不等 5 秒轮询；再补一拍给刚监听的端口留点时间
+            if ev.get("name") == "control_instance":
+                self.refresh_inst()
+                QTimer.singleShot(2500, self.refresh_inst)
         elif kind == "image":
             self._show_images(ev.get("paths") or [])
         elif kind == "error":
@@ -890,6 +1010,7 @@ class AiPage(QWidget):
         card["re"].setEnabled(bool(self._last_user))
         model = str((self.cfg.get("settings") or {}).get("ai_model") or "") or "AI"
         card["cap"].setText("AI 助手 · " + model + " · " + QTime.currentTime().toString("HH:mm"))
+        self._relayout_messages()      # 流式期间 resize 被跳过，收尾补一次重排
 
     def _stream_flush_direct(self, text: str):
         card = getattr(self, "_last_card", None)
@@ -908,11 +1029,12 @@ class AiPage(QWidget):
     def _notice(self, text: str):
         """灰色提示行（如：该模型不支持关闭思考）"""
         lb = QLabel("· " + text)
+        lb.setObjectName("ChatBody")
         lb.setWordWrap(True)
         lb.setStyleSheet("color:#7f8894; font-size:11px;")
         lb.setFixedWidth(self._chat_width() - 40)
         lb.setFixedHeight(self._wrap_height(lb, text, self._chat_width() - 40, 0, 2))
-        wrap = QWidget()
+        wrap = self._row()
         h = QHBoxLayout(wrap)
         h.setContentsMargins(2, 0, 0, 0)
         h.addWidget(lb)
@@ -924,8 +1046,9 @@ class AiPage(QWidget):
         import time
         self._think_t0 = time.time()
         lb = QLabel("思考中… 0.0s")
+        lb.setObjectName("ChatBody")
         lb.setStyleSheet("color:#8a93a3; font-size:12px;")
-        wrap = QWidget()
+        wrap = self._row()
         h = QHBoxLayout(wrap)
         h.setContentsMargins(2, 0, 0, 0)
         h.addWidget(lb)

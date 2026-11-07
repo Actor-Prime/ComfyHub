@@ -375,8 +375,14 @@ def build_command(inst: dict, port: int | None = None) -> list:
     # 走 junction 换头，不设这两个字段。
     if inst.get("base_directory"):
         cmd += ["--base-directory", inst["base_directory"]]
-    if inst.get("models_directory"):
-        cmd += ["--models-directory", inst["models_directory"]]
+    # 模型目录：实例设置（models_dir）优先；旧 profile 线用 models_directory。
+    # 只有跟「<comfyui_path>/models」默认值不同才显式传参——默认情况不改变启动命令，
+    # 免得某些整合包对 --models-directory 的解析差异搞出意外（2026-11-07）。
+    _md = (inst.get("models_dir") or "").strip() or (inst.get("models_directory") or "").strip()
+    if _md:
+        _dflt = os.path.join(inst.get("comfyui_path") or "", "models")
+        if not _dflt or os.path.normpath(_md) != os.path.normpath(_dflt):
+            cmd += ["--models-directory", _md]
     # 额外参数（实例）
     s = (inst.get("extra_args") or "").strip()
     if s:

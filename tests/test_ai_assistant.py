@@ -875,12 +875,16 @@ check("11a 有背景图时加了底板", "AiPage" in _pg2.styleSheet()
 check("11b 底板用 StyledBackground 才画得出来",
       _pg2.testAttribute(Qt.WA_StyledBackground) is True)
 _pg2.refresh_backdrop({"mode": "dark"})
-check("11c 非自定义主题时去掉底板", _pg2.styleSheet() == ""
-      and _pg2.testAttribute(Qt.WA_StyledBackground) is False)
+# 2026-11-07：非自定义主题不再把样式表清成空串——行容器/正文的透明规则要常驻
+# （全局 QSS 的 QWidget 底色会给每条消息刷一条横带），这里只断言"没有底板"
+check("11c 非自定义主题时去掉底板", "AiPage" not in _pg2.styleSheet()
+      and "rgba(22,25,31," not in _pg2.styleSheet()
+      and _pg2.testAttribute(Qt.WA_StyledBackground) is False, _pg2.styleSheet()[:80])
 _pg2.close()
 
 _pg3 = _AP({"settings": {}}, _FakeWin())
-check("11d 没设背景图时不留底板", _pg3.styleSheet() == "")
+check("11d 没设背景图时不留底板", "AiPage" not in _pg3.styleSheet()
+      and "rgba(22,25,31," not in _pg3.styleSheet(), _pg3.styleSheet()[:80])
 _pg3.close()
 
 # 透明度随面板不透明度变化：面板越透 → 底板越实
@@ -892,6 +896,52 @@ _pg4.refresh_backdrop({"mode": "custom"})
 _a100 = _pg4.styleSheet()
 check("11e 面板越不透明、底板越透（可反向调节）", _a0 != _a100, f"{_a0[:40]} vs {_a100[:40]}")
 _pg4.close()
+
+# 2026-11-07 用户报障：AI 页每条消息外面多出一条"深色横带"、正文右侧大片空白
+# 根因①全局 QSS `QWidget{background-color:...}` 给裸 QWidget 行容器刷了底色
+# 根因②历史消息在 __init__（640x480）时渲染，setFixedWidth 把正文钉死
+_pg5 = _AP({"settings": {"bg_image": "F:/fake/bg.jpg", "bg_opacity": 85}}, _FakeWin())
+_pg5.refresh_backdrop({"mode": "custom"})
+_pg5._user_bubble("帮我启动一下")
+_pg5._ai_card("实例已启动就绪")
+_rows = [_pg5.flow.itemAt(i).widget() for i in range(_pg5.flow.count())
+         if _pg5.flow.itemAt(i).widget() is not None]
+_rowonly = [r for r in _rows if r.objectName() != "aiCard"]   # 卡片是 QFrame#aiCard
+check("11f 消息行容器都打了 ChatRow 透明标记",
+      bool(_rowonly) and all(r.objectName() == "ChatRow" for r in _rowonly),
+      str([r.objectName() for r in _rows]))
+check("11g 页面样式含行容器/正文透明规则",
+      "QWidget#ChatRow" in _pg5.styleSheet()
+      and "QLabel#ChatBody" in _pg5.styleSheet(), _pg5.styleSheet()[:80])
+
+_pg5.show()          # 隐藏页布局不跑，viewport 宽度不会变
+QTest.qWait(150)
+_QL = type(_pg5.lb_inst)
+_bodies = [lb for r in _rows for lb in r.findChildren(_QL)
+           if lb.property("chatKind") == "ai"]
+_pg5.resize(1000, 700)
+QTest.qWait(320)
+_w_big = _bodies[0].width() if _bodies else 0
+_pg5.resize(620, 700)
+QTest.qWait(320)
+_w_small = _bodies[0].width() if _bodies else 0
+check("11h 正文宽度随窗口缩放重排", _w_big > _w_small > 0, f"{_w_big} -> {_w_small}")
+_pg5.close()
+
+# 2026-11-07 用户补充：卡片"没有边框、没有圆角、色差断层"→ 卡片与顶部状态条必须
+# 自带描边+圆角，自定义背景下换成深一档实色，靠边框界定层次而不是靠色差
+_pg6 = _AP({"settings": {"bg_image": "F:/fake/bg.jpg", "bg_opacity": 85}}, _FakeWin())
+_pg6.refresh_backdrop({"mode": "custom"})
+_cq = _pg6._card_qss()
+check("11i 自定义背景下卡片有描边和圆角",
+      "border-radius:12px" in _cq and "border:1px solid" in _cq, _cq[:60])
+check("11j 顶部状态行套了圆角容器", "QWidget#AiHead" in _pg6.styleSheet()
+      and "border-radius:10px" in _pg6.styleSheet(), _pg6.styleSheet()[-90:])
+_pg6.cfg["settings"].pop("bg_image", None)
+_pg6.refresh_backdrop({"mode": "dark"})
+check("11k 深色主题卡片回到浅灰底（不跟着用深色实底）",
+      "rgba(127,127,127,0.08)" in _pg6._card_qss(), _pg6._card_qss()[:60])
+_pg6.close()
 
 # ================================================== 12. 保存前改动确认（2026-11-06）
 from app.ui.changes_dialog import diff_changes as _dc  # noqa: E402

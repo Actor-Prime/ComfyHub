@@ -10,6 +10,13 @@ QWidget {
     font-family: "Microsoft YaHei UI";
     font-size: 12px;
 }
+/* 纯文字控件不参与"面板底色"（2026-11-07 用户报障）：
+   上面那条 QWidget 会把每个裸 QLabel/QCheckBox 也刷成一块矩形底色，
+   表单里的字段名（接口地址/模型名…）背后就多出一条条深色小方块。
+   带 id 的标签（#CardTitle/#BadgeInstalled 等）优先级更高，不受影响。 */
+QLabel, QCheckBox, QRadioButton {
+    background: transparent;
+}
 QMainWindow, QDialog {
     background-color: #1e2229;
 }
@@ -80,6 +87,10 @@ QPushButton[accent="true"] {
 QPushButton[accent="true"]:hover { background: #3d7ee2; }
 QPushButton[accent="true"]:disabled { color: #5a636f; background: #242932; }
 QPushButton[accent="true"]:checked { background: #1d5bb8; }
+
+/* 纯图标按钮（固定 30~34px 宽）：全局 padding 6px 14px 会把内容区挤到 6px，
+   图标被裁成半个（2026-11-07 用户报障「刷新键显示不全」），这里清零内边距 */
+QPushButton#IconBtn { padding: 0px; border-radius: 6px; }
 
 /* 生成设备切换（GPU/CPU 二选一） */
 QPushButton#DeviceBtn {
@@ -245,14 +256,17 @@ QScrollBar::handle:horizontal {
 /* ===== 分组框 ===== */
 QGroupBox {
     border: 1px solid #2a2f38;
-    border-radius: 6px;
-    margin-top: 10px;
-    padding-top: 8px;
+    border-radius: 8px;
+    margin-top: 16px;
+    padding-top: 10px;
     color: #9aa4b2;
     font-weight: bold;
 }
+/* 标题挪到边框线之上（subcontrol-position: top left）：默认是垂直居中在
+   margin 区里，会跟边框线交叠，半透明背景下那条线等于被标题劈开 */
 QGroupBox::title {
     subcontrol-origin: margin;
+    subcontrol-position: top left;
     left: 12px;
     padding: 0 4px;
 }
@@ -323,6 +337,12 @@ QGroupBox::title {
 }
 #RowTitle { color: #d8dee6; font-weight: bold; font-size: 12px; background: transparent; }
 #RowDesc  { color: #7d8797; font-size: 11px; background: transparent; }
+/* 工作台「实例区」外框（2026-11-07 用户要求把实例信息+目录网格框起来） */
+#SectionBox {
+    border: 1px solid #2a2f38;
+    border-radius: 10px;
+    background: transparent;
+}
 #SectionLabel {
     color: #9aa4b2;
     font-size: 13px;
@@ -556,6 +576,27 @@ def resolve_mode(mode: str) -> str:
     return "dark"
 
 
+# 自定义背景下的"描边补偿"（2026-11-07 用户报障）：
+# 深灰描边色（#2a2f38 / #262c36 等）会被 _dark_surfaces 一并换成 45% 半透明的同色，
+# 叠在背景图上等于没有 → 分组框/卡片成了"没边框的直角色块"，与页面之间只剩色差，
+# 观感就是断层。这里统一换成半透明白描边 + 更大圆角，让边界由线定义而不是由色差定义。
+_CUSTOM_EDGE_PATCH = """
+QGroupBox, QTableWidget, #Card, #Banner, #RowCard, #SectionBox, QStackedWidget#PaneCard {
+    border: 1px solid rgba(255,255,255,0.30);
+    border-radius: 10px;
+}
+QStackedWidget#PaneCard { border-radius: 12px; }
+QStackedWidget#PaneCard QTableWidget { border: none; border-radius: 0px; }
+QComboBox, QLineEdit, QSpinBox, QDoubleSpinBox, QTextEdit, QPlainTextEdit {
+    border: 1px solid rgba(255,255,255,0.18);
+    border-radius: 8px;
+}
+QGroupBox::title { color: #c2cad6; }
+#Card:hover { border-color: #3d8bff; }
+#Banner { border-radius: 12px; }
+"""
+
+
 def page_scrim_rgba(alpha: float, strength: float = 0.25) -> str:
     """页面级底板颜色（2026-11-07）。
 
@@ -585,7 +626,8 @@ def build_qss(mode: str = "dark", alpha: float = 0.72) -> str:
         # QScrollArea 视口本身吃 palette.Base（不透明），不显式置透会把整页涂死
         return (_replace_colors(DARK_QSS, mapping)
                 + "\n#Backdrop { background: transparent; }\n"
-                + "QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }\n")
+                + "QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }\n"
+                + _CUSTOM_EDGE_PATCH)
     return DARK_QSS
 
 

@@ -59,10 +59,40 @@ check("1e custom 背景层透明规则", "#Backdrop { background: transparent; }
 import re as _re
 check("1f custom 用百分比透明度（Qt 只认 % 形式）",
       bool(_re.search(r"rgba\(\d+,\d+,\d+,\d+%\)", custom)), custom[:120])
-check("1f2 不透明度 100% → 面板不透明",
-      "rgba(30,34,41,100%)" in th.build_qss("custom", 1.0))
+def _panel_pct(a: float) -> int:
+    """面板不透明度 → QSS 百分比（2026-11-07 公式：alpha^1.8 * 0.6，与左栏同档）"""
+    return int(round(max(0.08, min(1.0, float(a) ** 1.8 * 0.6)) * 100))
+
+
+check("1f2 不透明度 100% → 面板最实（上限 60%，跟左栏同档）",
+      f"rgba(30,34,41,{_panel_pct(1.0)}%)" in th.build_qss("custom", 1.0),
+      f"{_panel_pct(1.0)}%")
 check("1f3 低不透明度确实更通透",
-      "rgba(30,34,41,15%)" in th.build_qss("custom", 0.35))
+      _panel_pct(0.35) < _panel_pct(0.72) < _panel_pct(1.0),
+      f"{_panel_pct(0.35)}/{_panel_pct(0.72)}/{_panel_pct(1.0)}")
+
+# 2026-11-07 用户报障：分组框/卡片/输入框"没有边框、没有圆角、色差断层"
+# 自定义背景下深灰描边被换成 45% 透明同色 → 等于没边；这里换成半透明白描边 + 大圆角
+check("1f4 custom 给卡片/分组框补半透明白描边",
+      "border: 1px solid rgba(255,255,255,0.30)" in custom
+      and "#PaneCard" in custom, custom[-160:])
+check("1f5 custom 输入控件也补描边圆角",
+      "QComboBox, QLineEdit" in custom
+      and "border-radius: 8px" in custom)
+check("1f6 分组框标题挪到框线上方（不压线）",
+      "subcontrol-position: top left" in th.DARK_QSS)
+check("1f7 深色主题不带描边补丁（保持原样）",
+      "rgba(255,255,255,0.30)" not in th.build_qss("dark"))
+check("1f8 窄图标按钮清零内边距（修刷新键被裁）",
+      "QPushButton#IconBtn { padding: 0px;" in th.DARK_QSS)
+check("1f9 深色主题也带图标按钮规则", "IconBtn" in th.build_qss("dark"))
+# 2026-11-07 用户报障：设置页表单字段名背后有一条条深色小方块
+# （全局 QWidget 底色把裸 QLabel 也刷了）
+check("1f10 纯文字控件不吃面板底色",
+      "QLabel, QCheckBox, QRadioButton" in th.DARK_QSS)
+# 2026-11-07 用户要求：工作台「实例信息 + 目录网格」外面套一个框
+check("1f11 工作台实例区有外框样式",
+      "#SectionBox" in th.DARK_QSS and "#SectionBox" in custom)
 
 # -------------------------------------------------- 2. 模式解析与配置兜底
 check("2a system 折成 light|dark", th.resolve_mode("system") in ("light", "dark"))

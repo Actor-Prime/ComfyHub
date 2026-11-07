@@ -32,7 +32,9 @@ class ToolCtx:
         self.log = log
         self.api = f"http://127.0.0.1:{int(self.inst.get('port') or 8188)}"
         self.comfyui_path = self.inst.get("comfyui_path") or ""
-        self.models_dir = os.path.join(self.comfyui_path, "models") if self.comfyui_path else ""
+        # 2026-11-07：跟着实例设置里的「模型目录」走，别硬编码 models/
+        from app.model_paths import model_root
+        self.models_dir = model_root(self.comfyui_path, self.inst.get("models_dir") or "")
         self.workflows_dir = (os.path.join(self.comfyui_path, "user", "default", "workflows")
                               if self.comfyui_path else "")
         self.output_dir = os.path.join(self.comfyui_path, "output") if self.comfyui_path else ""

@@ -210,7 +210,10 @@ class ComfyuiPage(QWidget):
         h_models.addWidget(self.ed_models, 1)
         h_models.addWidget(b_models)
         wrap2 = QWidget(); wrap2.setLayout(h_models)
-        t1v.addWidget(_Row("模型目录", "checkpoints/loras/vae 等模型的存放位置", wrap2))
+        t1v.addWidget(_Row(
+            "模型目录",
+            "ComfyUI 的模型根目录；其他盘的模型用 extra_model_paths.yaml 挂载",
+            wrap2))
 
         h_py = QHBoxLayout()
         self.ed_python = QLineEdit()
@@ -1042,35 +1045,20 @@ class ComfyuiPage(QWidget):
             d = os.path.normpath(d)
             self.ed_models.setText(d)
             self.ed_models.setToolTip(d)
-            # 立即写 yaml 并持久化到实例配置
+            # 只存实例字段：启动时按 --models-directory 传给 ComfyUI。
+            # 不再整份重写 extra_model_paths.yaml —— 那是用户手动配的外部挂载表
+            # （比如把 D:\ComfyUI-Models 挂进来），覆盖写会把人家的配置冲掉（2026-11-07）
             inst = self._current_inst()
             if inst:
                 inst["models_dir"] = d
                 from app.config import save_config
                 save_config(self.cfg)
-                self._write_model_paths(inst, d)
 
     def _pick_python(self):
         f, _ = QFileDialog.getOpenFileName(self, "选择 Python 解释器",
                                            self.ed_python.text(), "Python (python.exe)")
         if f:
             self.ed_python.setText(f)
-
-    @staticmethod
-    def _write_model_paths(inst, models_dir):
-        try:
-            yaml = (
-                "comfyui:\n"
-                f"  base_path: {models_dir}\n"
-                "  checkpoints: checkpoints\n  loras: loras\n  vae: vae\n"
-                "  clip: clip\n  clip_vision: clip_vision\n  configs: configs\n"
-                "  controlnet: controlnet\n  diffusion_models: diffusion_models\n"
-                "  embeddings: embeddings\n  unet: unet\n"
-                "  upscale_models: upscale_models\n")
-            open(os.path.join(inst["comfyui_path"], "extra_model_paths.yaml"),
-                 "w", encoding="utf-8").write(yaml)
-        except OSError:
-            pass
 
     # ---------- 启停（供首页/控制台调用） ----------
     def _open_batch(self):
