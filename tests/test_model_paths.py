@@ -122,7 +122,79 @@ def main():
         cmd2 = build_command(dict(base_inst, models_dir=custom_root))
         check("9b 自定义根会传 --models-directory",
               "--models-directory" in cmd2 and custom_root in cmd2, str(cmd2[-3:]))
-        shutil.rmtree(custom_root, ignore_errors=True)
+
+        # 10. 来源分层（2026-11-08）：内置 / 外挂 / 全部
+        #     先让内置也有 vae，好和外挂那份对比
+        os.makedirs(os.path.join(comfy, "models", "vae"), exist_ok=True)
+        touch(os.path.join(comfy, "models", "vae", "builtin_vae.safetensors"))
+        b_vae = MP.dirs_for(comfy, "vae", "", MP.SRC_BUILTIN)
+        e_vae = MP.dirs_for(comfy, "vae", "", MP.SRC_EXTRA)
+        a_vae = MP.dirs_for(comfy, "vae", "", MP.SRC_ALL)
+        check("10a builtin 不含外挂目录",
+              b_vae == [os.path.join(comfy, "models", "vae")], str(b_vae))
+        check("10b extra 只含外挂目录",
+              len(e_vae) == 1 and e_vae[0].startswith(ext), str(e_vae))
+        check("10c all = 内置 + 外挂", len(a_vae) == 2 and b_vae[0] in a_vae
+              and e_vae[0] in a_vae, str(a_vae))
+        tagged = MP.dirs_tagged(comfy, "vae", "", MP.SRC_ALL)
+        check("10d 来源标签区分内置与外挂",
+              {k for _d, k, _b in tagged} == {"builtin", "extra"}
+              and all(b for _d, _k, b in tagged), str(tagged))
+
+        # 11. 共享外挂库（B 阶段）：生成 / 传递 / 关闭即删
+        shared_root = os.path.join(root, "shared_models")
+        os.makedirs(os.path.join(shared_root, "vae"), exist_ok=True)
+        os.makedirs(os.path.join(shared_root, "loras"), exist_ok=True)
+        sfile = MP.sync_shared_config(shared_root, True)
+        text = open(sfile, encoding="utf-8").read() if os.path.isfile(sfile) else ""
+        check("11a 共享配置按实际存在的类别生成",
+              "base_path" in text and "vae: vae" in text and "loras: loras" in text
+              and "checkpoints: checkpoints" not in text, text.replace("\n", " | ")[:120])
+        check("11b 共享根被并入外挂扫描",
+              shared_root in MP.extra_roots(comfy), str(MP.extra_roots(comfy)))
+        check("11c 关闭后文件被删除",
+              MP.sync_shared_config(shared_root, False) == ""
+              and not os.path.isfile(sfile))
+
+        # 12. 实例级挂载（2026-11-08 用户要求）：模型目录下面那个开关 + 目录
+        mount_root = os.path.join(root, "mount_models")
+        os.makedirs(os.path.join(mount_root, "loras"), exist_ok=True)
+        os.makedirs(os.path.join(mount_root, "checkpoints"), exist_ok=True)
+        touch(os.path.join(mount_root, "loras", "m.safetensors"))
+        inst_m = {"id": "t_inst", "comfyui_path": comfy, "python_path": "python.exe",
+                  "port": 8188, "mount_enabled": True, "mount_dir": mount_root}
+        # 别往真实 %APPDATA% 里写测试残留：把生成的 yaml 指到临时目录
+        real_cfg = MP.instance_config_path
+        MP.instance_config_path = lambda i: os.path.join(
+            root, "cfg", f"{(i or {}).get('id')}.yaml")
+        try:
+            p = MP.sync_instance_config(inst_m)
+            txt = open(p, encoding="utf-8").read() if p and os.path.isfile(p) else ""
+            check("12a 实例挂载 yaml 按类别生成",
+                  "base_path" in txt and "loras: loras" in txt
+                  and "vae: vae" not in txt, txt.replace("\n", " | ")[:120])
+            check("12b mount_root_of 返回挂载根",
+                  MP.mount_root_of(inst_m) == os.path.normpath(mount_root),
+                  MP.mount_root_of(inst_m))
+            _d = MP.dirs_for(comfy, "loras", "", MP.SRC_EXTRA, mount_root)
+            check("12c 挂载根并入外挂扫描",
+                  os.path.join(mount_root, "loras") in _d, str(_d))
+            check("12d 未启用时 mount_root_of 为空",
+                  MP.mount_root_of(dict(inst_m, mount_enabled=False)) == "")
+            cmd_m = build_command(inst_m)
+            check("12e 启动命令带挂载 yaml",
+                  "--extra-model-paths-config" in cmd_m and p in cmd_m, str(cmd_m[-4:]))
+            off = dict(inst_m, mount_enabled=False)
+            MP.sync_instance_config(off)
+            check("12f 关闭后 yaml 被删除", not os.path.isfile(p))
+            check("12g 关闭后启动不传该挂载",
+                  p not in build_command(off), str(build_command(off)[-4:]))
+            check("12h 目录不存在时不生成挂载",
+                  MP.sync_instance_config(dict(inst_m, mount_dir="Z:\\nope")) == "")
+            check("12i 目录缺失时 mount_root_of 为空",
+                  MP.mount_root_of(dict(inst_m, mount_dir="Z:\\nope")) == "")
+        finally:
+            MP.instance_config_path = real_cfg
     finally:
         shutil.rmtree(root, ignore_errors=True)
         shutil.rmtree(ext, ignore_errors=True)

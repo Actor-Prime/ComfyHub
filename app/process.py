@@ -383,11 +383,55 @@ def build_command(inst: dict, port: int | None = None) -> list:
         _dflt = os.path.join(inst.get("comfyui_path") or "", "models")
         if not _dflt or os.path.normpath(_md) != os.path.normpath(_dflt):
             cmd += ["--models-directory", _md]
+    # 单实例挂载模型目录（2026-11-08 用户要求）：实例设置页「模型目录」下面
+    # 那个开关开启时，把 ComfyHub 生成的 yaml 传给 ComfyUI（类别按标准子目录名
+    # 自动映射）。和「共享外挂库」可叠加——ComfyUI 的该参数是 append 语义。
+    extra = _instance_extra_config(inst)
+    if extra:
+        cmd += ["--extra-model-paths-config", extra]
+    # 共享外挂模型库（2026-11-08）：设置里开启后，把 ComfyHub 托管的 yaml 传给
+    # ComfyUI——一份挂载表所有实例通用，不用给每个实例写 extra_model_paths.yaml。
+    # 实例自己目录里的 yaml 由 ComfyUI 自行加载，两者叠加。
+    shared = _shared_extra_config()
+    if shared:
+        cmd += ["--extra-model-paths-config", shared]
     # 额外参数（实例）
     s = (inst.get("extra_args") or "").strip()
     if s:
         cmd += s.split()
     return cmd
+
+
+def _instance_extra_config(inst) -> str:
+    """单实例挂载 yaml 路径（未启用/目录无效返回空串）
+
+    顺带做自愈：开关关了就删掉上次生成的 yaml，别留僵尸挂载让 ComfyUI 认出
+    已经取消的模型库。
+    """
+    try:
+        from app import model_paths
+        return model_paths.sync_instance_config(inst or {})
+    except Exception:                    # 任何异常都不能拦住启动
+        return ""
+
+
+def _shared_extra_config() -> str:
+    """共享外挂库 yaml 路径（未启用/配置不全返回空串）
+
+    每次启动顺手 sync 一次：配置改了没点保存、或 yaml 被手动删掉时能自愈。
+    """
+    try:
+        from app.config import load_config
+        from app import model_paths
+        st = load_config().get("settings") or {}
+        if not st.get("shared_models_enabled"):
+            return ""
+        root = str(st.get("shared_models_root") or "").strip()
+        if not root or not os.path.isdir(root):
+            return ""
+        return model_paths.sync_shared_config(root, True)
+    except Exception:                    # 任何异常都不能拦住启动
+        return ""
 
 
 class ComfyProcess(QObject):

@@ -144,8 +144,12 @@ class ComfyuiPage(QWidget):
         super().__init__()
         self.cfg = cfg
         self.mainwin = mainwin
+        # 加载时界面取值快照：保存前对比用（2026-11-08 用户要求「空 = 默认值」，
+        # 老配置缺字段时界面会显示默认值，不该被算成一次改动）
+        self._loaded = None
         self._build()
         self.load_current()
+        self.load_shared()          # 共享外挂库是全局设置，只加载一次
 
     # ---------- 构建 ----------
     def _build(self):
@@ -203,16 +207,44 @@ class ComfyuiPage(QWidget):
         wrap1 = QWidget(); wrap1.setLayout(h_dir)
         t1v.addWidget(_Row("根目录", "包含 main.py 的 ComfyUI 目录", wrap1))
 
+        # 模型目录卡片（2026-11-08 用户要求：卡片拉高，下面加「启用挂载模型目录」
+        # 开关 + 目录选择，两个目录一眼分得清：上面 = 实例自己的 models 根，
+        # 下面 = 别的盘的外置库，用 extra_model_paths.yaml 挂进来）
         h_models = QHBoxLayout()
+        h_models.setSpacing(8)
         self.ed_models = QLineEdit(); self.ed_models.setReadOnly(True)
-        b_models = QPushButton("修改目录")
-        b_models.clicked.connect(self._pick_models)
+        self.b_models = QPushButton("修改目录")
+        self.b_models.clicked.connect(self._pick_models)
         h_models.addWidget(self.ed_models, 1)
-        h_models.addWidget(b_models)
-        wrap2 = QWidget(); wrap2.setLayout(h_models)
+        h_models.addWidget(self.b_models)
+
+        h_mount = QHBoxLayout()
+        h_mount.setSpacing(8)
+        self.ck_mount = QCheckBox("启用挂载模型目录")
+        self.ck_mount.setToolTip(
+            "开启后启动 ComfyUI 会带上本实例的挂载表（--extra-model-paths-config），\n"
+            "下面选的目录里的 checkpoints / loras / vae 等会被自动映射挂进来。\n"
+            "只影响当前实例，重启实例后生效。")
+        self.ck_mount.toggled.connect(self._on_mount_toggled)
+        self.ed_mount = QLineEdit(); self.ed_mount.setReadOnly(True)
+        self.ed_mount.setPlaceholderText("未选择：开启开关后可选一个外部模型根目录")
+        self.b_mount = QPushButton("选择目录")
+        self.b_mount.clicked.connect(self._pick_mount)
+        h_mount.addWidget(self.ck_mount)
+        h_mount.addWidget(self.ed_mount, 1)
+        h_mount.addWidget(self.b_mount)
+
+        wrap2 = QWidget()
+        v2 = QVBoxLayout(wrap2)
+        v2.setContentsMargins(0, 2, 0, 2)
+        v2.setSpacing(8)
+        v2.addLayout(h_models)
+        v2.addLayout(h_mount)
+        wrap2.setMinimumHeight(74)
         t1v.addWidget(_Row(
             "模型目录",
-            "ComfyUI 的模型根目录；其他盘的模型用 extra_model_paths.yaml 挂载",
+            "ComfyUI 的模型根目录（留空跟随 <根目录>/models）；"
+            "其他盘的模型库用下面的开关单独挂载，按标准类别子目录自动映射",
             wrap2))
 
         h_py = QHBoxLayout()
@@ -372,6 +404,57 @@ class ComfyuiPage(QWidget):
         self.tb_kver.verticalScrollBar().valueChanged.connect(self._on_kver_scroll)
         self.tabs.addTab(t2, "🧬 内核版本")
 
+        # ---- Tab3 共享外挂库（2026-11-08 用户要求：从「系统设置」搬到 ComfyUI 页）----
+        # 一份挂载表所有实例通用（写进系统设置），和 Tab1 里「启用挂载模型目录」
+        # （单实例）互相独立，启动时两个 yaml 会一起传给 ComfyUI，叠加生效
+        t3 = QWidget(); t3v = QVBoxLayout(t3)
+        t3v.setContentsMargins(18, 14, 18, 14); t3v.setSpacing(8)
+        lb_s = QLabel("共享外挂模型库")
+        lb_s.setObjectName("SectionLabel")
+        t3v.addWidget(lb_s)
+
+        self.ck_share = QCheckBox("启用：所有实例共用同一个外部模型库")
+        self.ck_share.toggled.connect(self._on_share_toggled)
+        self.ck_share.toggled.connect(self._refresh_share_state)
+        t3v.addWidget(_Row("启用共享外挂库",
+                           "开启后启动任意实例都会带上这张挂载表", self.ck_share))
+
+        h_share = QHBoxLayout()
+        h_share.setSpacing(8)
+        self.ed_share_root = QLineEdit()
+        self.ed_share_root.setPlaceholderText(
+            r"如 D:\ComfyUI-Models（标准子目录 checkpoints / loras / vae / unet …）")
+        self.ed_share_root.textChanged.connect(self._refresh_share_state)
+        self.b_share = QPushButton("选择目录")
+        self.b_share.clicked.connect(self._pick_share_root)
+        h_share.addWidget(self.ed_share_root, 1)
+        h_share.addWidget(self.b_share)
+        wrap_share = QWidget(); wrap_share.setLayout(h_share)
+        t3v.addWidget(_Row("挂载根目录",
+                           "目录下的标准子目录会自动映射进来，不用手写映射表",
+                           wrap_share))
+
+        self.lb_share_state = QLabel()
+        self.lb_share_state.setWordWrap(True)
+        self.lb_share_state.setStyleSheet("color:#7fa8d9; background:transparent;")
+        t3v.addWidget(self.lb_share_state)
+        tip_share = QLabel(
+            "开启后，启动任意实例都会把该目录传给 ComfyUI（--extra-model-paths-config），"
+            "不用给每个实例单独写 yaml。目录下的标准子目录自动映射；实例自己的 "
+            "extra_model_paths.yaml 仍照旧生效，两者叠加。")
+        tip_share.setWordWrap(True)
+        tip_share.setStyleSheet("color:#888; background:transparent;")
+        t3v.addWidget(tip_share)
+        t3v.addStretch()
+        h_save = QHBoxLayout()
+        h_save.addStretch()
+        self.b_share_save = QPushButton("保存共享库设置")
+        self.b_share_save.setProperty("accent", True)
+        self.b_share_save.clicked.connect(self._save_shared)
+        h_save.addWidget(self.b_share_save)
+        t3v.addLayout(h_save)
+        self.tabs.addTab(t3, "📚 共享外挂库")
+
         # ---- 底部：保存 / 删除（全局）----
         bottom = QHBoxLayout()
         bottom.setContentsMargins(18, 0, 18, 12)
@@ -390,18 +473,34 @@ class ComfyuiPage(QWidget):
         inst = self.mainwin.current_inst()
         self.b_del.setEnabled(inst is not None)
         if not inst:
-            for w in (self.ed_name, self.ed_path, self.ed_models, self.ed_python):
+            for w in (self.ed_name, self.ed_path, self.ed_models, self.ed_python,
+                      self.ed_mount):
                 w.clear()
+            self.ck_mount.setChecked(False)
+            self._on_mount_toggled(False)
+            self._loaded = None
             return
         self.ed_name.setText(inst.get("name", ""))
         self.ed_path.setText(inst.get("comfyui_path", ""))
-        # 模型目录：优先读实例配置（持久化），无则默认 comfyui_path/models
-        self.ed_models.setText(inst.get("models_dir")
-                               or os.path.join(inst["comfyui_path"], "models"))
+        # 模型目录：配置为空 = 跟随默认（<comfyui_path>/models）。输入框留空、
+        # 灰字显示默认路径；别把默认路径写死进配置，否则以后挪 ComfyUI 目录时
+        # 这一栏还钉在旧位置（2026-11-07）。已经写死成默认路径的老配置也顺手净化回空
+        _dflt_models = os.path.join(inst["comfyui_path"], "models")
+        _md = (inst.get("models_dir") or "").strip()
+        if _md and os.path.normpath(_md) == os.path.normpath(_dflt_models):
+            _md = ""
+        self.ed_models.setText(_md)
+        self.ed_models.setPlaceholderText(_dflt_models)
+        # 挂载模型目录（2026-11-08）：按实例存，切实例各自独立
+        self.ck_mount.setChecked(bool(inst.get("mount_enabled")))
+        _mdir = (inst.get("mount_dir") or "").strip()
+        self.ed_mount.setText(_mdir)
+        self.ed_mount.setToolTip(_mdir)
+        self._on_mount_toggled(self.ck_mount.isChecked())
         self.ed_python.setText(inst.get("python_path", ""))
         # 路径框：光标移到末尾（显示尾部目录名），tooltip 存完整路径
         for ed in (self.ed_path, self.ed_models, self.ed_python):
-            ed.setToolTip(ed.text())
+            ed.setToolTip(ed.text() or ed.placeholderText())
             ed.setCursorPosition(len(ed.text()))
         self.sp_port.setValue(int(inst.get("port") or 8188))
         self.cb_vram.setCurrentText(inst.get("vram_mode", "自动"))
@@ -426,6 +525,8 @@ class ComfyuiPage(QWidget):
         self._restore_engine_selection(inst)
         self._refresh_kernel_info()
         self._update_state()
+        # 记下「界面上看到的值」作为保存对比基准（空字段已在此前填成默认值）
+        self._loaded = self._snapshot()
 
     # ---------- 内核版本 ----------
     def _km(self):
@@ -805,6 +906,7 @@ class ComfyuiPage(QWidget):
     # 保存前改动确认用的字段名（2026-11-06）
     _SAVE_LABELS = {
         "name": "实例名称", "models_dir": "模型目录", "python_path": "Python 路径",
+        "mount_enabled": "启用挂载模型目录", "mount_dir": "挂载模型目录",
         "port": "启动端口", "vram_mode": "CPU/显存优化", "cross_attn": "Cross Attention",
         "preview_method": "预览方式", "precision": "精度", "fast_mode": "Fast 模式",
         "no_smart_memory": "禁用智能显存", "cpu_vae": "CPU VAE",
@@ -814,23 +916,30 @@ class ComfyuiPage(QWidget):
         "auto_open_browser": "自动打开浏览器", "extra_args": "额外启动参数",
         "engine": "生成引擎",
     }
+    # 这些字段留空 = 用默认值，对比框里别显示成「（空）」让人以为没配
+    _SAVE_EMPTY_TEXT = {
+        "models_dir": "默认（<根目录>/models）",
+        "mount_dir": "未选择",
+        "extra_args": "无",
+    }
 
-    def _save(self):
-        from app.ui.changes_dialog import diff_changes, confirm_changes
-        inst = self._current_inst()
-        if not inst:
-            return
-        # 快照改动前的值（2026-11-06）：取消时按这里恢复，一个字段都不动
-        _TRACK = ("name", "models_dir", "python_path", "port", "vram_mode",
-                  "cross_attn", "preview_method", "precision", "fast_mode",
-                  "no_smart_memory", "cpu_vae", "deterministic", "channels_last",
-                  "cuda_malloc", "multi_user", "lan_access", "hf_offline",
-                  "auto_open_browser", "extra_args")
-        old = {k: inst.get(k) for k in _TRACK}
-        old["engine"] = (inst.get("engine_backend"), inst.get("engine_index"))
-        eng = (self.cb_eng.currentData() or ("auto", None))
-        new = {
-            "name": self.ed_name.text().strip() or inst["name"],
+    # 参与保存/对比的字段
+    _TRACK = ("name", "models_dir", "python_path", "port", "vram_mode",
+              "cross_attn", "preview_method", "precision", "fast_mode",
+              "no_smart_memory", "cpu_vae", "deterministic", "channels_last",
+              "cuda_malloc", "multi_user", "lan_access", "hf_offline",
+              "auto_open_browser", "extra_args",
+              "mount_enabled", "mount_dir")
+
+    def _snapshot(self) -> dict:
+        """界面当前取值（键与 _TRACK 一致，外加 engine）
+
+        保存对比一律用它做基准：老配置里缺的字段（None / ""）在界面上已经被
+        load_current 填成默认值，快照里就是那个默认值，于是「没动过 = 没改动」，
+        不会再刷出一串「（空）→ 自动」的假改动（2026-11-08 用户报障）。
+        """
+        return {
+            "name": self.ed_name.text().strip(),
             "models_dir": self.ed_models.text().strip(),
             "python_path": self.ed_python.text().strip(),
             "port": self.sp_port.value(),
@@ -849,20 +958,51 @@ class ComfyuiPage(QWidget):
             "hf_offline": self.ck_hf_offline.isChecked(),
             "auto_open_browser": self.ck_browser.isChecked(),
             "extra_args": self.ed_extra.text().strip(),
-            "engine": eng,
+            "mount_enabled": self.ck_mount.isChecked(),
+            "mount_dir": self.ed_mount.text().strip(),
+            "engine": (self.cb_eng.currentData() or ("auto", None)),
         }
-        changes = diff_changes(old, new, self._SAVE_LABELS)
+
+    def _save(self):
+        from app.ui.changes_dialog import diff_changes, confirm_changes
+        inst = self._current_inst()
+        if not inst:
+            return
+        # 基准 = 加载时界面取值（2026-11-08）；没加载过才回落到配置原值
+        if self._loaded is not None:
+            old = dict(self._loaded)
+        else:
+            old = {k: inst.get(k) for k in self._TRACK}
+            old["engine"] = (inst.get("engine_backend"), inst.get("engine_index"))
+        new = self._snapshot()
+        if not new["name"]:
+            new["name"] = inst.get("name") or ""
+        changes = diff_changes(old, new, self._SAVE_LABELS,
+                               defaults=self._SAVE_EMPTY_TEXT)
+        # 挂载开关开了却没选目录 / 目录已失效 → 直接拦下，别写一份空挂载
+        if new["mount_enabled"]:
+            _mr = new["mount_dir"]
+            if not _mr:
+                QMessageBox.warning(self, "ComfyHub",
+                                    "已勾选「启用挂载模型目录」，但还没选目录。\n"
+                                    "请点右侧「选择目录」，或取消勾选后再保存。")
+                return
+            if not os.path.isdir(_mr):
+                QMessageBox.warning(self, "ComfyHub",
+                                    f"挂载目录不存在：\n{_mr}\n\n请重新选择。")
+                return
         if not changes:
             QMessageBox.information(self, "ComfyHub", "没有改动，无需保存")
             return
         # 用户要求（2026-11-06）：保存前列出改了什么，防手滑改错配置后无感落盘
         if not confirm_changes(self, f"实例「{inst.get('name')}」", changes, "保存设置"):
             return
-        for k in _TRACK:
+        for k in self._TRACK:
             if k in new:
                 inst[k] = new[k]
-        inst["engine_backend"] = eng[0]
-        inst["engine_index"] = eng[1]
+        _eng = new["engine"]
+        inst["engine_backend"] = _eng[0]
+        inst["engine_index"] = _eng[1]
         # 旧字段清理：device/cuda_device 已被引擎下拉取代，防止残留配置打架
         inst.pop("device", None)
         inst.pop("cuda_device", None)
@@ -872,6 +1012,7 @@ class ComfyuiPage(QWidget):
         st.pop("launch", None)
         save_config(self.cfg)
         self.mainwin._sync_instances()
+        self._loaded = dict(new)      # 基准跟着更新，连点保存不会再刷一堆假改动
         QMessageBox.information(self, "ComfyHub", "✅ 设置已保存")
 
     def _delete(self):
@@ -1054,11 +1195,129 @@ class ComfyuiPage(QWidget):
                 from app.config import save_config
                 save_config(self.cfg)
 
+    def _pick_mount(self):
+        """选择「挂载模型目录」的根（别的盘放模型库的那一层，下面就是 checkpoints/loras）"""
+        cur = (self.ed_mount.text() or "").strip() or self.ed_models.text() or "F:\\"
+        d = QFileDialog.getExistingDirectory(self, "选择要挂载的模型目录", cur)
+        if not d:
+            return
+        d = os.path.normpath(d)
+        self.ed_mount.setText(d)
+        self.ed_mount.setToolTip(d)
+        self.ed_mount.setCursorPosition(len(d))
+        # 选完目录顺手把开关打开（否则用户容易以为已经挂上了）
+        if not self.ck_mount.isChecked():
+            self.ck_mount.setChecked(True)
+        inst = self._current_inst()
+        if inst:
+            inst["mount_dir"] = d
+            inst["mount_enabled"] = self.ck_mount.isChecked()
+            from app.config import save_config
+            save_config(self.cfg)
+
+    def _on_mount_toggled(self, on):
+        """开关联动：关掉时目录框置灰（值保留，方便下次再开）"""
+        self.ed_mount.setEnabled(bool(on))
+        self.b_mount.setEnabled(bool(on))
+        if on and not self.ed_mount.text().strip():
+            self.ed_mount.setPlaceholderText("请点右侧「选择目录」挑一个外部模型根目录")
+        else:
+            self.ed_mount.setPlaceholderText(
+                "未选择：开启开关后可选一个外部模型根目录")
+
     def _pick_python(self):
         f, _ = QFileDialog.getOpenFileName(self, "选择 Python 解释器",
                                            self.ed_python.text(), "Python (python.exe)")
         if f:
             self.ed_python.setText(f)
+
+    # ---------- 共享外挂库（全局，Tab3；2026-11-08 从系统设置搬来） ----------
+    def load_shared(self):
+        """把系统设置里的共享外挂库读进界面（全局，与实例无关）"""
+        st = (self.cfg.get("settings") or {})
+        self.ck_share.blockSignals(True)
+        self.ed_share_root.blockSignals(True)
+        self.ck_share.setChecked(bool(st.get("shared_models_enabled")))
+        self.ed_share_root.setText(str(st.get("shared_models_root") or ""))
+        self.ck_share.blockSignals(False)
+        self.ed_share_root.blockSignals(False)
+        self._on_share_toggled(self.ck_share.isChecked())   # 关掉时目录行置灰
+        self._refresh_share_state()
+
+    def _on_share_toggled(self, on):
+        self.ed_share_root.setEnabled(bool(on))
+        self.b_share.setEnabled(bool(on))
+
+    def _pick_share_root(self):
+        d = QFileDialog.getExistingDirectory(
+            self, "选择共享外挂模型库根目录", self.ed_share_root.text().strip() or "")
+        if not d:
+            return
+        self.ed_share_root.setText(os.path.normpath(d))
+        if not self.ck_share.isChecked():     # 选完顺手启用，免得白选
+            self.ck_share.setChecked(True)
+
+    def _refresh_share_state(self, *_a):
+        """状态行：共享外挂当前是否生效、映射了几个类别
+
+        （含动态值的文案用 T(静态前缀) + 变量拼，别整串进词表——词表是精确匹配）
+        """
+        from app import model_paths
+        from app.i18n import T
+        enabled = self.ck_share.isChecked()
+        root = self.ed_share_root.text().strip()
+        if not enabled:
+            self.lb_share_state.setText(
+                T("未启用（各实例仍按自己的 extra_model_paths.yaml 走）"))
+            return
+        if not root:
+            self.lb_share_state.setText(T("已启用，但还没选挂载根目录 —— 保存会被拦下"))
+            return
+        if not os.path.isdir(root):
+            self.lb_share_state.setText(T("目录不存在：") + root)
+            return
+        cats = [c for c in model_paths.STANDARD_CATS
+                if os.path.isdir(os.path.join(root, c))]
+        self.lb_share_state.setText(
+            T("已启用 · 将映射") + f" {len(cats)} " + T("个类别子目录：")
+            + ("、".join(cats) if cats else T("（该目录下没有标准子目录，映射为空）")))
+
+    def _save_shared(self):
+        """保存共享外挂库设置（写系统设置 + 立刻生成/删除托管 yaml）"""
+        from app import model_paths
+        on = bool(self.ck_share.isChecked())
+        root = self.ed_share_root.text().strip().rstrip("\\/")
+        if on:
+            if not root:
+                QMessageBox.warning(self, "ComfyHub",
+                                    "已勾选启用共享外挂模型库，请先选择挂载根目录。")
+                return
+            if not os.path.isdir(root):
+                QMessageBox.warning(self, "ComfyHub",
+                                    f"共享外挂库目录不存在：\n{root}")
+                return
+        st = self.cfg.setdefault("settings", {})
+        same = (bool(st.get("shared_models_enabled")) == on
+                and str(st.get("shared_models_root") or "").rstrip("\\/")
+                == (root if on else str(st.get("shared_models_root") or "").rstrip("\\/")))
+        st["shared_models_enabled"] = on
+        st["shared_models_root"] = root
+        save_config(self.cfg)
+        try:                      # 关掉就删 yaml，别留僵尸挂载
+            model_paths.sync_shared_config(root, on)
+        except Exception:
+            log_exc("sync_shared_config")
+        self._on_share_toggled(on)
+        self._refresh_share_state()
+        if same:
+            QMessageBox.information(self, "ComfyHub", "没有改动，无需保存")
+        else:
+            QMessageBox.information(
+                self, "ComfyHub",
+                "✅ 共享外挂库设置已保存\n\n"
+                + ("已生成挂载表，下次启动实例即生效（正在运行的实例需重启）。"
+                   if on else "已关闭，托管挂载表已删除。"))
+
 
     # ---------- 启停（供首页/控制台调用） ----------
     def _open_batch(self):

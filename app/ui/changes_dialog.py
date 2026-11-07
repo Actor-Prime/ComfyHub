@@ -10,24 +10,27 @@
 import copy
 
 
-def _fmt(v, limit=60) -> str:
+def _fmt(v, limit=60, empty="（空）") -> str:
     if v is None:
-        return "（空）"
+        return empty
     if isinstance(v, bool):
         return "开" if v else "关"
     s = " ".join(str(v).split())
     if len(s) > limit:
         return s[:limit] + "…"
-    return s if s else "（空）"
+    return s if s else empty
 
 
 def diff_changes(old: dict, new: dict, labels: dict,
-                 secret_keys=(), long_keys=()) -> list:
+                 secret_keys=(), long_keys=(), defaults=None) -> list:
     """对比两份配置，返回 [(字段名, 旧值显示, 新值显示), ...]，只含有差异的项。
 
     secret_keys：密钥类字段，绝不显示明文，只提示「已修改 / 已清除」。
     long_keys：长文本字段（如助手设定），只显示字数变化。
+    defaults：{字段名: 空值时的显示文案}——有些字段留空 = 用默认值（如模型目录
+    留空 = 跟随 <根目录>/models），显示「默认」比显示「（空）」清楚（2026-11-08）。
     """
+    defaults = defaults or {}
     out = []
     for key in new:
         if key not in old and new[key] in ("", None, 0, False):
@@ -35,14 +38,17 @@ def diff_changes(old: dict, new: dict, labels: dict,
         o, n = old.get(key), new.get(key)
         if o == n:
             continue
+        if o in ("", None) and n in ("", None):
+            continue                      # None 与 "" 互相顶替不算改动（2026-11-07）
         label = labels.get(key, key)
+        empty_txt = defaults.get(key, "（空）")
         if key in secret_keys:
             out.append((label, "已设置" if o else "（空）",
                         "已清除" if not n else "已修改"))
         elif key in long_keys:
             out.append((label, f"{len(str(o or ''))} 字", f"{len(str(n or ''))} 字"))
         else:
-            out.append((label, _fmt(o), _fmt(n)))
+            out.append((label, _fmt(o, empty=empty_txt), _fmt(n, empty=empty_txt)))
     return out
 
 

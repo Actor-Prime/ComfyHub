@@ -350,6 +350,13 @@ QGroupBox::title {
     background: transparent;
     padding: 6px 0;
 }
+/* 行内筛选标签（模型库「来源 / 类别」）：比 SectionLabel 亮一档，
+   自定义背景图上才看得清；#b8c2ce 在浅色主题有映射、自定义模式按文本色保留 */
+#FilterLabel {
+    color: #b8c2ce;
+    font-size: 12px;
+    background: transparent;
+}
 
 /* ===== 环境检测行 ===== */
 #CheckRow {

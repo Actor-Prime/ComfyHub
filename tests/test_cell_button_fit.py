@@ -96,10 +96,12 @@ g3 = b3.geometry()
 ok_h3, ok_w3, d3 = text_fits(b3, g3.height(), g3.width())
 check("市场安装按钮(固定80x22)文字不裁", ok_h3 and ok_w3, d3)
 
-# 5) 表外按钮不受紧凑规则影响（保持 6px padding / 26px sizeHint）
+# 5) 表外按钮不受紧凑规则影响（保持 6px padding，可高于 cell 可用高 23）
+# 2026-11-08：原来写死「== 26」，字体度量随系统/版本变化（实测已是 29）就假红。
+# 本条的真正意图是「紧凑规则没波及表格外的按钮」→ 断言它明显高于 cell 的 23。
 b_out = QPushButton("启动")
-check("表外按钮 sizeHint 仍为 26 高（未被波及）",
-      b_out.sizeHint().height() == 26, f"h={b_out.sizeHint().height()}")
+check("表外按钮不受紧凑规则波及（sizeHint 高于 23）",
+      b_out.sizeHint().height() > 23, f"h={b_out.sizeHint().height()}")
 
 # 6) 行高兜底仍是 32
 check("表格行高仍为 32", tb.rowHeight(0) == TABLE_ROW_H, f"h={tb.rowHeight(0)}")

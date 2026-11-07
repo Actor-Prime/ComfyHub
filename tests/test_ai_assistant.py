@@ -956,6 +956,9 @@ check("12b 密钥只显示已修改不给明文",
 check("12c 长文本显示字数变化", any(x[0] == "长文" and "字" in x[1] for x in _ch), str(_ch))
 check("12d 布尔显示开/关", any(x[0] == "开关" and x[2] == "开" for x in _ch), str(_ch))
 check("12e 新增空值不算改动", not any(x[0] == "新增" for x in _ch), str(_ch))
+check("12f None 与空串互相顶替不算改动",
+      _dc({"m": None}, {"m": ""}, {"m": "模型目录"}) == []
+      and _dc({"m": ""}, {"m": None}, {"m": "模型目录"}) == [])
 
 # 系统设置页：取消 → 不落盘；确认 → 落盘；无改动 → 不弹窗
 import app.ui.changes_dialog as _cdmod  # noqa: E402
