@@ -262,6 +262,120 @@ class ModelDownloader:
         return download_multi(url, dest, log=log, max_retry=100, timeout=120)
 
 
+# ================= 环境清单（备份/快照详情用，2026-11-02） =================
+# 事件标签：说明这份备份/快照是被什么动作触发创建的
+EVT_MANUAL = "手动创建"
+EVT_BEFORE_PLUGIN_INSTALL = "插件安装前"
+EVT_BEFORE_WORKFLOW_RUN = "工作流执行前"
+
+
+def _file_sha256(path: str, chunk: int = 1024 * 1024) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for blk in iter(lambda: f.read(chunk), b""):
+            h.update(blk)
+    return h.hexdigest()
+
+
+def _hash_cache_file() -> str:
+    from app.paths import data_root
+    return os.path.join(data_root(), "hash_cache.json")
+
+
+def _load_hash_cache() -> dict:
+    try:
+        return json.load(open(_hash_cache_file(), encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_hash_cache(cache: dict):
+    try:
+        os.makedirs(os.path.dirname(_hash_cache_file()), exist_ok=True)
+        json.dump(cache, open(_hash_cache_file(), "w", encoding="utf-8"))
+    except Exception:
+        pass   # 缓存写失败不影响主流程
+
+
+def _plugin_version(plugin_dir: str) -> str:
+    """插件版本：git describe --tags --always（无 tag 退化为短 commit）；非 git 返回 —"""
+    if not os.path.isdir(os.path.join(plugin_dir, ".git")):
+        return "—"
+    git = find_git()
+    if not git:
+        return "—"
+    try:
+        r = run([git, "-C", plugin_dir, "describe", "--tags", "--always"],
+                capture_output=True, timeout=15, text=True,
+                encoding="utf-8", errors="replace")
+        out = (r.stdout or "").strip()
+        return out[:40] if out else "—"
+    except Exception:
+        return "—"
+
+
+def collect_manifest(comfyui_path: str, log=print) -> dict:
+    """采集环境清单：内核版本 / 插件内容与版本 / 工作流 json / 模型及哈希。
+    模型 sha256 带「路径+大小+mtime」缓存（重复快照不重算）；
+    首次采集 7GB+ 模型要十几秒，务必在工作线程调用。"""
+    kernel = inst_lib.read_comfyui_version(comfyui_path)
+    # 1) 插件（名称规范化剥离 .disabled，与快照回滚口径一致）
+    plugins = []
+    for n, _g, en in inst_lib.list_custom_nodes(comfyui_path):
+        base = n[:-len(".disabled")] if n.endswith(".disabled") else n
+        plugins.append({
+            "name": base,
+            "enabled": en,
+            "version": _plugin_version(os.path.join(comfyui_path, "custom_nodes", n)),
+        })
+    # 2) 工作流 json（user/default/workflows 递归，相对路径）
+    workflows = []
+    wf_dir = os.path.join(comfyui_path, "user", "default", "workflows")
+    if os.path.isdir(wf_dir):
+        for root, _dirs, files in os.walk(wf_dir):
+            for fn in sorted(files):
+                if fn.lower().endswith(".json"):
+                    rel = os.path.relpath(os.path.join(root, fn), wf_dir)
+                    workflows.append(rel.replace("\\", "/"))
+    # 3) 模型清单 + sha256（缓存命中不重算）
+    models = []
+    cache = _load_hash_cache()
+    dirty = False
+    m_root = os.path.join(comfyui_path, "models")
+    if os.path.isdir(m_root):
+        for cat in sorted(os.listdir(m_root)):
+            cdir = os.path.join(m_root, cat)
+            if not os.path.isdir(cdir):
+                continue
+            for root, _dirs, files in os.walk(cdir):
+                for fn in sorted(files):
+                    if not inst_lib.is_model_file(fn):
+                        continue
+                    fp = os.path.join(root, fn)
+                    try:
+                        st = os.stat(fp)
+                    except OSError:
+                        continue
+                    key = os.path.normcase(os.path.abspath(fp))
+                    hit = cache.get(key)
+                    if (hit and hit.get("size") == st.st_size
+                            and hit.get("mtime") == int(st.st_mtime)):
+                        sha = hit["sha256"]
+                    else:
+                        log(f"计算模型哈希: {fn}（{st.st_size / 1024 ** 3:.2f}GB）")
+                        sha = _file_sha256(fp)
+                        cache[key] = {"size": st.st_size,
+                                      "mtime": int(st.st_mtime), "sha256": sha}
+                        dirty = True
+                    rel = os.path.relpath(fp, cdir).replace("\\", "/")
+                    models.append({"subdir": cat, "name": rel,
+                                   "size": st.st_size, "sha256": sha})
+    if dirty:
+        _save_hash_cache(cache)
+    return {"kernel": kernel, "plugins": plugins,
+            "workflows": workflows, "models": models}
+
+
 # ================= 环境备份 =================
 def _inst_dirname(comfyui_path: str) -> str:
     """实例存储目录名：basename + 路径哈希 8 位。
@@ -283,8 +397,9 @@ class EnvBackup:
                                        _inst_dirname(comfyui_path))
         os.makedirs(self.backup_dir, exist_ok=True)
 
-    def create(self, label: str = "", log=print) -> str:
-        """创建备份快照，返回备份名"""
+    def create(self, label: str = "", log=print,
+               event: str = EVT_MANUAL) -> str:
+        """创建备份快照，返回备份名。event 记录触发事件（插件安装前/手动创建等）"""
         ts = time.strftime("%Y%m%d_%H%M%S")
         name = f"{ts}_{label}" if label else ts
         bdir = os.path.join(self.backup_dir, name)
@@ -308,6 +423,16 @@ class EnvBackup:
         json.dump(state,
                   open(os.path.join(bdir, "custom_nodes.json"), "w", encoding="utf-8"),
                   ensure_ascii=False, indent=2)
+        # 3) 环境清单 meta.json（内核/插件版本/工作流/模型哈希，详情面板用）
+        try:
+            man = collect_manifest(self.comfyui_path, log=log)
+            man["event"] = event
+            man["created"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            json.dump(man,
+                      open(os.path.join(bdir, "meta.json"), "w", encoding="utf-8"),
+                      ensure_ascii=False, indent=2)
+        except Exception as e:
+            log(f"环境清单采集失败（不影响备份本体）: {e}")
         log(f"备份完成: {name}")
         return name
 
@@ -315,6 +440,14 @@ class EnvBackup:
         if not os.path.isdir(self.backup_dir):
             return []
         return sorted(os.listdir(self.backup_dir), reverse=True)
+
+    def load_meta(self, name: str) -> "dict | None":
+        """读备份详情清单；旧备份（无 meta.json）返回 None"""
+        f = os.path.join(self.backup_dir, name, "meta.json")
+        try:
+            return json.load(open(f, encoding="utf-8"))
+        except Exception:
+            return None
 
     def restore(self, name: str, log=print) -> bool:
         """还原：按 freeze 重装依赖（版本对齐）。插件目录还原属破坏性操作，v0.4 再开放。"""
@@ -348,8 +481,10 @@ class Rescue:
                                      _inst_dirname(comfyui_path))
         os.makedirs(self.snap_dir, exist_ok=True)
 
-    def snapshot(self, log=print) -> str:
-        """记录当前插件状态（名称+启停+git地址），不动文件"""
+    def snapshot(self, log=print, event: str = EVT_MANUAL) -> str:
+        """记录当前插件状态（名称+启停+版本）+ 环境清单，不动文件。
+        新格式（dict）含 event/kernel/plugins/workflows/models；
+        旧格式（list）只有插件状态，rollback 两侧都兼容。"""
         ts = time.strftime("%Y%m%d_%H%M%S")
         # ⚠️ 传 comfyui_path 而非 nodes_dir（list_custom_nodes 内部会再拼 custom_nodes）
         nodes = inst_lib.list_custom_nodes(self.comfyui_path)
@@ -359,8 +494,22 @@ class Rescue:
         for n, _g, en in nodes:
             base = n[:-len(".disabled")] if n.endswith(".disabled") else n
             state.append({"name": base, "enabled": en})
+        # 环境清单（内核/插件版本/工作流/模型哈希）；失败不阻塞快照本体
+        try:
+            man = collect_manifest(self.comfyui_path, log=log)
+            man["event"] = event
+            man["created"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        except Exception as e:
+            log(f"环境清单采集失败（不影响快照本体）: {e}")
+            man = {"event": event,
+                   "created": time.strftime("%Y-%m-%d %H:%M:%S"),
+                   "kernel": "?", "plugins": state,
+                   "workflows": [], "models": []}
+        # plugins 键统一为 [{name, enabled, version}]（回滚只读 name/enabled）
+        if not man.get("plugins"):
+            man["plugins"] = state
         path = os.path.join(self.snap_dir, f"{ts}.json")
-        json.dump(state, open(path, "w", encoding="utf-8"),
+        json.dump(man, open(path, "w", encoding="utf-8"),
                   ensure_ascii=False, indent=2)
         log(f"救援快照: {ts}（{len(state)} 个插件）")
         return ts
@@ -369,6 +518,19 @@ class Rescue:
         return sorted(os.listdir(self.snap_dir), reverse=True) \
             if os.path.isdir(self.snap_dir) else []
 
+    def load_meta(self, snap_name: str) -> "dict | None":
+        """读快照详情。新格式 dict 原样返回；旧格式 list 包一层返回；
+        文件损坏返回 None。"""
+        path = os.path.join(self.snap_dir, snap_name)
+        try:
+            data = json.load(open(path, encoding="utf-8"))
+        except Exception:
+            return None
+        if isinstance(data, dict):
+            return data
+        return {"event": "", "created": "", "kernel": "?",
+                "plugins": data, "workflows": [], "models": []}
+
     def rollback(self, snap_name: str, log=print) -> tuple:
         """回滚到快照状态：禁用快照里没有的插件 + 恢复启停状态。
         只做目录改名（.disabled），不删除文件——安全第一。
@@ -376,7 +538,9 @@ class Rescue:
         path = os.path.join(self.snap_dir, snap_name)
         if not os.path.isfile(path):
             return False, "快照不存在"
-        state = json.load(open(path, encoding="utf-8"))
+        data = json.load(open(path, encoding="utf-8"))
+        # 新格式 dict 取 plugins 键；旧格式 list 直接用（2026-11-02 详情化改造兼容）
+        state = data["plugins"] if isinstance(data, dict) else data
         # 防御旧格式快照：加载时也剥离 .disabled 后缀
         want = {}
         for s in state:

@@ -73,8 +73,10 @@ class ModelsPage(QWidget):
         return self.mainwin.current_inst()
 
     def _models_dir(self) -> str:
-        inst = self._inst()
-        return os.path.join(inst["comfyui_path"], "models") if inst else ""
+        """模型根目录：实例设置里的「模型目录」优先，空则 <comfyui_path>/models"""
+        from app.model_paths import model_root
+        inst = self._inst() or {}
+        return model_root(inst.get("comfyui_path", ""), inst.get("models_dir") or "")
 
     # ---------- UI ----------
     def _build(self):
@@ -165,6 +167,7 @@ class ModelsPage(QWidget):
 
         # 内容区：本地表格 / 在线卡片面板
         self.stack = QStackedWidget()
+        self.stack.setObjectName("PaneCard")   # 自定义背景下给整块内容面板描边+圆角
         self._build_local_page()
         self.market = ModelMarketWidget(self.cfg, self.mainwin,
                                         local_names=self._local_names)
@@ -214,6 +217,10 @@ class ModelsPage(QWidget):
         self.tb.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.tb.setEditTriggers(QTableWidget.NoEditTriggers)
         self.tb.setSelectionBehavior(QTableWidget.SelectRows)
+        # 2026-11-07 用户要求：双击某行就直接跳到对应位置
+        #  · 「全部」类别表    → 下钻到该类别（等同点上面的 chip）
+        #  · 文件明细/搜索表  → 在资源管理器里选中该文件
+        self.tb.cellDoubleClicked.connect(self._on_row_dbl)
         lv.addWidget(self.tb, 1)
 
     # ---------- 范围/chips/搜索 ----------
@@ -272,48 +279,105 @@ class ModelsPage(QWidget):
         return ModelDownloader("").MODEL_SUBDIRS[i - 1]
 
     def _local_names(self):
-        """所有本地模型文件名（供在线卡片「已装」启发式匹配）"""
+        """所有本地模型文件名（供在线卡片「已装」启发式匹配，含外部挂载目录）"""
+        from app import model_paths
         out = set()
-        d_root = self._models_dir()
-        if not d_root:
-            return out
+        inst = self._inst() or {}
         for sub in ModelDownloader("").MODEL_SUBDIRS:
-            d = os.path.join(d_root, sub)
-            if os.path.isdir(d):
-                for name in os.listdir(d):
-                    if inst_lib.is_model_file(name):
-                        out.add(name)
+            for d in model_paths.dirs_for(inst.get("comfyui_path", ""), sub,
+                                          inst.get("models_dir") or ""):
+                if not os.path.isdir(d):
+                    continue
+                try:
+                    for name in os.listdir(d):
+                        if inst_lib.is_model_file(name):
+                            out.add(name)
+                except OSError:
+                    pass
         return out
 
     def _list_files(self, subdir: str, kw: str = ""):
-        d = os.path.join(self._models_dir(), subdir)
+        """列出某类别的模型文件（内置 models/ + extra_model_paths.yaml 外部挂载）
+
+        2026-11-07：ComfyUI 允许外部盘挂模型库，只扫内置目录会漏掉一半模型
+        （用户报障：ComfyUI 认出十几个、模型库只显示 1 个）。返回 4 元组，
+        末位是文件绝对路径，双击行直接定位。
+        """
+        from app import model_paths
+        inst = self._inst() or {}
         out = []
-        if os.path.isdir(d):
-            for name in os.listdir(d):
+        for d in model_paths.dirs_for(inst.get("comfyui_path", ""), subdir,
+                                      inst.get("models_dir") or ""):
+            if not os.path.isdir(d):
+                continue
+            try:
+                names = os.listdir(d)
+            except OSError:
+                continue
+            for name in names:
                 p = os.path.join(d, name)
                 # 只显示模型格式文件（txt 占位符等排除）
                 if (os.path.isfile(p) and kw.lower() in name.lower()
                         and inst_lib.is_model_file(name)):
                     st = os.stat(p)
-                    out.append((name, st.st_size, st.st_mtime))
+                    out.append((name, st.st_size, st.st_mtime, p))
         out.sort(key=lambda x: -x[1])
         return out
 
-    def _add_row(self, vals, colors=None):
+    def _add_row(self, vals, colors=None, payload=None):
         r = self.tb.rowCount()
         self.tb.insertRow(r)
         for c, v in enumerate(vals):
             it = QTableWidgetItem(str(v))
             if colors and colors.get(c):
                 it.setForeground(QColor(colors[c]))
+            if payload is not None and c == 0:
+                it.setData(Qt.UserRole, payload)
             self.tb.setItem(r, c, it)
+
+    def _on_row_dbl(self, row: int, _col: int):
+        """双击行 → 跳到对应位置（2026-11-07）"""
+        it = self.tb.item(row, 0)
+        if it is None:
+            return
+        data = it.data(Qt.UserRole)
+        if not data:
+            return
+        if getattr(self, "_tb_mode", "") == "stats":
+            self._select_cat(str(data))
+        else:                                   # 文件行 → 资源管理器定位
+            inst_lib.open_in_explorer(str(data))
+
+    def _select_cat(self, cat: str):
+        """按类别名选中对应 chip（下钻），触发 refresh_stats"""
+        subs = list(ModelDownloader("").MODEL_SUBDIRS)
+        if cat not in subs:
+            return
+        b = self.chip_group.button(subs.index(cat) + 1)
+        if b is not None:
+            b.setChecked(True)      # exclusive group → toggled(True) → 重刷表格
+            self.tb.setFocus()
 
     def refresh_stats(self):
         self.tb.setRowCount(0)
         inst = self._inst()
-        self.lb_inst.setText(
-            f"{T('实例')}: {inst.get('name', '')}" if inst else "（未选择实例）")
+        if inst:
+            # 2026-11-07：ComfyUI 的 extra_model_paths.yaml 会把外部盘模型库挂进来，
+            # 这里明说一声，免得用户以为「模型库只认出几个、位置错了」
+            from app import model_paths
+            roots = model_paths.extra_roots(inst.get("comfyui_path", ""))
+            txt = f"{T('实例')}: {inst.get('name', '')}"
+            if roots:
+                txt += f"  ·  {T('外部模型库')} ×{len(roots)}"
+                self.lb_inst.setToolTip("\n".join(roots))
+            else:
+                self.lb_inst.setToolTip("")
+            self.lb_inst.setText(txt)
+        else:
+            self.lb_inst.setText("（未选择实例）")
+            self.lb_inst.setToolTip("")
         if not inst:
+            self._tb_mode = "stats"
             self.tb.setColumnCount(3)
             self.tb.setHorizontalHeaderLabels(["提示", "", ""])
             self._add_row(["（未选择实例）", "-", "-"])
@@ -324,16 +388,18 @@ class ModelsPage(QWidget):
             # 单类别：文件明细（支持文件名搜索）
             self.tb.setColumnCount(3)
             self.tb.setHorizontalHeaderLabels(["文件名", "大小", "修改日期"])
+            self._tb_mode = "files"
             files = self._list_files(cat, kw)
             if not files:
                 self._add_row(["（此类别暂无文件）", "-",
                                "点范围切「HF 镜像」在线下载，或「导入」"],
                               {0: "#7d8797"})
-            for name, size, mtime in files:
+            for name, size, mtime, path in files:
                 dt = datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
-                self._add_row([name, _fmt_size(size), dt])
+                self._add_row([name, _fmt_size(size), dt], payload=path)
         elif kw:
             # 「全部」视图 + 关键词：跨类别搜文件名（类别名命中→整类列出）
+            self._tb_mode = "files"
             self.tb.setColumnCount(4)
             self.tb.setHorizontalHeaderLabels(["文件名", "类别", "大小", "修改日期"])
             hit = False
@@ -342,9 +408,9 @@ class ModelsPage(QWidget):
                     files = self._list_files(sub, "")
                 else:
                     files = self._list_files(sub, kw)
-                for name, size, mtime in files:
+                for name, size, mtime, path in files:
                     dt = datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
-                    self._add_row([name, sub, _fmt_size(size), dt])
+                    self._add_row([name, sub, _fmt_size(size), dt], payload=path)
                     hit = True
             if not hit:
                 self._add_row([f"（没有匹配「{kw}」的文件）", "-", "-",
@@ -352,14 +418,17 @@ class ModelsPage(QWidget):
                               {0: "#7d8797"})
         else:
             # 「全部」视图：分类统计
+            self._tb_mode = "stats"
             self.tb.setColumnCount(3)
             self.tb.setHorizontalHeaderLabels(["类别", "文件数", "总体积"])
-            rows = inst_lib.model_stats(inst["comfyui_path"])
+            rows = inst_lib.model_stats(inst["comfyui_path"],
+                                        inst.get("models_dir") or "")
             if not rows:
                 self._add_row(["（models 目录为空）", "-",
                                "切范围「HF 镜像」在线下载"], {0: "#7d8797"})
             for cat_name, cnt, gb in rows:
-                self._add_row([cat_name, str(cnt), f"{gb:.2f} GB"])
+                self._add_row([cat_name, str(cnt), f"{gb:.2f} GB"],
+                              payload=cat_name)
 
     def on_show(self):
         self.refresh_stats()

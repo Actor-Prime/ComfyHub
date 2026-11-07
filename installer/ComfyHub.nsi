@@ -7,12 +7,14 @@ Unicode true
 
 !include "MUI2.nsh"
 !include "FileFunc.nsh"
+!include "WordFunc.nsh"
 !include "LogicLib.nsh"
+!insertmacro VersionCompare   ; 降级检测用（.onInit，宏在 WordFunc.nsh）
 
 ; ---------- 基本信息 ----------
 !define APP_NAME       "ComfyHub"
 !define APP_NAME_CN    "ComfyHub 多实例管理器"
-!define APP_VERSION    "0.8.09"
+!define APP_VERSION    "0.8.23"
 !define APP_PUBLISHER  "LeiMengStudio"
 !define APP_URL        "https://gitee.com/yzdydwdd/ComfyHub"
 !define APP_EXE        "ComfyHub.exe"
@@ -30,7 +32,7 @@ SetCompressor /SOLID lzma
 ShowInstDetails show
 ShowUninstDetails show
 
-VIProductVersion "0.8.9.0"
+VIProductVersion "0.8.23.0"
 VIAddVersionKey "ProductName"     "${APP_NAME_CN}"
 VIAddVersionKey "FileDescription" "${APP_NAME_CN} 安装程序"
 VIAddVersionKey "FileVersion"     "${APP_VERSION}"
@@ -82,30 +84,77 @@ VIAddVersionKey "LegalCopyright"  "MIT License"
 ; ---------- onInit：读回安装路径 + 处理运行中的实例 ----------
 Var RunLabelChecked
 
+; ---- silent install (/S): launch the new version after success ----
+; Interactive install uses MUI_FINISHPAGE_RUN; silent mode has no finish page.
+Function .onInstSuccess
+    ${If} ${Silent}
+        Exec '"$INSTDIR\${APP_EXE}"'
+    ${EndIf}
+FunctionEnd
+
 Function .onInit
+    ; ★ 安装器单实例互斥（2026-11-05 实测：双安装器并发时，A 的 rd 清空会把
+    ;   B 正在解压的 _internal 拆掉，装出 67/224 文件的残废状态）
+    System::Call 'kernel32::CreateMutexW(i 0, i 0, t "ComfyHub_Setup_Mutex") ?e'
+    Pop $R0
+    ${If} $R0 != 0            ; 0=成功持有；183=ERROR_ALREADY_EXISTS
+        ${IfNot} ${Silent}    ; 静默模式直接退出（MessageBox 会卡住无人点的框）
+            MessageBox MB_OK|MB_ICONEXCLAMATION \
+                "检测到另一个 ComfyHub 安装程序正在运行，请等它结束再试。"
+        ${EndIf}
+        Abort
+    ${EndIf}
+
     ReadRegStr $0 HKCU "Software\${APP_NAME}" "InstallDir"
     ${If} $0 != ""
         StrCpy $INSTDIR $0
     ${EndIf}
 
-    ; 用 CSV 输出判断进程：前 13 字符是否为 "ComfyHub.exe"
-    ; （不比较 tasklist 的提示语，那会随系统语言变化而误判）
-    nsExec::ExecToStack 'tasklist /FI "IMAGENAME eq ${APP_EXE}" /NH /FO CSV'
-    Pop $0
-    Pop $1
-    StrCpy $2 $1 13
-    ${If} $2 == '"${APP_EXE}"'
-        IfSilent silentKill 0
-        MessageBox MB_YESNO|MB_ICONQUESTION \
-            "${APP_NAME} 正在运行。安装前需要先关闭它。$\r$\n$\r$\n现在自动结束它并继续？" \
-            IDYES silentKill IDNO abortInstall
-        abortInstall:
-            Abort
-        silentKill:
-            nsExec::ExecToStack 'taskkill /IM ${APP_EXE} /F'
-            Pop $0
-            Pop $1
-            Sleep 1500
+    ; ★ 降级安装检测（2026-11-05）：包版本 < 已装版本时弹窗确认。
+    ;   背景：用户拿 0.8.09 包覆盖 0.8.11 实测出"注册表 0.8.09 + 主程序 0.8.11"
+    ;   的半破状态。静默模式（更新器驱动、版本恒 >= 已装）跳过提示直接装。
+    ;   ${VersionCompare}：0=相等 1=第一个(包)新 2=第二个(已装)新
+    ReadRegStr $3 HKCU "${UNINST_KEY}" "DisplayVersion"
+    ${If} $3 != ""
+        ${VersionCompare} "${APP_VERSION}" "$3" $4
+        ${If} $4 == 2
+            ${IfNot} ${Silent}
+                MessageBox MB_YESNO|MB_ICONEXCLAMATION|MB_DEFBUTTON2 \
+                    "检测到降级安装：本安装包是 v${APP_VERSION}，而$\r$\n$\r$\n已安装的版本是 v$3（更新）。$\r$\n$\r$\n降级会覆盖程序文件（用户配置与模型不受影响）。$\r$\n确定要继续吗？" \
+                    IDYES dgContinue IDNO dgAbort
+                dgAbort:
+                    Abort
+                dgContinue:
+            ${EndIf}
+        ${EndIf}
+    ${EndIf}
+
+    ; 静默安装（自动更新）一律先结束运行中的进程，不依赖 tasklist 输出解析。
+    ; 2026-11-04 实测事故：旧实现 StrCpy 取 13 字符，而 '"ComfyHub.exe"' 是 14 字符，
+    ; 比较永远不成立 → 进程没被杀 → 覆盖 ComfyHub.exe 失败 →
+    ; 装成"新 _internal + 旧 exe"的半破状态（升级完版本号还是旧的）。
+    ${If} ${Silent}
+        nsExec::ExecToStack 'taskkill /IM ${APP_EXE} /F'
+        Pop $0
+        Pop $1
+        Sleep 2000
+    ${Else}
+        nsExec::ExecToStack 'tasklist /FI "IMAGENAME eq ${APP_EXE}" /NH /FO CSV'
+        Pop $0
+        Pop $1
+        StrCpy $2 $1 14
+        ${If} $2 == '"${APP_EXE}"'
+            MessageBox MB_YESNO|MB_ICONQUESTION \
+                "${APP_NAME} 正在运行。安装前需要先关闭它。$\r$\n$\r$\n现在自动结束它并继续？" \
+                IDYES askKill IDNO abortInstall
+            abortInstall:
+                Abort
+            askKill:
+                nsExec::ExecToStack 'taskkill /IM ${APP_EXE} /F'
+                Pop $0
+                Pop $1
+                Sleep 2000
+        ${EndIf}
     ${EndIf}
 FunctionEnd
 
@@ -113,6 +162,18 @@ FunctionEnd
 Section "ComfyHub 主程序" SEC_CORE
     SectionIn RO
     SetOutPath "$INSTDIR"
+    ; ★ 确定性覆盖（2026-11-05）：解压前先清空旧 _internal / docs，
+    ;   安装后目录精确等于本版本文件集 —— 升级/降级都不残留旧文件，
+    ;   杜绝"新 exe + 旧 _internal"（0.8.10 事故）之类的混合状态。
+    ;   进程已在 .onInit 结束，此处不应有文件锁；系统 rd 批量删比
+    ;   RMDir /r 快几十倍（实测见卸载段），rd 失败用 RMDir 兜底。
+    nsExec::ExecToStack 'cmd /c rd /s /q "$INSTDIR\_internal"'
+    Pop $0
+    Sleep 200
+    RMDir /r /REBOOTOK "$INSTDIR\_internal"
+    nsExec::ExecToStack 'cmd /c rd /s /q "$INSTDIR\docs"'
+    Pop $0
+    RMDir /r /REBOOTOK "$INSTDIR\docs"
     File /r "${SRC_DIR}\*.*"
     File "..\LICENSE"
     File "..\THIRD_PARTY_LICENSES.txt"
@@ -176,7 +237,9 @@ Section "Uninstall"
         nsExec::ExecToStack 'tasklist /FI "IMAGENAME eq ${APP_EXE}" /NH /FO CSV'
         Pop $0
         Pop $2
-        StrCpy $3 $2 13
+        ; 2026-11-05 修复：旧值 13 对 '"ComfyHub.exe"'(14 字符) 永不命中 →
+        ; 等待循环形同虚设，与 .onInit 当年的 bug 同源
+        StrCpy $3 $2 14
         ${If} $3 == '"${APP_EXE}"'
         ${AndIf} $1 < 20
             Goto wait_loop

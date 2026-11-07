@@ -59,10 +59,40 @@ check("1e custom 背景层透明规则", "#Backdrop { background: transparent; }
 import re as _re
 check("1f custom 用百分比透明度（Qt 只认 % 形式）",
       bool(_re.search(r"rgba\(\d+,\d+,\d+,\d+%\)", custom)), custom[:120])
-check("1f2 不透明度 100% → 面板不透明",
-      "rgba(30,34,41,100%)" in th.build_qss("custom", 1.0))
+def _panel_pct(a: float) -> int:
+    """面板不透明度 → QSS 百分比（2026-11-07 公式：alpha^1.8 * 0.6，与左栏同档）"""
+    return int(round(max(0.08, min(1.0, float(a) ** 1.8 * 0.6)) * 100))
+
+
+check("1f2 不透明度 100% → 面板最实（上限 60%，跟左栏同档）",
+      f"rgba(30,34,41,{_panel_pct(1.0)}%)" in th.build_qss("custom", 1.0),
+      f"{_panel_pct(1.0)}%")
 check("1f3 低不透明度确实更通透",
-      "rgba(30,34,41,15%)" in th.build_qss("custom", 0.35))
+      _panel_pct(0.35) < _panel_pct(0.72) < _panel_pct(1.0),
+      f"{_panel_pct(0.35)}/{_panel_pct(0.72)}/{_panel_pct(1.0)}")
+
+# 2026-11-07 用户报障：分组框/卡片/输入框"没有边框、没有圆角、色差断层"
+# 自定义背景下深灰描边被换成 45% 透明同色 → 等于没边；这里换成半透明白描边 + 大圆角
+check("1f4 custom 给卡片/分组框补半透明白描边",
+      "border: 1px solid rgba(255,255,255,0.30)" in custom
+      and "#PaneCard" in custom, custom[-160:])
+check("1f5 custom 输入控件也补描边圆角",
+      "QComboBox, QLineEdit" in custom
+      and "border-radius: 8px" in custom)
+check("1f6 分组框标题挪到框线上方（不压线）",
+      "subcontrol-position: top left" in th.DARK_QSS)
+check("1f7 深色主题不带描边补丁（保持原样）",
+      "rgba(255,255,255,0.30)" not in th.build_qss("dark"))
+check("1f8 窄图标按钮清零内边距（修刷新键被裁）",
+      "QPushButton#IconBtn { padding: 0px;" in th.DARK_QSS)
+check("1f9 深色主题也带图标按钮规则", "IconBtn" in th.build_qss("dark"))
+# 2026-11-07 用户报障：设置页表单字段名背后有一条条深色小方块
+# （全局 QWidget 底色把裸 QLabel 也刷了）
+check("1f10 纯文字控件不吃面板底色",
+      "QLabel, QCheckBox, QRadioButton" in th.DARK_QSS)
+# 2026-11-07 用户要求：工作台「实例信息 + 目录网格」外面套一个框
+check("1f11 工作台实例区有外框样式",
+      "#SectionBox" in th.DARK_QSS and "#SectionBox" in custom)
 
 # -------------------------------------------------- 2. 模式解析与配置兜底
 check("2a system 折成 light|dark", th.resolve_mode("system") in ("light", "dark"))
@@ -135,8 +165,17 @@ check("4e 语言下拉两项", [page.cb_lang.itemData(i) for i in range(page.cb_
 check("4f 背景图默认空", page._bg_value == "")
 check("4g 透明度默认 72", page.sl_alpha.value() == 72, str(page.sl_alpha.value()))
 
+# ---- 关于框仓库链接（2026-11-05 用户要求把 Gitee / GitHub 放上来）----
+_links = [b for b in page.findChildren(QPushButton)
+          if b.text() in ("Gitee 仓库", "GitHub 仓库")]
+check("4m 关于框含 Gitee/GitHub 两个链接", len(_links) == 2,
+      str([b.text() for b in page.findChildren(QPushButton) if "仓库" in b.text()]))
+
 page.sl_alpha.setValue(50)
 page.cb_lang.setCurrentIndex(page.cb_lang.findData("en"))
+# 2026-11-06 起保存前会弹"改动确认"模态框——测试里自动确认，否则 exec() 挂死
+import app.ui.changes_dialog as _cd  # noqa: E402
+_cd.confirm_changes = lambda *a, **k: True
 page._save()
 st = cfg["settings"]
 check("4h 保存主题=custom", st.get("theme") == "custom", str(st.get("theme")))
@@ -149,6 +188,20 @@ check("4k 语言改动立即生效（提示不含重启）",
 
 page._clear_bg()
 check("4l 清除背景图置空", page._bg_value == "")
+
+# ---- 链接点击 + 英文翻译（此时页面已切 en）----
+_opened = []
+_orig_open = sp_mod.SettingsPage._open_url
+sp_mod.SettingsPage._open_url = staticmethod(lambda u: _opened.append(u))
+for _b in _links:
+    _b.click()
+check("4n 点击打开对应仓库地址",
+      _opened == ["https://gitee.com/yzdydwdd/ComfyHub",
+                  "https://github.com/Actor-Prime/ComfyHub"], str(_opened))
+sp_mod.SettingsPage._open_url = staticmethod(_orig_open)
+check("4o 链接文案已英译",
+      [b.text() for b in _links] == ["Gitee repository", "GitHub repository"],
+      str([b.text() for b in _links]))
 
 # -------------------------------------------------- 5. 主窗（自定义主题 + 缺失底图）
 from app.config import load_config, save_config as real_save  # noqa: E402

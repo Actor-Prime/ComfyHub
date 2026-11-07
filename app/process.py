@@ -15,10 +15,18 @@ from app.config import VRAM_MODES
 
 
 def port_in_use(port: int, host: str = "127.0.0.1") -> bool:
-    """探测端口是否被监听"""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.settimeout(0.5)
-        return s.connect_ex((host, port)) == 0
+    """端口是否已被任何进程监听（一次性检查用）。
+
+    2026-11-02 改为 netstat 判定：原实现 socket.connect_ex 探测在本机实测
+    对「关闭的本地端口」不会秒拒，而是吃满整个超时（0.5s/次、返回 10035），
+    放进 UI 线程周期路径后把界面卡到不能动（用户实测：点启动后持续卡顿，
+    直到 ComfyUI 绑上端口探测变秒回才恢复）。
+    netstat 一次子进程约 60ms——只适合一次性检查；周期性探测一律走
+    ComfyProcess 的 QTcpSocket 异步就绪探测（不占 UI 线程）。
+    host 参数保留兼容；netstat 判定不区分绑定地址。
+    """
+    p = int(port)
+    return any(pl == p for _pid, pl in _netstat_listening())
 
 
 def kill_tree(pid: int) -> None:
@@ -367,8 +375,14 @@ def build_command(inst: dict, port: int | None = None) -> list:
     # 走 junction 换头，不设这两个字段。
     if inst.get("base_directory"):
         cmd += ["--base-directory", inst["base_directory"]]
-    if inst.get("models_directory"):
-        cmd += ["--models-directory", inst["models_directory"]]
+    # 模型目录：实例设置（models_dir）优先；旧 profile 线用 models_directory。
+    # 只有跟「<comfyui_path>/models」默认值不同才显式传参——默认情况不改变启动命令，
+    # 免得某些整合包对 --models-directory 的解析差异搞出意外（2026-11-07）。
+    _md = (inst.get("models_dir") or "").strip() or (inst.get("models_directory") or "").strip()
+    if _md:
+        _dflt = os.path.join(inst.get("comfyui_path") or "", "models")
+        if not _dflt or os.path.normpath(_md) != os.path.normpath(_dflt):
+            cmd += ["--models-directory", _md]
     # 额外参数（实例）
     s = (inst.get("extra_args") or "").strip()
     if s:
@@ -393,6 +407,7 @@ class ComfyProcess(QObject):
         self._port = 8188
         self._ready_announced = False
         self._browser_on_ready = False
+        self._probe = None          # 就绪异步探测的 QTcpSocket（防并发堆探测）
 
     # ---------- 状态 ----------
     @property
@@ -445,11 +460,16 @@ class ComfyProcess(QObject):
         #   ComfyUI 本体遇到占用是直接崩退出、不会跳（server.py TCPSite 绑定异常），
         #   由管理器在启动前替它选好空闲端口；打开网页/就绪提示按实际端口走
         port = int(inst.get("port") or 8188)
-        if port_in_use(port):
+        # 一次 netstat 快照判占用（2026-11-02：连打十几次 connect_ex 在
+        # 「关闭端口不秒拒」的机器上会冻结 UI 数秒，改为一次子进程取全景）
+        listening = {}
+        for _pid, _p in _netstat_listening():
+            listening.setdefault(_p, []).append(_pid)
+        if port in listening:
             orig = port
-            holder = ",".join(str(x) for x in pid_listening_on(orig)) or "?"
+            holder = ",".join(str(x) for x in listening.get(orig, [])) or "?"
             port = next((p for p in range(orig + 1, orig + 11)
-                         if not port_in_use(p)), None)
+                         if p not in listening), None)
             if port is None:
                 self.log_line.emit(
                     f"[ComfyHub] ❌ 端口 {orig} 起连续 10 个均被占用，"
@@ -521,6 +541,12 @@ class ComfyProcess(QObject):
         self._cleanup()
 
     def _cleanup(self):
+        if self._probe is not None:
+            try:
+                self._probe.abort()     # 中止未归的就绪探测（回调自带防重入守卫）
+            except Exception:
+                pass
+            self._probe = None
         self._proc = None
         self._pid = None
         self.state_changed.emit(False)
@@ -536,15 +562,42 @@ class ComfyProcess(QObject):
             self._buf = rest
 
     def _check_ready(self):
+        """就绪探测（2026-11-02 异步化）：QTcpSocket 信号回调判定连通，
+        绝不在 UI 线程同步 connect——「关闭端口不秒拒」的机器上同步探测
+        每次要堵满超时（实测 0.5s/次），ComfyUI 启动期间界面会被卡死。"""
         if self._ready_announced or not self.is_running:
             return
-        if port_in_use(self._port):
-            self._ready_announced = True
-            self._ready_timer.stop()
-            self.log_line.emit(f"[ComfyHub] 服务就绪: http://127.0.0.1:{self._port}")
-            if self._browser_on_ready:
-                import webbrowser
-                webbrowser.open(f"http://127.0.0.1:{self._port}")
+        if self._probe is not None:
+            return                      # 上一轮探测未归，跳过本轮（不并发堆探测）
+        from PySide6.QtNetwork import QTcpSocket
+        s = QTcpSocket(self)
+        self._probe = s
+        state = {"done": False}
+
+        def _done(ok: bool):
+            if state["done"]:           # connected/失败信号/2s 放弃三路可能竞争
+                return
+            state["done"] = True
+            if self._probe is s:
+                self._probe = None
+            try:
+                s.abort()
+            except Exception:
+                pass
+            s.deleteLater()
+            if ok and self.is_running and not self._ready_announced:
+                self._ready_announced = True
+                self._ready_timer.stop()
+                self.log_line.emit(f"[ComfyHub] 服务就绪: http://127.0.0.1:{self._port}")
+                if self._browser_on_ready:
+                    import webbrowser
+                    webbrowser.open(f"http://127.0.0.1:{self._port}")
+
+        s.connected.connect(lambda: _done(True))
+        s.errorOccurred.connect(lambda *_a: _done(False))
+        s.connectToHost("127.0.0.1", int(self._port))
+        # 网络过滤驱动可能拖住失败信号：2 秒没结论就放弃本轮，下轮再试
+        QTimer.singleShot(2000, lambda: _done(False))
 
     def _on_finished(self, code, status):
         self.log_line.emit(f"[ComfyHub] 进程退出，code={code}")

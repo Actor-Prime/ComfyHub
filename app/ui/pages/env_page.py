@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTableWidget,
     QTableWidgetItem, QHeaderView, QMessageBox, QPlainTextEdit,
     QTabWidget, QFrame, QLineEdit, QFileDialog, QDialog, QCheckBox,
-    QScrollArea, QComboBox,
+    QScrollArea, QComboBox, QTextBrowser,
 )
 
 from app.i18n import T
@@ -223,11 +223,21 @@ class EnvPage(QWidget):
         bar.addWidget(b_rb)
         v.addLayout(bar)
 
-        self.tb = QTableWidget(0, 2)
-        self.tb.setHorizontalHeaderLabels(["类型", "名称（时间_备注）"])
-        self.tb.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.tb = QTableWidget(0, 3)
+        self.tb.setHorizontalHeaderLabels(["类型", "事件", "名称（时间_备注）"])
+        self.tb.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.tb.setSelectionBehavior(QTableWidget.SelectRows)
+        self.tb.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.tb.itemSelectionChanged.connect(self._show_detail)
         v.addWidget(self.tb, 1)
+
+        # 详情面板：选中行 → 展示事件 / 内核 / 插件版本 / 工作流 / 模型哈希
+        self.detail = QTextBrowser()
+        self.detail.setObjectName("SnapDetail")
+        self.detail.setOpenExternalLinks(False)
+        self.detail.setPlaceholderText("选中上方条目查看环境详情（内核/插件/工作流/模型哈希）")
+        self.detail.setMaximumHeight(190)
+        v.addWidget(self.detail)
 
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
@@ -247,20 +257,50 @@ class EnvPage(QWidget):
         try:
             bk = EnvBackup(inst["comfyui_path"], inst["python_path"])
             rs = Rescue(inst["comfyui_path"])
-            items = ([("备份", x) for x in bk.list_backups()] +
-                     [("快照", x) for x in rs.list_snapshots()])
+            # (类型, 名称, 事件) —— 事件从 meta 读，旧条目显示 —
+            items = []
+            for x in bk.list_backups():
+                meta = bk.load_meta(x)
+                items.append(("备份", x, (meta or {}).get("event") or "—"))
+            for x in rs.list_snapshots():
+                meta = rs.load_meta(x)
+                items.append(("快照", x, (meta or {}).get("event") or "—"))
         except Exception:
             items = []
         self.tb.setRowCount(len(items))
-        for i, (kind, name) in enumerate(items):
+        for i, (kind, name, event) in enumerate(items):
             self.tb.setItem(i, 0, QTableWidgetItem(kind))
-            self.tb.setItem(i, 1, QTableWidgetItem(name))
+            self.tb.setItem(i, 1, QTableWidgetItem(event))
+            self.tb.setItem(i, 2, QTableWidgetItem(name))
+        self._show_detail()
 
     def _selected(self, kind):
         row = self.tb.currentRow()
         if row < 0 or self.tb.item(row, 0).text() != kind:
             return None
-        return self.tb.item(row, 1).text()
+        return self.tb.item(row, 2).text()
+
+    def _show_detail(self):
+        """选中行 → 下方详情面板（内核版本/插件版本/工作流/模型哈希）"""
+        row = self.tb.currentRow()
+        if row < 0:
+            self.detail.setHtml("<i>选中上方条目查看环境详情</i>")
+            return
+        kind = self.tb.item(row, 0).text()
+        name = self.tb.item(row, 2).text()
+        inst = self._inst()
+        if not inst:
+            return
+        try:
+            if kind == "备份":
+                meta = EnvBackup(inst["comfyui_path"],
+                                 inst["python_path"]).load_meta(name)
+            else:
+                meta = Rescue(inst["comfyui_path"]).load_meta(name)
+        except Exception as e:
+            self.detail.setHtml(f"<i>读取详情失败: {e}</i>")
+            return
+        self.detail.setHtml(_render_meta(kind, name, meta))
 
     def _create_backup(self):
         inst = self._inst()
@@ -279,8 +319,14 @@ class EnvPage(QWidget):
         inst = self._inst()
         if not inst:
             return
-        Rescue(inst["comfyui_path"]).snapshot(log=self._log)
-        self._refresh_snapshots()
+        rs = Rescue(inst["comfyui_path"])
+        # manifest 含模型 sha256（大模型首次采集要十几秒）→ 走工作线程防卡 UI
+        self._task = _RunTask(lambda: rs.snapshot(log=self._log,
+                                                  event="手动创建"))
+        self._task.sig_done.connect(lambda _ts: self._refresh_snapshots())
+        self._task.sig_err.connect(lambda e: (self._log(f"快照失败: {e}"),
+                                              self._refresh_snapshots()))
+        self._task.start()
 
     def _restore(self):
         name = self._selected("备份")
@@ -672,3 +718,60 @@ class _RunTask(_QThread):
             self.sig_done.emit(self.fn())
         except Exception as e:
             self.sig_err.emit(str(e))
+
+
+# ---------- 详情渲染（备份/快照共用） ----------
+def _fmt_size(n):
+    if n >= 1024 ** 3:
+        return f"{n / 1024 ** 3:.2f} GB"
+    if n >= 1024 ** 2:
+        return f"{n / 1024 ** 2:.1f} MB"
+    return f"{max(n, 0) / 1024:.0f} KB"
+
+
+def _render_meta(kind: str, name: str, meta: "dict | None") -> str:
+    """把环境清单 dict 渲染成详情面板 HTML"""
+    if not meta:
+        return (f"<b>{kind} {name}</b><br>"
+                "<i>旧条目：创建于详情功能上线前，无环境清单记录。<br>"
+                "还原/回滚功能不受影响。</i>")
+    from html import escape as esc
+    parts = [f"<b>{esc(kind)} {esc(name)}</b>"]
+    ev = meta.get("event") or "—"
+    created = meta.get("created") or ""
+    parts.append(f"事件：<b>{esc(ev)}</b>" + (f"　创建：{esc(created)}" if created else ""))
+    k = meta.get("kernel") or "?"
+    parts.append(f"内核版本：<b>{esc(str(k))}</b>")
+    # 插件
+    plugs = meta.get("plugins") or []
+    if plugs:
+        rows = "".join(
+            f"<tr><td>{esc(str(p.get('name', '?')))}</td>"
+            f"<td>{esc(str(p.get('version') or '—'))}</td>"
+            f"<td>{'✔ 启用' if p.get('enabled') else '✘ 禁用'}</td></tr>"
+            for p in plugs)
+        parts.append(f"插件（{len(plugs)}）："
+                     f"<table cellspacing='0' width='100%'>{rows}</table>")
+    else:
+        parts.append("插件：无")
+    # 工作流
+    wfs = meta.get("workflows") or []
+    if wfs:
+        parts.append(f"工作流（{len(wfs)}）：" +
+                     "、".join(esc(w) for w in wfs))
+    else:
+        parts.append("工作流：无")
+    # 模型 + 哈希
+    models = meta.get("models") or []
+    if models:
+        total = sum(m.get("size", 0) for m in models)
+        rows = "".join(
+            f"<tr><td>{esc(str(m.get('subdir', '')))}/{esc(str(m.get('name', '')))}</td>"
+            f"<td>{_fmt_size(m.get('size', 0))}</td>"
+            f"<td style='font-size:11px'>{esc(str(m.get('sha256', ''))[:16])}…</td></tr>"
+            for m in models)
+        parts.append(f"模型（{len(models)}，共 {_fmt_size(total)}）："
+                     f"<table cellspacing='0' width='100%'>{rows}</table>")
+    else:
+        parts.append("模型：无")
+    return "<br>".join(parts)

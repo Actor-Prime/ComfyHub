@@ -66,13 +66,34 @@ def _ssl_ctx():
     return ctx
 
 
-def _request(url: str, api_key: str, data: bytes = None, timeout: int = 20) -> dict:
-    req = urllib.request.Request(url, data=data, headers={
+def make_request(url: str, api_key: str, data: bytes = None):
+    """构造请求（流式接口需要自己接管读取，故与 _request 拆开）"""
+    return urllib.request.Request(url, data=data, headers={
         "Content-Type": "application/json",
         "Authorization": "Bearer " + (api_key or ""),
         "User-Agent": "ComfyHub",
     })
-    with urllib.request.urlopen(req, timeout=timeout, context=_ssl_ctx()) as r:
+
+
+_DIRECT_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def open_request(req, timeout: int = 20, direct: bool = False):
+    """打开连接（证书策略与 _request 一致；国内网关证书链常不全）
+
+    direct=True：绕过系统代理直连。2026-11-06 实测踩到——系统里挂了本地代理
+    （127.0.0.1:xxxxx）时代理一抖动，请求会长时间无数据，界面就卡在「思考中」。
+    国产接口直连通常更快更稳，国外接口则需要走代理。
+    """
+    if direct:
+        return _DIRECT_OPENER.open(req, timeout=timeout)
+    return urllib.request.urlopen(req, timeout=timeout, context=_ssl_ctx())
+
+
+def _request(url: str, api_key: str, data: bytes = None, timeout: int = 20,
+             direct: bool = False) -> dict:
+    with open_request(make_request(url, api_key, data), timeout=timeout,
+                      direct=direct) as r:
         return json.loads(r.read().decode("utf-8", "ignore"))
 
 
@@ -85,7 +106,8 @@ def list_models(base_url: str, api_key: str, timeout: int = 15) -> list:
 
 def _post_chat(base_url: str, api_key: str, model: str,
                system: str, user: str, timeout: int = 40,
-               max_tokens: int = 200, temperature: float = 0) -> str:
+               max_tokens: int = 200, temperature: float = 0,
+               extra: dict = None) -> str:
     """发一次对话；遇到「思维链吃光 token 导致正文为空」自动加倍重试。
 
     2026-11-01 实测 mimo-v2.6-pro：max_tokens=200 时 finish_reason=length、
@@ -94,13 +116,16 @@ def _post_chat(base_url: str, api_key: str, model: str,
     """
     last = ""
     for mt in (max_tokens, max(max_tokens * 4, 800)):
-        body = json.dumps({
+        payload = {
             "model": model,
             "messages": ([{"role": "system", "content": system}] if system else [])
                         + [{"role": "user", "content": user}],
             "temperature": temperature,
             "max_tokens": mt,
-        }).encode("utf-8")
+        }
+        if extra:
+            payload.update(extra)      # 思考开关等厂商私有字段（app/ai_models.py 决定形态）
+        body = json.dumps(payload).encode("utf-8")
         data = _request(_v1_base(base_url) + "/chat/completions", api_key,
                         data=body, timeout=timeout)
         choice = (data.get("choices") or [{}])[0]
@@ -147,9 +172,17 @@ def test_connection(base_url: str, api_key: str, model: str = "",
 
 
 def _chat(system: str, user: str, settings: dict, timeout=40) -> str:
+    """扫描器侧的短推断：同样走模型画像，避免推理模型把时间烧在思考上"""
+    from app import ai_models
+    prof = ai_models.detect(settings.get("ai_model") or "",
+                            settings.get("ai_base_url") or "")
+    think = ai_models.effective_think(prof, settings.get("ai_think") or "")
+    extra, _tip = ai_models.thinking_params(prof, think)
+    mt = 400 if think == "off" else 1200
     return _post_chat(settings["ai_base_url"], settings["ai_api_key"],
                       settings.get("ai_model") or "deepseek-chat",
-                      system, user, timeout=timeout)
+                      system, user, timeout=timeout, max_tokens=mt,
+                      extra=extra)
 
 
 def _valid_url(u: str) -> str:

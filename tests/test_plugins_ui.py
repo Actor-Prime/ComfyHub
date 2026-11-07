@@ -53,8 +53,13 @@ if os.path.isfile(cfg_path):
     shutil.copy2(cfg_path, cfg_backup)
 
 cfg = load_config()
+# 先清掉上次被中断残留的同名测试实例（2026-11-03：曾叠出 3 条同 id 副本）
+cfg["instances"] = [i for i in cfg.get("instances", [])
+                    if not str(i.get("id", "")).startswith("inst_pptest")]
+import uuid as _uuid
+TEST_ID = "inst_pptest" + _uuid.uuid4().hex[:4]
 cfg.setdefault("instances", []).append({
-    "id": "inst_pptest", "name": "PPTEST", "comfyui_path": CP,
+    "id": TEST_ID, "name": "PPTEST", "comfyui_path": CP,
     "python_path": sys.executable, "port": 8399, "vram_mode": "自动",
     "extra_args": "", "auto_open_browser": False,
     "plugin_profiles": [
@@ -71,7 +76,7 @@ try:
     pump(1.5)
     # 切到 PPTEST 实例
     for i in range(win.cb_inst.count()):
-        if win.cb_inst.itemData(i) == "inst_pptest":
+        if win.cb_inst.itemData(i) == TEST_ID:
             win.cb_inst.setCurrentIndex(i)
             break
     pump(1.0)
@@ -118,7 +123,7 @@ try:
     p.cb_profile.setCurrentIndex(p.cb_profile.findText("只A"))
     p._on_profile_changed(p.cb_profile.currentIndex())
     pump(0.4)
-    saved = [i for i in load_config()["instances"] if i.get("id") == "inst_pptest"]
+    saved = [i for i in load_config()["instances"] if i.get("id") == TEST_ID]
     lp = saved[0].get("last_profile") if saved else None
     check("last_profile 已记忆", lp == "只A", str(lp))
 

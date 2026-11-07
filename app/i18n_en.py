@@ -13,9 +13,21 @@ EN_DICT = {
     "环境管理": "Environment",
     "模型库": "Models",
     "工作流": "Workflows",
+    "AI 助手": "AI Assistant",
     "控制台": "Console",
     "系统设置": "Settings",
     "当前实例": "Current instance",
+    "外部模型库": "External model library",
+    # ---- AI 助手页（2026-11-03）----
+    "发送": "Send",
+    "清空对话": "Clear chat",
+    "快捷体检": "Quick health check",
+    "查看队列": "View queue",
+    "列出工作流": "List workflows",
+    "外部 Agent 接入（MCP）…": "External agent access (MCP)…",
+    "复制方式一": "Copy option 1",
+    "复制方式二": "Copy option 2",
+    "已复制": "Copied",
     "＋ 添加 ComfyUI": "+ Add ComfyUI",
     "新装 ComfyUI": "Install ComfyUI",
     "（无实例，点右上角添加）": "(no instance yet — add one at the top right)",
@@ -474,8 +486,8 @@ EN_DICT = {
     "根目录": "Root folder",
     "包含 main.py 的 ComfyUI 目录": "ComfyUI folder containing main.py",
     "模型目录": "Models folder",
-    "checkpoints/loras/vae 等模型的存放位置":
-        "Where checkpoints/loras/vae and friends are stored",
+    "ComfyUI 的模型根目录；其他盘的模型用 extra_model_paths.yaml 挂载":
+        "ComfyUI's model root; models on other drives go in extra_model_paths.yaml",
     "Python 路径": "Python path",
     "实例配套的解释器（建议用独立 venv）":
         "Interpreter for this instance (a dedicated venv is recommended)",
@@ -565,7 +577,10 @@ EN_DICT = {
     "依赖名": "Package",
     "版本号": "Version",
     "类型": "Type",
+    "事件": "Event",
     "名称（时间_备注）": "Name (time_note)",
+    "选中上方条目查看环境详情（内核/插件/工作流/模型哈希）":
+        "Select an entry above for details (kernel/plugins/workflows/model hashes)",
     "下载量": "Downloads",
     "作者": "Author",
     "说明": "Description",
@@ -588,6 +603,24 @@ EN_DICT = {
     "PySide6 轻量 ComfyUI 多实例管理器（46MB 便携包）\n\nPython 3.13 · PySide6 · MIT":
         "PySide6 lightweight ComfyUI multi-instance manager (46MB portable build)\n\n"
         "Python 3.13 · PySide6 · MIT",
+    "Gitee 仓库": "Gitee repository",
+    "GitHub 仓库": "GitHub repository",
+    # 更新横幅（0.8.11 漏词表，2026-11-05 补）
+    "立即更新": "Update now",
+    "跳过此版本": "Skip this version",
+    "更新 ComfyHub": "Update ComfyHub",
+    "正在取消…": "Cancelling…",
+    "更新失败": "Update failed",
+    "未知错误": "Unknown error",
+    "新版本已就绪": "New version ready",
+    "程序即将关闭，更新脚本会自动覆盖文件并重新启动。":
+        "The app will close shortly; the update script will replace files and relaunch it.",
+    "安装程序已启动": "Installer launched",
+    "ComfyHub 即将关闭，安装完成后会自动重新打开。":
+        "ComfyHub will close now and reopen automatically after installation.",
+    "即将重启完成更新": "Restarting to finish the update",
+    "（该版本没有填写说明）": "(No release notes for this version)",
+    "便携": "Portable",
 
     # ================= 首页系统卡拼装词 =================
     "内存": "Memory",
@@ -602,6 +635,40 @@ EN_DICT = {
     "未检测到": "not detected",
     "可用": "free",
     "共": "of",
+
+    # ================= 0.8.11 存量补译（2026-11-05，i18n 静态扫描查出 20 条）=================
+    "上下文:": "Context:",
+    "思考强度:": "Thinking effort:",
+    "最大输出:": "Max output:",
+    "单次回复的最大 token。开思考时要给足，否则正文会被思考过程挤空":
+        "Max tokens per reply. Leave enough headroom when thinking is on, "
+        "otherwise the visible answer gets squeezed out.",
+    "带多少历史消息进上下文。越多越慢也越贵，但多轮对话更连贯":
+        "How many past messages go into the context. More = slower and pricier, "
+        "but follow-ups stay coherent.",
+    "两种方式二选一即可。配置写好后到 AI 客户端里重新加载/信任连接器才生效。":
+        "Pick either method — no need for both. After saving, reload/trust the "
+        "connector in your AI client for it to take effect.",
+    "外部 Agent 接入（MCP）": "External agent access (MCP)",
+    "方式二：comfyui-mcp（需已装 node 与 comfyui-mcp 包）——\n把路径改成实际安装位置后加入 mcp.json：":
+        "Option 2: comfyui-mcp (requires node and the comfyui-mcp package) —\n"
+        "point the paths at your actual install location, then add to mcp.json:",
+    "生成 MCP 配置片段，让 WorkBuddy / Claude 等外部 AI 客户端通过 MCP 协议操作 ComfyHub 管理的实例":
+        "Generate an MCP config snippet so external AI clients (WorkBuddy / Claude, etc.) "
+        "can drive ComfyHub-managed instances over the MCP protocol",
+    "检查更新": "Check for updates",
+    "启动时自动检查": "Check on startup",
+    "清除「跳过版本」": "Clear skipped version",
+    "加载更多": "Load more",
+    "复制": "Copy",
+    "重跑": "Re-run",
+    "未选择实例": "No instance selected",
+    "移除这个附件": "Remove this attachment",
+    "点右下 ✕ 或直接点这张卡片即可移除附件":
+        "Click the ✕ at the lower right, or click the card itself, to remove the attachment",
+    "问点什么…（回车发送，Shift+回车换行；可直接粘贴图片或工作流 JSON）":
+        "Ask anything… (Enter sends, Shift+Enter adds a line; paste images or workflow JSON directly)",
+    "思考中… 0.0s": "Thinking… 0.0s",
 
     # ================= 其余表头 =================
     "版本": "Version",
@@ -631,4 +698,105 @@ EN_DICT = {
     # ================= 实例前缀拼装 =================
     "（未选择）": "(none selected)",
     "检测完成": "check finished",
+
+    # ================= 反馈与诊断（2026-11-06 方案A）=================
+    "反馈与诊断…": "Feedback & diagnostics…",
+    "反馈与诊断": "Feedback & diagnostics",
+    "诊断文本在本机生成并已脱敏（路径与密钥已隐藏，不含机器名/IP）。\n"
+    "可直接编辑，然后复制或保存发给开发者；不会自动上传任何内容。":
+        "This report is generated locally and sanitized (paths & secrets hidden, "
+        "no hostname/IP).\nEdit freely, then copy or save and send it to the "
+        "developer yourself. Nothing is uploaded automatically.",
+    "重新生成": "Regenerate",
+    "复制到剪贴板": "Copy to clipboard",
+    "保存为文件…": "Save as file…",
+    "提交到 Gitee Issues": "Open Gitee Issues",
+    "已复制到剪贴板，可直接粘贴到 Issues / 群聊 / 邮件":
+        "Copied. Paste it into Issues / group chat / email",
+    "已复制诊断文本，请在打开的页面粘贴（Ctrl+V）并提交":
+        "Report copied. Paste (Ctrl+V) into the opened page and submit",
+    "保存诊断文件": "Save diagnostics file",
+    "保存失败": "Save failed",
+
+    # ---- 匿名提交（2026-11-06 云函数中转）----
+    "诊断文本在本机生成并已脱敏（路径与密钥已隐藏，不含机器名/IP）。\n"
+    "可直接编辑；只有点「匿名提交」才会发送，其余操作都不联网。":
+        "This report is generated locally and sanitized (paths & secrets hidden, "
+        "no hostname/IP).\nEdit freely — it is sent only when you click Submit; "
+        "nothing else goes online.",
+    "邮箱 / QQ（选填，方便回访，可留空完全匿名）":
+        "Email / QQ (optional, for follow-up; leave blank to stay anonymous)",
+    "匿名提交": "Submit anonymously",
+    "直接发送给开发者，无需登录；失败会自动保存到文件":
+        "Send straight to the developer, no login needed. On failure it is saved to a file.",
+    "内容太短，请补充问题描述后再提交":
+        "Too short — please describe the problem before submitting",
+    "提交中…": "Submitting…",
+    "已提交，感谢反馈！开发者会尽快查看":
+        "Submitted. Thanks! The developer will take a look soon",
+    "未配置提交地址": "No submit endpoint configured",
+    "问题描述 / 建议": "What happened / your suggestion",
+    "请描述遇到的问题、期望的功能，或任何建议（至少 6 个字）…\n"
+    "例如：启动实例后界面一直显示“未运行”，要手动刷新才正常。":
+        "Describe the problem, a feature you want, or any suggestion (6+ characters)…\n"
+        "e.g. after starting the instance the UI still says \"not running\" until I refresh.",
+    "诊断信息（自动生成，已脱敏，可编辑）":
+        "Diagnostics (auto-generated, sanitized, editable)",
+    "请先填写问题描述或建议（至少 6 个字）":
+        "Please describe the problem first (at least 6 characters)",
+
+    # ---- 图片预览（2026-11-06）----
+    "图片预览": "Image preview",
+    "点击查看大图": "Click to view full size",
+
+    # ---- AI 多会话（2026-11-06）----
+    "＋ 新建": "+ New",
+    "重命名": "Rename",
+    "删除": "Delete",
+    "（新对话）": "(new chat)",
+    "选择历史对话；切换后当前对话会自动保存":
+        "Pick a past conversation; the current one is saved automatically",
+    "开一个新对话（当前对话自动保存）": "Start a new chat (current one is saved)",
+    "给当前对话改个名字": "Rename this conversation",
+    "删除当前对话": "Delete this conversation",
+    "重命名对话": "Rename conversation",
+    "对话名称：": "Conversation name:",
+    "删除对话": "Delete conversation",
+    "删除当前对话？此操作不可恢复。":
+        "Delete this conversation? This cannot be undone.",
+
+    # ---- 上下文压缩（2026-11-06）----
+    "关闭（只保留最近几条）": "Off (keep only recent messages)",
+    "轻度（24 条触发，保留 14 条）": "Light (trigger 24, keep 14)",
+    "中度（16 条触发，保留 9 条，推荐）": "Medium (trigger 16, keep 9) — recommended",
+    "激进（10 条触发，保留 5 条）": "Aggressive (trigger 10, keep 5)",
+    "上下文压缩:": "Context compression:",
+    "对话变长时自动把较早内容压成摘要，之后只带摘要+最近几条原文；"
+    "档位越高保留的原文越少、省得越多":
+        "When the chat grows long, older turns are summarized automatically and only "
+        "the summary plus recent messages are sent. Higher levels keep less raw text "
+        "and save more tokens.",
+
+    # ---- 助手设定 / 直连（2026-11-06）----
+    "助手设定:": "Assistant persona:",
+    "直连（不经过系统代理）": "Direct connection (bypass system proxy)",
+    "会作为系统提示词的「角色与偏好」插到最前面；为空则使用内置默认设定。"
+    "操作纪律（不许编造路径、报错要如实转述等）始终生效，不会被这里覆盖":
+        "Inserted at the top of the system prompt as role and preferences. Leave empty "
+        "to use the built-in default. Safety rules (no invented paths, report errors "
+        "verbatim) always stay in effect and cannot be overridden here.",
+    "国内接口（DeepSeek/智谱/通义/MiMo 等）建议保持勾选。"
+    "如果你的电脑开着全局代理且接口在境外，取消勾选改走代理":
+        "Keep this checked for China-based APIs (DeepSeek / Zhipu / Qwen / MiMo). "
+        "If a global proxy is running and the API is overseas, uncheck it to use the proxy.",
+    "恢复默认": "Restore default",    "把助手设定改回出厂默认内容": "Reset the assistant persona to the factory default",
+    "保存本页所有设置（快捷键 Ctrl+S 也可）":
+        "Save all settings on this page (Ctrl+S also works)",    "这里的内容会作为系统提示词的开头（角色与偏好）。"
+    "操作纪律（不许编造路径、报错要如实转述等）始终生效，不会被这里覆盖":
+        "This text is prepended to the system prompt as role and preferences. Safety "
+        "rules (no invented paths, report errors verbatim) always stay in effect.",
+    "没有改动，无需保存": "No changes — nothing to save",
+    "已取消，未保存任何修改": "Cancelled — nothing was saved",
+    "确认无误再保存；点「取消」不会写入任何内容。":
+        "Review the changes before saving; clicking Cancel writes nothing.",
 }

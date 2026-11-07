@@ -14,11 +14,19 @@ import traceback
 os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
 
 # ★ CLI 模式必须在导入 PySide6 之前判断，避免无谓加载 Qt
-_CLI_CMDS = {"list", "start", "stop", "status", "info", "logs", "batch", "-h", "--help"}
+_CLI_CMDS = {"list", "start", "stop", "status", "info", "logs", "batch", "mcp", "-h", "--help"}
 
 
 def _maybe_cli() -> int | None:
     """若首个参数是 CLI 子命令 → 走命令行，返回退出码；否则返回 None 表示进 GUI"""
+    if len(sys.argv) > 1 and sys.argv[1] == "mcp":
+        # 方案 B（2026-11-03）：外挂 MCP server 模式，暴露 AI 助手工具层给外部 Agent
+        try:
+            from app.mcp_server import main as mcp_main
+            return mcp_main()
+        except Exception as e:
+            print(f"MCP 模式执行失败: {e}", file=sys.stderr)
+            return 1
     if len(sys.argv) > 1 and sys.argv[1] in _CLI_CMDS:
         try:
             from app.cli import main as cli_main
@@ -133,6 +141,15 @@ def main():
     if not _guard.try_acquire():
         return 0
 
+    # 运行记录（2026-11-06）：会话流水 + 上次是否异常退出 + 卡死看门狗
+    try:
+        from app import runtime_log
+        from app.config import APP_VERSION as _ver
+        runtime_log.session_start(_ver)
+        runtime_log.start_watchdog()
+    except Exception:
+        runtime_log = None
+
     try:
         win = MainWindow()
 
@@ -155,10 +172,20 @@ def main():
         raise
     except Exception:
         _write_crash("FATAL IN MAINLOOP", traceback.format_exc())
+        try:
+            from app import runtime_log as _rl
+            _rl.mark_crash("主循环致命异常")
+        except Exception:
+            pass
         QMessageBox.critical(None, "ComfyHub 遇到错误",
                              "程序遇到未处理的错误已退出。\n"
                              f"详细日志：{CRASH_LOG}")
         return 1
+    try:                       # 正常退出：记账 + 清哨兵
+        from app import runtime_log as _rl
+        _rl.session_end()
+    except Exception:
+        pass
     return code
 
 

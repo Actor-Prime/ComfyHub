@@ -57,6 +57,7 @@ def main():
         import app.ui.pages.models_page    # noqa: F401
         import app.ui.pages.plugins_page   # noqa: F401
         import app.ui.pages.workflow_page  # noqa: F401
+        import app.ui.pages.ai_page        # noqa: F401
         import app.ui.pages.settings_page  # noqa: F401
     check("ui 模块导入", _gui_imports)
 

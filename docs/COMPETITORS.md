@@ -90,6 +90,29 @@
 
 ---
 
+## comfyui-mcp 工具设计观察（2026-11-03）
+
+**看了什么**：开源项目 artokun/comfyui-mcp（npm 包 v0.52.206，**License: MIT**，npmmirror 元数据确认）。
+本机安装后用 MCP 握手 + tools/list 只读枚举了它的 41 个工具名与描述（未反编译、未复制源码）。
+观察重点是"AI 操作 ComfyUI"的工具切分方式：
+
+- 体检类：`get_system_stats`（stats/logs/health 三动作聚合，health 会汇总 GPU/VRAM/队列/各模型分类数量/近期报错）
+- 队列类：`queue` 单工具多动作（list/status/cancel/cancel_queued/clear/move/edit），其中 `cancel` 设计了
+  三级退避（interrupt → 等待验证 → POST /free 释放显存 → 仍不停则报 WEDGED 建议重启）
+- 生成类：`generate_image`（一步到位）与 `enqueue_workflow`（细粒度）并存；`batch` 批量
+- 排错类：`node_snapshot` / `bisect`（二分定位坏节点）/ `report_issue`
+- 资产类：`download_model`（HF/CivitAI 搜索+下载）、`list_local_models`（区分 REST 与文件系统双通道）、`install_custom_node`
+- 元工具：`list_tools` / `describe_tool` / `call_tool`（运行时发现）
+
+**我们怎么独立实现**：ComfyHub「AI 助手」功能（2026-11-03 起）工具层 `app/ai_tools.py` 从零编写——
+直接调 ComfyUI HTTP API（`/system_stats` `/queue` `/interrupt` `/history` `/prompt` `/object_info`）与本模块
+既有的 `model_store` / `workflow_scan`，不引入任何 comfyui-mcp 代码或 node 依赖。工具名、参数命名、
+schema 结构均为独立设计；仅吸收两条**设计思想**（思想不受版权保护）：①"单工具多动作"以减少工具数量；
+②取消操作要做验证与降级路径。外挂模式（`ComfyHub.exe --mcp`）为手写 JSON-RPC stdio 实现 MCP 协议，
+未使用其传输层代码。
+
+**没参考什么**：其源码实现、对话 Agent 面板（kitchen/a2ui）、运行时元工具机制、安装器与配置体系。
+
 ## 签名实践检查（2026-10-30）
 
 **看到了什么**：对两款竞品安装包做 Authenticode 元数据只读检查（Get-AuthenticodeSignature +
@@ -111,4 +134,5 @@ signtool verify 双工具交叉，未执行文件）：
 | 2026-10-23 | 建立本记录，补录三个竞品的观察范围与未参考部分 |
 | 2026-10-25 | 修正第 1 节：管理大师技术栈实测为原生单进程（非 Electron），补录黑盒观察到的四区界面结构 |
 | 2026-10-26 | 第 3 节：机智启动器本机实测可运行；UIA 只读扫描其启动参数分类（功能项枚举），实现我方专家模式全局启动参数 |
-| 2026-10-30 | 新增"签名实践检查"：两款竞品安装包均无 Authenticode 签名（双工具证实） |
+| 2026-10-30 | 新增"签名实践检查"：两款竞品安装包均无 Authenticode 签名（双工具交叉证实） |
+| 2026-11-03 | 新增"comfyui-mcp 工具设计观察"：MIT 协议确认；只读枚举 41 个工具名与描述；AI 助手工具层（app/ai_tools.py）独立实现 |

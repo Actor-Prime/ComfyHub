@@ -179,34 +179,46 @@ def is_model_file(fn: str) -> bool:
     return os.path.splitext(fn)[1].lower() in MODEL_EXTS
 
 
-def model_stats(comfyui_path: str) -> list:
-    """统计 models 下各类模型数量与体积（仅模型格式文件）
+def model_stats(comfyui_path: str, models_dir: str = "") -> list:
+    """统计各类模型数量与体积（仅模型格式文件）
+
+    2026-11-07：不再只扫 <comfyui_path>/models —— ComfyUI 的 extra_model_paths.yaml
+    会把外部盘符的模型库挂进来（秋葉整合包常见），只扫内置目录的话用户在
+    ComfyUI 里看得到、在启动器里看不到（用户报障）。
     返回 [(类别, 文件数, 体积GB), ...]
     """
-    models_dir = os.path.join(comfyui_path, "models")
+    from app import model_paths
     result = []
-    if not os.path.isdir(models_dir):
+    if not comfyui_path:
         return result
-    for cat in sorted(os.listdir(models_dir)):
-        p = os.path.join(models_dir, cat)
-        if not os.path.isdir(p):
-            continue
+    for cat in model_paths.model_dirs(comfyui_path, models_dir):
         count, total = 0, 0
-        for root, _dirs, files in os.walk(p):
-            for fn in files:
-                if not is_model_file(fn):
-                    continue
-                fp = os.path.join(root, fn)
-                try:
-                    total += os.path.getsize(fp)
-                    count += 1
-                except OSError:
-                    pass
+        for d in model_paths.dirs_for(comfyui_path, cat, models_dir):
+            for root, _dirs, files in os.walk(d):
+                for fn in files:
+                    if not is_model_file(fn):
+                        continue
+                    fp = os.path.join(root, fn)
+                    try:
+                        total += os.path.getsize(fp)
+                        count += 1
+                    except OSError:
+                        pass
         if count:
             result.append((cat, count, total / 1024 ** 3))
-    return result
+    return sorted(result)
 
 
 def open_in_explorer(path: str):
+    """打开目录；传入文件时在资源管理器里选中它（2026-11-07 双击模型行用）"""
     if os.path.isdir(path):
         os.startfile(path)
+    elif os.path.isfile(path):
+        try:
+            # /select, 后面必须紧跟路径；explorer 对引号敏感，交给列表参数处理
+            subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
+        except Exception:
+            try:
+                os.startfile(os.path.dirname(path))
+            except Exception:
+                pass

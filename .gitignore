@@ -21,6 +21,13 @@ config.json
 v5_*.png
 test_*.py
 temp/
+# 上面的 test_*.py 只针对根目录临时脚本；这些回归用例必须入库
+!tests/test_feedback.py
+!tests/test_runtime_log.py
+!tests/test_ai_assistant.py
+!tests/test_ai_chat_store.py
+!tests/test_secret_store.py
+tests/_i18n_left.txt
 
 # 竞品黑盒分析产物（截图不入库，结论记 docs/COMPETITORS.md）
 analysis/

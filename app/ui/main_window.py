@@ -29,6 +29,7 @@ NAV_ITEMS = [
     ("🛡️", "环境管理"),
     ("📦", "模型库"),
     ("🧬", "工作流"),
+    ("🤖", "AI 助手"),
     ("🖥️", "控制台"),
     ("⚙️", "系统设置"),
 ]
@@ -77,6 +78,13 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("ComfyHub — ComfyUI 多实例管理器")
         self.resize(1180, 780)
         self.cfg = load_config()
+        # 旧配置里的明文密钥 → 启动时就加密落盘（2026-11-06，一次性迁移）
+        if self.cfg.pop("_migrate_key", False):
+            try:
+                from app.config import save_config
+                save_config(self.cfg)
+            except Exception:
+                pass
         self.procs = ProcManager()
         self._quit_direct = False    # 托盘「退出」直通标志（防被关闭行为「最小化」分支截胡）
 
@@ -179,6 +187,15 @@ class MainWindow(QMainWindow):
         line.setStyleSheet("color:#262c36;")
         right.addWidget(line)
 
+        # 更新提示条（2026-11-04）：非模态，任何页面都可见
+        from app.ui.update_banner import UpdateBanner
+        self.update_banner = UpdateBanner(self)
+        self.update_banner.sig_update.connect(self._on_update_clicked)
+        self.update_banner.sig_skip.connect(self._on_skip_version)
+        right.addWidget(self.update_banner)
+        self._update_info = None
+        self._check_worker = None
+
         self.stack = QStackedWidget()
         right.addWidget(self.stack, 1)
         root.addLayout(right, 1)
@@ -190,6 +207,7 @@ class MainWindow(QMainWindow):
         from app.ui.pages.env_page import EnvPage
         from app.ui.pages.models_page import ModelsPage
         from app.ui.pages.workflow_page import WorkflowPage
+        from app.ui.pages.ai_page import AiPage
         from app.ui.pages.console_page import ConsolePage
         from app.ui.pages.settings_page import SettingsPage
 
@@ -199,12 +217,13 @@ class MainWindow(QMainWindow):
         self.env_page = EnvPage(self.cfg, self)
         self.models_page = ModelsPage(self.cfg, self)
         self.workflow_page = WorkflowPage(self.cfg, self)
+        self.ai_page = AiPage(self.cfg, self)
         self.console_page = ConsolePage(self.cfg, self)
         self.settings_page = SettingsPage(self.cfg, self)
 
         for w in (self.home_page, self.comfyui_page, self.plugins_page,
                   self.env_page, self.models_page, self.workflow_page,
-                  self.console_page, self.settings_page):
+                  self.ai_page, self.console_page, self.settings_page):
             self.stack.addWidget(w)
 
         # 表格行高统一 32px：QSS item 有 4px padding，默认行高会把字上下裁掉
@@ -214,10 +233,15 @@ class MainWindow(QMainWindow):
 
         self._init_tray()
         self._init_task_watch()
+        self._init_heartbeat()
 
         self._sync_instances()
         self.nav.setCurrentRow(0)
         self._init_orphan_check()
+
+        # 版本检查：每次启动（用户定 2026-11-04），延迟 6s 避开启动高峰
+        from PySide6.QtCore import QTimer as _QT
+        _QT.singleShot(6000, lambda: self.check_updates(manual=False))
 
         # ---------- 主题与语言（2026-11-01）----------
         self._apply_theme()
@@ -241,6 +265,31 @@ class MainWindow(QMainWindow):
         custom = info["mode"] == "custom"
         for sa in self.findChildren(QAbstractScrollArea):
             sa.viewport().setAutoFillBackground(not custom)
+        # 页面自己决定要不要加"底板"压住背景图（AI 页在自定义背景下会看不清）
+        for w in self.findChildren(QWidget):
+            fn = getattr(w, "refresh_backdrop", None)
+            if callable(fn):
+                try:
+                    fn(info)
+                except Exception:
+                    pass
+        # 其余页面统一加底板（2026-11-06）：custom 主题把聊天区等容器强制透明，
+        # 没有底板的页面元素会浮在背景图上。
+        # 2026-11-07 用户要求：底板透明度必须与左侧栏一致（theme.page_scrim_rgba），
+        # 不能比左栏实——否则自定义背景图就失去意义了。
+        if custom:
+            from app.ui.theme import page_scrim_rgba
+            scrim = page_scrim_rgba(float(info.get("alpha") or 0.72))
+        for page in (self.home_page, self.comfyui_page, self.plugins_page,
+                     self.env_page, self.models_page, self.workflow_page,
+                     self.console_page, self.settings_page):
+            if custom:
+                page.setObjectName("PageScrim")
+                page.setAttribute(Qt.WA_StyledBackground, True)
+                page.setStyleSheet(f"QWidget#PageScrim{{background:{scrim};}}")
+            else:
+                page.setAttribute(Qt.WA_StyledBackground, False)
+                page.setStyleSheet("")
 
     def _init_theme_watch(self):
         """「跟随系统」：Windows 深浅色切换后自动重绘（15s 轮询，开销可忽略）"""
@@ -260,6 +309,17 @@ class MainWindow(QMainWindow):
 
         self._theme_timer.timeout.connect(_tick)
         self._theme_timer.start()
+
+    # ---------- 运行心跳（卡死检测）----------
+    def _init_heartbeat(self):
+        """2 秒一次心跳：定时器跑不动 = 主线程被卡住，由 runtime_log 的
+        watchdog 线程记一条 hang 事件（进诊断报告，用户报「卡死」时才有据可查）"""
+        from app import runtime_log
+        self._heartbeat_timer = QTimer(self)
+        self._heartbeat_timer.setInterval(2000)
+        self._heartbeat_timer.timeout.connect(runtime_log.beat)
+        self._heartbeat_timer.start()
+        runtime_log.beat()
 
     # ---------- 系统托盘 ----------
     def _init_tray(self):
@@ -329,7 +389,31 @@ class MainWindow(QMainWindow):
         w = self._watchers.pop(iid, None)
         if w:
             try:
+                w.stop()            # 非阻塞置位，线程自行退出（绝不 wait）
+            except Exception:
+                pass
+            # QThread 运行中被销毁会崩（workers.py 三原则之①）：
+            # 入墓碑持引用，线程自然结束后随主窗一起释放
+            self._watcher_grave = [x for x in
+                                   getattr(self, "_watcher_grave", [])
+                                   if x.isRunning()]
+            self._watcher_grave.append(w)
+
+    def _stop_watchers(self):
+        """退出路径收掉全部任务监听线程：先统一置停止位再逐个短暂 wait
+        （已并行退出，实际等待≈一轮 HTTP 超时；运行期间绝不调用）"""
+        ws = list(self._watchers.values()) + \
+            list(getattr(self, "_watcher_grave", []))
+        self._watchers.clear()
+        for w in ws:
+            try:
                 w.stop()
+            except Exception:
+                pass
+        for w in ws:
+            try:
+                if w.isRunning():
+                    w.wait(5000)
             except Exception:
                 pass
 
@@ -397,7 +481,11 @@ class MainWindow(QMainWindow):
         self.cb_inst.blockSignals(True)
         self.cb_inst.clear()
         for inst in self.cfg["instances"]:
-            self.cb_inst.addItem(inst.get("name", "?"), userData=inst.get("id"))
+            name = inst.get("name", "?")
+            path = inst.get("comfyui_path") or ""
+            if not path or not os.path.isdir(path):
+                name += "  ⚠ 目录不存在"      # 僵尸实例一眼可见，别对着它点启动
+            self.cb_inst.addItem(name, userData=inst.get("id"))
         if not self.cfg["instances"]:
             # 空态占位：删除全部实例后下拉不应残留旧名称
             self.cb_inst.addItem("（无实例，点右上角添加）", userData=None)
@@ -434,6 +522,79 @@ class MainWindow(QMainWindow):
 
     def goto(self, row):
         self.nav.setCurrentRow(row)
+
+    # ---------- 版本更新（2026-11-04）----------
+    def check_updates(self, manual: bool = False):
+        """检查更新：manual=False 时受「启动时自动检查」开关约束"""
+        from app import updater
+        from app.ui.update_banner import CheckWorker
+        st = self.cfg.get("settings") or {}
+        if not manual and not bool(st.get("update_auto_check", True)):
+            return
+        if self._check_worker is not None and self._check_worker.isRunning():
+            return
+        self._update_manual = manual
+        self._check_worker = CheckWorker(self.cfg, force=manual, parent=self)
+        self._check_worker.sig_done.connect(self._on_update_checked)
+        self._check_worker.start()
+
+    def _on_update_checked(self, info: dict):
+        from PySide6.QtWidgets import QMessageBox
+        from app import updater
+        self._check_worker = None
+        manual = bool(getattr(self, "_update_manual", False))
+        if not info.get("ok"):
+            if manual:
+                QMessageBox.information(self, "检查更新",
+                                        f"暂时无法检查更新：\n{info.get('error')}")
+            return
+        if not info.get("has_update"):
+            self.update_banner.hide()
+            self._update_info = None
+            if manual:
+                QMessageBox.information(self, "检查更新",
+                                        f"已是最新版本 v{updater.APP_VERSION}")
+            return
+        self._update_info = info
+        self.update_banner.show_update(info)
+
+    def _on_update_clicked(self):
+        from PySide6.QtWidgets import QDialog
+        from app.ui.update_banner import UpdateDialog
+        if not self._update_info:
+            self.check_updates(manual=True)
+            return
+        if self._update_info.get("missing_asset"):
+            import webbrowser
+            webbrowser.open(self._update_info.get("page") or "")
+            return
+        dlg = UpdateDialog(self._update_info, self)
+        dlg.exec()
+        if dlg.need_restart:
+            self._quit_for_update()
+
+    def _on_skip_version(self):
+        from app.config import save_config
+        ver = (self._update_info or {}).get("latest")
+        if not ver:
+            return
+        self.cfg.setdefault("settings", {})["update_skipped_version"] = ver
+        save_config(self.cfg)
+        self.update_banner.hide()
+        self._update_info = None
+
+    def _quit_for_update(self):
+        """更新已就绪：保存配置并退出（安装器/更新脚本已在后台接手）"""
+        from PySide6.QtWidgets import QApplication
+        from app.config import save_config
+        try:
+            save_config(self.cfg)
+        except Exception:
+            pass
+        self.hide()
+        if getattr(self, "tray", None) is not None:
+            self.tray.hide()
+        QApplication.quit()
 
     # ---------- 兼容入口 ----------
     def refresh_sidebar(self):
@@ -590,4 +751,5 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
         self.procs.stop_all()
+        self._stop_watchers()   # 任务监听线程统一退出（2026-11-02 线程化后必须收）
         event.accept()

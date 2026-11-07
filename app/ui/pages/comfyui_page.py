@@ -210,7 +210,10 @@ class ComfyuiPage(QWidget):
         h_models.addWidget(self.ed_models, 1)
         h_models.addWidget(b_models)
         wrap2 = QWidget(); wrap2.setLayout(h_models)
-        t1v.addWidget(_Row("模型目录", "checkpoints/loras/vae 等模型的存放位置", wrap2))
+        t1v.addWidget(_Row(
+            "模型目录",
+            "ComfyUI 的模型根目录；其他盘的模型用 extra_model_paths.yaml 挂载",
+            wrap2))
 
         h_py = QHBoxLayout()
         self.ed_python = QLineEdit()
@@ -799,31 +802,65 @@ class ComfyuiPage(QWidget):
     def _current_inst(self):
         return self.mainwin.current_inst()
 
+    # 保存前改动确认用的字段名（2026-11-06）
+    _SAVE_LABELS = {
+        "name": "实例名称", "models_dir": "模型目录", "python_path": "Python 路径",
+        "port": "启动端口", "vram_mode": "CPU/显存优化", "cross_attn": "Cross Attention",
+        "preview_method": "预览方式", "precision": "精度", "fast_mode": "Fast 模式",
+        "no_smart_memory": "禁用智能显存", "cpu_vae": "CPU VAE",
+        "deterministic": "确定性计算", "channels_last": "channels_last",
+        "cuda_malloc": "CUDA Malloc", "multi_user": "多用户模式",
+        "lan_access": "局域网访问", "hf_offline": "HF 离线模式",
+        "auto_open_browser": "自动打开浏览器", "extra_args": "额外启动参数",
+        "engine": "生成引擎",
+    }
+
     def _save(self):
+        from app.ui.changes_dialog import diff_changes, confirm_changes
         inst = self._current_inst()
         if not inst:
             return
-        inst["name"] = self.ed_name.text().strip() or inst["name"]
-        inst["models_dir"] = self.ed_models.text().strip()
-        inst["python_path"] = self.ed_python.text().strip()
-        inst["port"] = self.sp_port.value()
-        inst["vram_mode"] = self.cb_vram.currentText()
-        inst["cross_attn"] = self.cb_ca.currentText()
-        inst["preview_method"] = self.cb_preview.currentText()
-        inst["precision"] = self.cb_prec.currentText()
-        inst["fast_mode"] = self.ck_fast.isChecked()
-        inst["no_smart_memory"] = self.ck_nosm.isChecked()
-        inst["cpu_vae"] = self.ck_cpu_vae.isChecked()
-        inst["deterministic"] = self.ck_deterministic.isChecked()
-        inst["channels_last"] = self.ck_channels.isChecked()
-        inst["cuda_malloc"] = self.cb_cuda_malloc.currentText()
-        inst["multi_user"] = self.ck_multi_user.isChecked()
-        inst["lan_access"] = self.ck_lan.isChecked()
-        inst["hf_offline"] = self.ck_hf_offline.isChecked()
-        inst["auto_open_browser"] = self.ck_browser.isChecked()
-        inst["extra_args"] = self.ed_extra.text().strip()
-        # 生成引擎（2026-10-29 统一下拉）：backend ∈ auto/cuda/dml/cpu
-        eng = self.cb_eng.currentData() or ("auto", None)
+        # 快照改动前的值（2026-11-06）：取消时按这里恢复，一个字段都不动
+        _TRACK = ("name", "models_dir", "python_path", "port", "vram_mode",
+                  "cross_attn", "preview_method", "precision", "fast_mode",
+                  "no_smart_memory", "cpu_vae", "deterministic", "channels_last",
+                  "cuda_malloc", "multi_user", "lan_access", "hf_offline",
+                  "auto_open_browser", "extra_args")
+        old = {k: inst.get(k) for k in _TRACK}
+        old["engine"] = (inst.get("engine_backend"), inst.get("engine_index"))
+        eng = (self.cb_eng.currentData() or ("auto", None))
+        new = {
+            "name": self.ed_name.text().strip() or inst["name"],
+            "models_dir": self.ed_models.text().strip(),
+            "python_path": self.ed_python.text().strip(),
+            "port": self.sp_port.value(),
+            "vram_mode": self.cb_vram.currentText(),
+            "cross_attn": self.cb_ca.currentText(),
+            "preview_method": self.cb_preview.currentText(),
+            "precision": self.cb_prec.currentText(),
+            "fast_mode": self.ck_fast.isChecked(),
+            "no_smart_memory": self.ck_nosm.isChecked(),
+            "cpu_vae": self.ck_cpu_vae.isChecked(),
+            "deterministic": self.ck_deterministic.isChecked(),
+            "channels_last": self.ck_channels.isChecked(),
+            "cuda_malloc": self.cb_cuda_malloc.currentText(),
+            "multi_user": self.ck_multi_user.isChecked(),
+            "lan_access": self.ck_lan.isChecked(),
+            "hf_offline": self.ck_hf_offline.isChecked(),
+            "auto_open_browser": self.ck_browser.isChecked(),
+            "extra_args": self.ed_extra.text().strip(),
+            "engine": eng,
+        }
+        changes = diff_changes(old, new, self._SAVE_LABELS)
+        if not changes:
+            QMessageBox.information(self, "ComfyHub", "没有改动，无需保存")
+            return
+        # 用户要求（2026-11-06）：保存前列出改了什么，防手滑改错配置后无感落盘
+        if not confirm_changes(self, f"实例「{inst.get('name')}」", changes, "保存设置"):
+            return
+        for k in _TRACK:
+            if k in new:
+                inst[k] = new[k]
         inst["engine_backend"] = eng[0]
         inst["engine_index"] = eng[1]
         # 旧字段清理：device/cuda_device 已被引擎下拉取代，防止残留配置打架
@@ -1008,35 +1045,20 @@ class ComfyuiPage(QWidget):
             d = os.path.normpath(d)
             self.ed_models.setText(d)
             self.ed_models.setToolTip(d)
-            # 立即写 yaml 并持久化到实例配置
+            # 只存实例字段：启动时按 --models-directory 传给 ComfyUI。
+            # 不再整份重写 extra_model_paths.yaml —— 那是用户手动配的外部挂载表
+            # （比如把 D:\ComfyUI-Models 挂进来），覆盖写会把人家的配置冲掉（2026-11-07）
             inst = self._current_inst()
             if inst:
                 inst["models_dir"] = d
                 from app.config import save_config
                 save_config(self.cfg)
-                self._write_model_paths(inst, d)
 
     def _pick_python(self):
         f, _ = QFileDialog.getOpenFileName(self, "选择 Python 解释器",
                                            self.ed_python.text(), "Python (python.exe)")
         if f:
             self.ed_python.setText(f)
-
-    @staticmethod
-    def _write_model_paths(inst, models_dir):
-        try:
-            yaml = (
-                "comfyui:\n"
-                f"  base_path: {models_dir}\n"
-                "  checkpoints: checkpoints\n  loras: loras\n  vae: vae\n"
-                "  clip: clip\n  clip_vision: clip_vision\n  configs: configs\n"
-                "  controlnet: controlnet\n  diffusion_models: diffusion_models\n"
-                "  embeddings: embeddings\n  unet: unet\n"
-                "  upscale_models: upscale_models\n")
-            open(os.path.join(inst["comfyui_path"], "extra_model_paths.yaml"),
-                 "w", encoding="utf-8").write(yaml)
-        except OSError:
-            pass
 
     # ---------- 启停（供首页/控制台调用） ----------
     def _open_batch(self):

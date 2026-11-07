@@ -136,7 +136,8 @@ class WorkflowPage(QWidget):
         self.cb_wf.currentIndexChanged.connect(self._on_wf_pick)
         hb.addWidget(self.cb_wf, 1)
         b_reload = QPushButton("🔄")
-        b_reload.setFixedWidth(34)
+        b_reload.setObjectName("IconBtn")      # 清零 padding，否则 34px 宽塞不下图标
+        b_reload.setFixedSize(34, 30)
         b_reload.setToolTip("刷新实例工作流列表")
         b_reload.clicked.connect(self._refresh_wf_list)
         hb.addWidget(b_reload)

@@ -26,7 +26,7 @@ import urllib.error
 import urllib.request
 from mimetypes import guess_type
 
-OWNER = "yzdydwdd"
+OWNER = "ActorPrime"     # 2026-11-06：仓库已从 yzdydwdd 转移到 ActorPrime（旧地址仍 302 跳转）
 REPO = "ComfyHub"
 API = f"https://gitee.com/api/v5/repos/{OWNER}/{REPO}/releases"
 
