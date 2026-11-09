@@ -21,28 +21,139 @@ from app.process import build_command, port_in_use
 
 
 class _Row(QFrame):
-    """行式设置项：左标题+说明（2），右控件（3，宽度优先给控件）"""
-    def __init__(self, title, desc, widget):
+    """行式设置项：左标题+说明（固定列），右控件（紧跟其后、限宽），尾部留白
+
+    2026-11-08 修显示问题：2560 宽屏下控件原来被拉到 2000px 宽（一条细长横条，
+    下拉箭头飘在中间），看着不像正经设置面板。
+    改法（第 2 版）：标签列固定 230、控件紧跟标签左对齐、限宽 560，剩余宽度
+    全部由尾部留白吸收 —— 整页阅读起点统一在左，不会出现"控件贴最右、中间
+    空出一大截"的断层感（第 1 版把 stretch 放中间就是这个毛病）。
+    """
+    def __init__(self, title, desc, widget, wmax=640):
+        """两行式：第 1 行「标题 …… 控件」两端对齐，第 2 行说明占满宽度
+
+        2026-11-08 第 4 版。前三版都是「左标签列(220) + 右控件」的横向两栏，问题是
+        说明文字被塞进 220 宽里爆成 3~4 行，卡片长高、左侧形成一整块竖向空白带，
+        用户连着反馈「留白太多 / 没对齐」。
+        改成两行式后：
+          · 说明独占一行 → 一行就能写完，卡片高度砍掉近一半
+          · 标题左、控件右（参考 ComfyUI 管理大师的两端对齐）→ 视觉重心落在两侧，
+            中间留白不会形成"断层"
+          · 控件宽度按类型定：下拉/数字 480、输入框 640（路径够长又不会被拉成细条）
+        """
         super().__init__()
         self.setObjectName("RowCard")
-        h = QHBoxLayout(self)
-        h.setContentsMargins(14, 7, 14, 7)
-        h.setSpacing(12)
-        left = QVBoxLayout()
-        t = QLabel(title);  t.setObjectName("RowTitle")
-        d = QLabel(desc);   d.setObjectName("RowDesc")
-        d.setWordWrap(True)
-        left.addWidget(t)
-        left.addWidget(d)
-        h.addLayout(left, 2)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(18, 11, 18, 11)
+        v.setSpacing(5)
+
+        h = QHBoxLayout()
+        h.setSpacing(16)
+        t = QLabel(title)
+        t.setObjectName("RowTitle")
+        h.addWidget(t, 0, Qt.AlignVCenter)
+        h.addStretch(1)                      # 把控件顶到右侧
         if widget:
-            widget.setMinimumWidth(380)
-            if hasattr(widget, "setToolTip"):
-                # 路径类控件：悬停看全量内容
-                pass
-            h.addWidget(widget, 3, Qt.AlignVCenter)
+            from PySide6.QtWidgets import QComboBox, QSpinBox, QCheckBox
+            # ⚠️ 两个坑（2026-11-08 连踩）：
+            #   1. `addWidget(w, n, Qt.AlignXXX)` 带 alignment 时 Qt 只按 sizeHint 摆放，
+            #      输入框会缩成 120px 小细条；
+            #   2. 但去掉 alignment 后如果控件是 setFixedWidth，一旦行宽算不准就会
+            #      顶到卡片外 —— 所以这里既不指定 alignment，也用 maximumWidth 封顶，
+            #      让布局按"sizeHint~maxWidth"自由分配。
+            if not isinstance(widget, QCheckBox):
+                _narrow = isinstance(widget, (QComboBox, QSpinBox))
+                widget.setMinimumWidth(480 if _narrow else wmax)
+                widget.setMaximumWidth(480 if _narrow else wmax)
+            h.addWidget(widget, 0)
+        v.addLayout(h)
+
+        d = QLabel(desc)
+        d.setObjectName("RowDesc")
+        d.setWordWrap(True)
+        v.addWidget(d)
 
 
+
+
+class _FlowBox(QWidget):
+    """设置行容器：**宽度 ≥1700 自动排成两列**，否则单列
+
+    2026-11-08 第 5 版。23 个设置行铺成单列时，每行只有「标签 + 640 控件」，
+    卡片剩余 1000+ px 全是空白 —— 用户连着几轮反馈「左右留白太多」。
+    排成两列后宽度被填满，控件也不会被拉成细长条（这是宽屏设置页的通行做法：
+    Windows 11 设置、macOS 系统设置的分组网格都是这个思路）。
+
+    对调用方透明：提供 addWidget / addSpacing / addStretch 三个与 QVBoxLayout
+    同名的方法，原代码一行都不用改。
+      · objectName == "SectionLabel" 的标题 → 占整行
+      · 其余（_Row）→ 占半行，按列数自动换行
+    """
+    TWO_COL_MIN = 1700          # 页面宽到这个值才排两列
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._items = []        # [(kind, widget)] kind: full / half / gap / stretch
+        self._grid = QGridLayout(self)
+        self._grid.setContentsMargins(22, 18, 22, 18)
+        self._grid.setSpacing(10)
+        self._cols = 0
+        # ⚠️ 必须用 dirty 标记：只靠"cols 有没有变"做去重会漏掉新增项 ——
+        # 第一个控件加进来时 cols 0→1 排一次，之后 _cols 已是 1，后面 24 个
+        # addWidget 全部命中 `cols == _cols` 直接 return，grid 里永远只有 1 个
+        # 控件、整页空白（2026-11-08 实测：items=25 但 grid_count=1）
+        self._dirty = True
+
+    # ---- 与 QVBoxLayout 同名接口 ----
+    def addWidget(self, w, *a, **k):          # noqa: N802
+        full = w.objectName() == "SectionLabel"
+        self._items.append(("full" if full else "half", w))
+        self._dirty = True
+        self._relayout()
+
+    def addSpacing(self, px):                 # noqa: N802
+        self._items.append(("gap", int(px)))
+        self._dirty = True
+        self._relayout()
+
+    def addStretch(self, *a):                 # noqa: N802
+        self._items.append(("stretch", None))
+        self._dirty = True
+        self._relayout()
+
+    # ---- 重排 ----
+    def _relayout(self):
+        cols = 2 if self.width() >= self.TWO_COL_MIN else 1
+        if cols == self._cols and not self._dirty:
+            return
+        self._cols = cols
+        self._dirty = False
+        r = c = 0
+        for kind, obj in self._items:
+            if kind == "stretch":
+                self._grid.setRowStretch(r, 1)
+                continue
+            if kind == "gap":
+                r += 1
+                continue
+            if kind == "full":
+                if c:
+                    r += 1
+                    c = 0
+                self._grid.addWidget(obj, r, 0, 1, cols)
+                r += 1
+            else:
+                self._grid.addWidget(obj, r, c)
+                c += 1
+                if c >= cols:
+                    c = 0
+                    r += 1
+        for cc in range(2):
+            self._grid.setColumnStretch(cc, 1 if cc < cols else 0)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._relayout()
 
 
 class _KernelInfoWorker(QThread):
@@ -189,8 +300,7 @@ class ComfyuiPage(QWidget):
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
         # ---- Tab1 实例设置：基础区块 + 高级区块（同页两个分区标题）----
-        t1 = QWidget(); t1v = QVBoxLayout(t1)
-        t1v.setContentsMargins(18, 14, 18, 14); t1v.setSpacing(8)
+        t1v = _FlowBox()      # 宽屏自动两列（见 _FlowBox）
         lb1 = QLabel("基础设置")
         lb1.setObjectName("SectionLabel")
         t1v.addWidget(lb1)
@@ -240,11 +350,31 @@ class ComfyuiPage(QWidget):
         v2.setSpacing(8)
         v2.addLayout(h_models)
         v2.addLayout(h_mount)
+        # 「已继承全局共享库」提示（方案 A，2026-11-08）：
+        # 共享外挂库和这里的「启用挂载模型目录」功能极像，用户分不清哪个管全局、
+        # 更会误以为"要先把原 models 删掉共享库才生效"。这条提示直接在当前实例
+        # 上下文里说明：全局那份已经挂上了，原 models 仍扫描，这里只挂本实例专用库。
+        # ⚠️ 文案拆成三段控件：i18n 是"控件树扫描 + 词表精确匹配"，含动态路径的
+        # 整句永远匹配不上（见项目铁律「翻译铁律」）。
+        self.lb_share_hint = QWidget()
+        _hv = QHBoxLayout(self.lb_share_hint)
+        _hv.setContentsMargins(0, 0, 0, 0)
+        _hv.setSpacing(0)
+        self.lb_sh_a = QLabel("已继承全局共享库：")
+        self.lb_sh_path = QLabel("")
+        self.lb_sh_path.setMaximumWidth(420)
+        self.lb_sh_b = QLabel("（原 models 目录仍会扫描，这里只挂本实例专用的）")
+        for _l in (self.lb_sh_a, self.lb_sh_path, self.lb_sh_b):
+            _l.setStyleSheet("color:#7fa8d9; background:transparent;")
+            _hv.addWidget(_l)
+        _hv.addStretch(1)
+        self.lb_share_hint.setVisible(False)
+        v2.addWidget(self.lb_share_hint)
         wrap2.setMinimumHeight(74)
         t1v.addWidget(_Row(
             "模型目录",
-            "ComfyUI 的模型根目录（留空跟随 <根目录>/models）；"
-            "其他盘的模型库用下面的开关单独挂载，按标准类别子目录自动映射",
+            "本实例的模型根目录（留空跟随 <根目录>/models）；下面的开关只挂本实例专用库，"
+            "与「共享外挂库」叠加生效",
             wrap2))
 
         h_py = QHBoxLayout()
@@ -341,13 +471,20 @@ class ComfyuiPage(QWidget):
         # 2026-10-28 用户要求：专家模式整块移除（全局启动参数不再暴露 UI）
 
         t1v.addStretch()
+        # 宽屏下内容不铺满：居中一个 1120 的内容列，两侧留白（2026-11-08，第 2 版
+        # 从 1460 收到 1120 —— 1460 在 1600 窗口下几乎铺满、留白不对称，看着仍是"平铺"）
+        # 内容列 1600（第 3 版）：2560 全屏下 1120 只占 44%，整页缩成中间一条、
+        # 左右各空 720px —— 用户报「全屏出现很多变形」。1600 在 1600 窗口下正好
+        # 铺满、在 2560 下占 65%，行内控件另有 700 上限所以不会被拉成细长条。
+        t1v.setMaximumWidth(2280)
         s1 = QScrollArea(); s1.setWidgetResizable(True); s1.setFrameShape(QFrame.NoFrame)
-        s1.setWidget(t1)
+        s1.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
+        s1.setWidget(t1v)
         self.tabs.addTab(s1, "⚙️ 实例设置")
 
         # ---- Tab2 内核版本 ----
         t2 = QWidget(); t2v = QVBoxLayout(t2)
-        t2v.setContentsMargins(18, 14, 18, 14); t2v.setSpacing(8)
+        t2v.setContentsMargins(22, 18, 22, 18); t2v.setSpacing(10)
         # ---- 内核版本 ----
         lb_k = QLabel("内核版本")
         lb_k.setObjectName("SectionLabel")
@@ -374,7 +511,7 @@ class ComfyuiPage(QWidget):
         h_k.addWidget(self.lb_kcount)
         h_k.addWidget(self.cb_kkind)
         wrap_k = QWidget(); wrap_k.setLayout(h_k)
-        t2v.addWidget(_Row("内核版本管理", "一键更新到最新稳定版，或按版本回滚（切换后自动安装配套依赖）", wrap_k))
+        t2v.addWidget(_Row("内核版本管理", "一键更新到最新稳定版，或按版本回滚（切换后自动安装配套依赖）", wrap_k, wmax=820))
 
         # 远端数据源提示（2026-10-29 加）：列表来自哪个仓库一目了然
         self.lb_remote = QLabel("")
@@ -408,10 +545,18 @@ class ComfyuiPage(QWidget):
         # 一份挂载表所有实例通用（写进系统设置），和 Tab1 里「启用挂载模型目录」
         # （单实例）互相独立，启动时两个 yaml 会一起传给 ComfyUI，叠加生效
         t3 = QWidget(); t3v = QVBoxLayout(t3)
-        t3v.setContentsMargins(18, 14, 18, 14); t3v.setSpacing(8)
+        t3v.setContentsMargins(22, 18, 22, 18); t3v.setSpacing(10)
         lb_s = QLabel("共享外挂模型库")
         lb_s.setObjectName("SectionLabel")
-        t3v.addWidget(lb_s)
+        # 作用域徽章：和 Tab1 的「启用挂载模型目录」区分开（方案 A）
+        _hs = QHBoxLayout()
+        _hs.setSpacing(8)
+        _hs.addWidget(lb_s)
+        lb_badge = QLabel("全局 · 所有实例共用")
+        lb_badge.setObjectName("ScopeBadge")
+        _hs.addWidget(lb_badge)
+        _hs.addStretch(1)
+        t3v.addLayout(_hs)
 
         self.ck_share = QCheckBox("启用：所有实例共用同一个外部模型库")
         self.ck_share.toggled.connect(self._on_share_toggled)
@@ -445,7 +590,8 @@ class ComfyuiPage(QWidget):
         tip_share.setWordWrap(True)
         tip_share.setStyleSheet("color:#888; background:transparent;")
         t3v.addWidget(tip_share)
-        t3v.addStretch()
+        # 保存按钮紧跟内容（2026-11-08 修：原来 addStretch 把它顶到 Tab 底部，
+        # 中间 600px 空白，像丢在外面）
         h_save = QHBoxLayout()
         h_save.addStretch()
         self.b_share_save = QPushButton("保存共享库设置")
@@ -453,6 +599,7 @@ class ComfyuiPage(QWidget):
         self.b_share_save.clicked.connect(self._save_shared)
         h_save.addWidget(self.b_share_save)
         t3v.addLayout(h_save)
+        t3v.addStretch(1)
         self.tabs.addTab(t3, "📚 共享外挂库")
 
         # ---- 底部：保存 / 删除（全局）----
@@ -493,6 +640,18 @@ class ComfyuiPage(QWidget):
         self.ed_models.setPlaceholderText(_dflt_models)
         # 挂载模型目录（2026-11-08）：按实例存，切实例各自独立
         self.ck_mount.setChecked(bool(inst.get("mount_enabled")))
+        # 全局共享库是否生效 → 决定是否显示继承提示
+        try:
+            from app.config import load_config as _load_cfg
+            _st_g = (_load_cfg().get("settings") or {})
+            _sroot = str(_st_g.get("shared_models_root") or "").strip()
+            _on = bool(_st_g.get("shared_models_enabled")) and bool(_sroot)
+            self.lb_share_hint.setVisible(_on)
+            if _on:
+                self.lb_sh_path.setText(_sroot)
+                self.lb_sh_path.setToolTip(_sroot)
+        except Exception:
+            self.lb_share_hint.setVisible(False)
         _mdir = (inst.get("mount_dir") or "").strip()
         self.ed_mount.setText(_mdir)
         self.ed_mount.setToolTip(_mdir)
@@ -1334,6 +1493,30 @@ class ComfyuiPage(QWidget):
         inst = self._current_inst()
         if not inst:
             return
+        # ★ 启动前环境预检弹窗（2026-11-09）：CPU 版 torch + CUDA 引擎时
+        #   ComfyUI import 阶段就崩（Torch not compiled with CUDA enabled），
+        #   提前拦下给三条路：去修复 / 仍以 CPU 模式启动 / 取消。
+        from app.process import env_block_reason
+        why = env_block_reason(inst)
+        if why:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Warning)
+            box.setWindowTitle("ComfyHub")
+            box.setText("启动前检查未通过，已阻止启动")
+            box.setInformativeText(why)
+            btn_fix = box.addButton("去修复（推荐）", QMessageBox.AcceptRole)
+            btn_cpu = box.addButton("仍以 CPU 模式启动", QMessageBox.DestructiveRole)
+            box.addButton(QMessageBox.Cancel)
+            box.exec()
+            clicked = box.clickedButton()
+            if clicked is btn_fix:
+                self.mainwin.goto(NAV.ENV)   # 环境检测页的「修复」按钮重装 CUDA 版 torch
+                return
+            if clicked is btn_cpu:
+                inst = dict(inst)            # 仅本次生效，不落盘
+                inst["engine_backend"] = "cpu"
+            else:
+                return
         # device 字段由 build_command 统一处理（--cpu 等）
         self.mainwin.procs.get(inst).start(inst)
         self._update_state()

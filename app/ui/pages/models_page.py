@@ -81,7 +81,7 @@ class ModelsPage(QWidget):
     # ---------- UI ----------
     def _build(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(18, 14, 18, 14)
+        root.setContentsMargins(22, 18, 22, 18)
         root.setSpacing(10)
 
         # 标题行：标题 | stretch | 实例信息 | 下载中心

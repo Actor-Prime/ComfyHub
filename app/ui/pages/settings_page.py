@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QComboBox,
     QPushButton, QGroupBox, QFormLayout, QMessageBox, QScrollArea,
     QFileDialog, QCheckBox, QSlider, QSpinBox, QDialog, QPlainTextEdit,
+    QFrame,
 )
 
 from app.config import save_config, APP_VERSION
@@ -277,10 +278,11 @@ class SettingsPage(QWidget):
         scroll.setFrameShape(QScrollArea.NoFrame)
         body = QWidget()
         root = QVBoxLayout(body)
-        root.setContentsMargins(16, 12, 16, 12)
+        root.setContentsMargins(22, 18, 22, 18)
+        root.setSpacing(16)
 
         t = QLabel("设置")
-        t.setStyleSheet("font-size:17px; font-weight:bold; color:#fff;")
+        t.setObjectName("PageTitle")
         root.addWidget(t)
 
         g1 = QGroupBox("网络")
@@ -411,6 +413,11 @@ class SettingsPage(QWidget):
             "OpenAI 兼容端点，如 https://api.deepseek.com/v1")
         # 接口地址 + 「测试接口」（2026-11-01）：一次点击完成「测连通 + 拉模型清单 + 绑定模型」
         row_base = QHBoxLayout()
+        row_base.setSpacing(8)
+        # 地址框 stretch=1 铺满、按钮紧随其后（第 3 版）：
+        # 之前为了修"按钮被弹到最右"加过末尾 addStretch(1)，但那是配合 fixedWidth
+        # 用的；现在字段不定宽，末尾 stretch 会把地址框缩成 340px、和下面 7 个字段
+        # 的右边缘对不上。
         row_base.addWidget(self.ed_ai_base, 1)
         self.b_ai_test = QPushButton("测试接口")
         self.b_ai_test.clicked.connect(self._test_ai)
@@ -517,6 +524,11 @@ class SettingsPage(QWidget):
         self.lb_ai_profile.setStyleSheet("color:#7f8894; font-size:11px;")
         f_ai.addRow("", self.lb_ai_profile)
         self.cb_ai_model.currentTextChanged.connect(self._refresh_ai_profile)
+
+        # ---- 字段宽度：不再单独钉宽（第 3 版）----
+        # 上一版把 7 个控件钉成 420、助手设定钉成 720，结果是「字段 420 / 文本框 720 /
+        # 下方说明拉满」三种右边缘，用户看了仍觉得没对齐。现在整页统一 900 单列、
+        # 所有控件 fill，右边缘由分组框决定，天然对齐。
         self._refresh_ai_profile(self.cb_ai_model.currentText())
 
         self.lb_ai_state = QLabel("")
@@ -540,7 +552,7 @@ class SettingsPage(QWidget):
 
         # 保存按钮不再放在滚动内容里（2026-11-06 用户要求）：
         # 页面很长，滚到中间就看不到按钮了；改为页面底部常驻栏（见 _build 末尾）
-        root.addStretch()
+        root.addSpacing(4)
         g3 = QGroupBox("关于")
         v3 = QVBoxLayout(g3)
         # 版本号必须单独成一个控件：翻译是「控件树扫描 + 词表精确匹配」，
@@ -607,11 +619,30 @@ class SettingsPage(QWidget):
         v3.addWidget(self.lb_upd_state)
         self._refresh_update_state()
         root.addWidget(g3)
+        root.addStretch(1)
 
+        # 宽屏修形（第 3 版，2026-11-08）：
+        # 之前是「字段限 420 / 助手设定 720 / 说明拉满」三种宽度并存 —— 用户反馈
+        # 「这些还是没有对齐」。改成**整页一条 900 的单列**：分组框、字段、说明
+        # 全部 fill，右边缘自然全部对齐（900 也是表单类页面的舒适阅读宽度，
+        # 2560 全屏下不会缩成中间一条）。
+        try:
+            self.sl_alpha.setMaximumWidth(520)
+        except Exception:
+            pass
+
+        body.setMaximumWidth(1640)
+        scroll.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
         scroll.setWidget(body)
         outer.addWidget(scroll, 1)
 
         # ---- 底部常驻栏（不随滚动走，和 ComfyUI 实例页一致）----
+        # 先来一条分隔线：内容滚到底时最后几行会贴到按钮栏上、看着像被切断
+        # （2026-11-08 用户报「这边加一条分界线」）
+        sep = QFrame()
+        sep.setObjectName("FooterSep")
+        sep.setFixedHeight(1)
+        outer.addWidget(sep)
         bar = QHBoxLayout()
         bar.setContentsMargins(18, 4, 18, 12)
         self.lb_saved = QLabel("")

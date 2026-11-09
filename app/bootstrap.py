@@ -351,7 +351,9 @@ def download_multi(url_or_tpl: str | list, dest: str, log=print,
     · **选定源后下到底，绝不中途按速度切换**——切换 + 不支持 Range 的源会导致进度清零，
       形成"0~3MB 无限循环"（v0.5.73 的死循环事故）
     · 只有当前源**抛异常/断开**才换下一个源；有进度时，不支持续传(Range)的源直接跳过
-    · 所有源都失败且全都不支持续传 → 清空 .part 用第一个可用源从头下（只做一次）
+    · 所有源都失败且**全都明确拒绝续传** → 清空 .part 从头下（只做一次）；
+      瞬时故障（网络抖动/代理不可用）一律保留 .part 直接失败——重试原地续传，
+      绝不烧掉 GB 级进度（2026-11-09：1263MB 断点被烧事故）
     """
     if isinstance(url_or_tpl, str):
         urls = [url_or_tpl]
@@ -468,15 +470,21 @@ def download_multi(url_or_tpl: str | list, dest: str, log=print,
         usable = [u for u in urls
                   if not (pos_now > 0 and u in no_range) and failed_count.get(u, 0) < 2]
         if pos_now > 0 and not usable and not restart_done:
-            # 有进度但没有任何源能续传 → 清空重下一次（只做一次）
-            restart_done = True
-            failed_count.clear()
-            log("  暂无可用源可续传，清空进度从头下载（仅一次）")
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
-            continue
+            # ★ 2026-11-09 修：只有「所有源都明确拒绝续传」才允许清空从头下。
+            #   瞬时故障（网络抖动/代理不可用）必须保留 .part 直接失败——
+            #   重试原地续传，绝不烧掉 GB 级进度（1263MB 断点被烧事故）
+            if urls and all(u in no_range for u in urls):
+                restart_done = True
+                failed_count.clear()
+                log("  所有源均不支持续传，清空进度从头下载（仅一次）")
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+                continue
+            log(f"  所有源暂时不可用（已保留进度 {pos_now / 1048576:.1f}MB，"
+                "重试将原地续传，不会清空）")
+            break
         if pos_now == 0:
             log(f"  第 {attempt} 轮全部源失败: {last_err}")
         import time as _t2

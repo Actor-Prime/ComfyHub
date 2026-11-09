@@ -77,6 +77,26 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("ComfyHub — ComfyUI 多实例管理器")
         self.resize(1180, 780)
+        # 最小可压缩尺寸（2026-11-08 用户要求「最好有个最小的压缩像素，避免压缩太多
+        # UI 显示错误」）：
+        #   · 宽 1280 —— 导航 88 + 内容 1192；实例设置页行「标签 220 + 控件 700」仍余
+        #     142px，控件不会被压到 min 300、下拉框也不会顶到卡片边。
+        #     取 1280 而不是 1320/1360：1280 是 720p 屏的满宽，任何常见屏都放得下，
+        #     再大会在某些笔记本上顶出屏幕右边。
+        #   · 高 720 —— 实测导航 9 项共 558px、viewport 600 刚好放得下不出滚动条；
+        #     再高会顶出 1366×768 笔记本的可用高度（扣任务栏约 728）。
+        #   · 屏幕本身不够大时（小屏/高分屏缩放）自动降下限，绝不让窗口顶出屏幕。
+        _mw, _mh = 1280, 720
+        try:
+            from PySide6.QtWidgets import QApplication
+            _scr = QApplication.primaryScreen().availableGeometry()
+            if _scr.width() - 40 < _mw:
+                _mw = max(1024, _scr.width() - 40)
+            if _scr.height() - 80 < _mh:
+                _mh = max(640, _scr.height() - 80)
+        except Exception:
+            pass
+        self.setMinimumSize(_mw, _mh)
         self.cfg = load_config()
         # 旧配置里的明文密钥 → 启动时就加密落盘（2026-11-06，一次性迁移）
         if self.cfg.pop("_migrate_key", False):
@@ -129,13 +149,14 @@ class MainWindow(QMainWindow):
         lv.addWidget(logo)
         logo_box.setStyleSheet("background: transparent;")
         sv.addWidget(logo_box)
+        sv.addSpacing(6)
 
         self.nav = QListWidget()
         self.nav.setViewMode(QListWidget.IconMode)
         self.nav.setFlow(QListWidget.TopToBottom)
         self.nav.setWrapping(False)
         self.nav.setUniformItemSizes(True)
-        self.nav.setSpacing(2)
+        self.nav.setSpacing(4)
         # 侧边栏导航绝不能拖（2026-11-08 用户报障：按钮能被拖走/拖乱）——
         # QListWidget 在 IconMode 下默认就是 DragDrop + movement=Free，得显式关掉，
         # 否则按一下拖一下，导航项就被拽出原位
@@ -146,7 +167,10 @@ class MainWindow(QMainWindow):
         self.nav.setMovement(QListWidget.Static)
         for icon, text in NAV_ITEMS:
             item = QListWidgetItem(f"{icon}\n{text}")
-            item.setSizeHint(QSize(80, 56))
+            # 2026-11-08：56 → 64，图标与文字留出呼吸感；宽度跟着侧栏走
+            # 第 2 版：段间距已由 QSS margin 5px + spacing 4 撑开，项高回落到 62，
+            # 9 项总高不变但每块更紧凑、间隙更清楚
+            item.setSizeHint(QSize(76, 62))
             item.setTextAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
             # 只剩「可选中」：去掉 ItemIsDragEnabled，双保险
             item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
@@ -300,6 +324,13 @@ class MainWindow(QMainWindow):
             else:
                 page.setAttribute(Qt.WA_StyledBackground, False)
                 page.setStyleSheet("")
+        # 表头/单元格对齐统一（QSS 管不到 QHeaderView 的 text-align，只能代码设）
+        try:
+            from app.ui.theme import polish_tables
+            polish_tables(self)
+        except Exception:
+            from app.log import log_exc
+            log_exc("polish_tables failed")
 
     def _init_theme_watch(self):
         """「跟随系统」：Windows 深浅色切换后自动重绘（15s 轮询，开销可忽略）"""

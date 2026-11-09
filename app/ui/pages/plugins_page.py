@@ -218,7 +218,7 @@ class PluginsPage(QWidget):
     # ---------------------------------------------------------- 构建
     def _build(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 12, 16, 12)
+        root.setContentsMargins(22, 18, 22, 18)
         root.setSpacing(8)
 
         head = QHBoxLayout()
@@ -275,11 +275,10 @@ class PluginsPage(QWidget):
         hh.setSectionResizeMode(4, QHeaderView.ResizeToContents)
         hh.setSectionResizeMode(5, QHeaderView.Fixed)         # 状态列：文字+⚠ 图标
         hh.setSectionResizeMode(6, QHeaderView.Fixed)
-        # 列宽预算（2026-10-28 用户要求「插件名尽量显示全，链接可截断」）：
-        # 地址 300→160（截断靠 tooltip 看全文）、状态 110→96、操作 232→210
-        # （4 按钮实需 184+item padding 12=196，210 留 14px 余量），
-        # 省出 ~76px 全给 Stretch 的插件名列
-        self.tb.setColumnWidth(1, 160)
+        # 列宽预算（2026-11-08 设计系统 v2 调整）：
+        # 地址列 160→320 —— 160 下只能显示 "https://gh-proxy.com/…"，宽屏上白白
+        # 空着 500px 给插件名列却没内容填；现在两边均衡：插件名 ~380、地址 320
+        self.tb.setColumnWidth(1, 320)
         self.tb.setColumnWidth(5, 96)
         self.tb.setColumnWidth(6, 210)
         self.tb.horizontalHeaderItem(3).setToolTip(
@@ -750,11 +749,24 @@ class PluginsPage(QWidget):
                             f"{msg}\n\n可在「系统设置」里配置代理后点「刷新清单」重试。")
 
     def _ensure_stats(self, force=False):
-        """拉官方 Registry 热度（后台，约 90 秒首次 / 之后走 12h 缓存）"""
+        """拉官方 Registry 热度（后台，约 90 秒首次 / 之后走 12h 缓存）
+
+        2026-11-10 stale-while-revalidate：12h 缓存过期重拉期间，先把旧缓存数据
+        顶上显示（下载量列不再全显 —），后台拉完 _on_stats 再静默替换。
+        """
         if not force and self._stats:
             store.attach_stats(self._catalog, self._stats)
             self._do_search()
             return
+        # ★ 旧缓存（哪怕已过期）先顶上，别让用户对着空列等 65 页重拉
+        if not self._stats:
+            stale = store.load_registry_stats(offline_only=True, log=self._log)
+            if stale:
+                self._stats = stale
+                store.attach_stats(self._catalog, stale)
+                self._do_search()
+                self.lb_market_stat.setText(
+                    f"共 {len(self._catalog)} 个插件　显示缓存热度，正在后台刷新…")
         if self._stats_worker and self._stats_worker.isRunning():
             return
         w = StatsWorker(force=force)
@@ -765,7 +777,9 @@ class PluginsPage(QWidget):
         w.start()
 
     def _on_stats_progress(self, done, total):
-        self.lb_market_stat.setText(f"正在获取热度数据…（{done}/{total} 页）")
+        # 表里已有缓存热度时说"更新"（数据在刷新），空表才是"获取"
+        verb = "更新" if self._stats else "获取"
+        self.lb_market_stat.setText(f"正在{verb}热度数据…（{done}/{total} 页）")
 
     def _on_stats(self, stats):
         self._stats = stats or {}
@@ -895,11 +909,18 @@ class PluginsPage(QWidget):
 
     def _on_installed(self, ok, msg, name):
         self.refresh_list()
+        self._refresh_market_rows()   # 市场页按钮同步为「已安装 ✓」
         if ok:
             QMessageBox.information(self, "安装完成",
                                     f"「{name}」已安装。\n重启 ComfyUI 后生效。")
         else:
             QMessageBox.warning(self, "安装失败", msg[:400])
+
+    def _refresh_market_rows(self):
+        """市场页当前结果重渲染（安装/卸载后操作列状态同步）"""
+        rows = getattr(self, "_last_market_rows", None)
+        if rows:
+            self._render_market(rows)
 
     # ---------------------------------------------------------- 原有操作
     def _nodes_dir(self):
@@ -1079,21 +1100,23 @@ class PluginsPage(QWidget):
             self._trash_dir(p["dir"])
             self.lb_tip.setText(f"「{p['name']}」已移入回收站（重启 ComfyUI 生效）")
             self.refresh_list()
+            self._refresh_market_rows()   # 市场页按钮同步变回「安装」
         except Exception as e:
             QMessageBox.warning(self, "卸载失败", str(e)[:300])
 
     @staticmethod
     def _trash_dir(path):
         """用 PowerShell SendTo recycling bin 移入回收站（可恢复，不永久删）"""
-        import subprocess
+        # 必须走 winsub.run 隐藏窗口：裸 subprocess.run 会弹 CMD 黑窗
+        from app.winsub import run as run_hidden
         ps = (
             "Add-Type -AssemblyName Microsoft.VisualBasic; "
             "[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory("
             f"'{path}', 'OnlyErrorDialogs', 'SendToRecycleBin')"
         )
-        r = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
-                           capture_output=True, timeout=60, text=True,
-                           encoding="utf-8", errors="replace")
+        r = run_hidden(["powershell", "-NoProfile", "-Command", ps],
+                       capture_output=True, timeout=60, text=True,
+                       encoding="utf-8", errors="replace")
         if r.returncode != 0:
             raise RuntimeError((r.stderr or "回收站操作失败").strip()[:300])
 
@@ -1114,8 +1137,8 @@ class PluginsPage(QWidget):
             return
         w = InstallWorker(url, dest)
         w.sig_log.connect(self._log)
-        w.sig_done.connect(lambda ok2, msg: (
-            self._log(f"安装{'成功' if ok2 else '失败'}: {msg}"), self.refresh_list()))
+        # 与市场安装统一：完成弹窗 + 刷已安装 + 刷市场（此前只写日志无提示）
+        w.sig_done.connect(lambda ok2, msg: self._on_installed(ok2, msg, name))
         swap_worker(self, "_worker", w)
         w.start()
 

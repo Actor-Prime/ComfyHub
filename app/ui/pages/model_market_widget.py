@@ -508,8 +508,12 @@ class ModelMarketWidget(QWidget):
     # -------------------------------------------------- UI
     def _build(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(0, 8, 0, 0)
-        root.setSpacing(8)
+        # 四周 22px：PaneCard 只有边框没有 padding，12px 时状态条的左边框和
+        # PaneCard 的左边框并排成"两条紧挨着的竖线"，用户指着这两条边报障。
+        # 22 与页面级边距同值，两条线拉开成明显的两层结构。
+        root.setContentsMargins(22, 20, 22, 20)
+        # 20：状态条与下方内容区之间
+        root.setSpacing(20)
 
         # 状态条：圆点 + 文案 + 全局操作
         st = QFrame()
@@ -537,6 +541,9 @@ class ModelMarketWidget(QWidget):
         self.stack = QStackedWidget()
         self.stack.addWidget(self.empty_w)   # 0
         self.stack.addWidget(self.scroll)    # 1
+        # 内容区不再单独套框：外层已经有 #PaneCard（模型库页的内容面板），
+        # 里面再套一层就成了「框套框套框」。这里靠 PaneCard 的内边距 + 状态条与
+        # 内容之间的 spacing 留白。（2026-11-08）
         root.addWidget(self.stack, 1)
 
     def _build_empty(self):

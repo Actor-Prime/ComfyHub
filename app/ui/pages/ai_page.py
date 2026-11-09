@@ -204,9 +204,17 @@ class AiPage(QWidget):
 
     # -------------------------------------------------- UI
     def _build(self):
-        root = QVBoxLayout(self)
-        root.setContentsMargins(18, 14, 18, 14)
-        root.setSpacing(10)
+        # 聊天区限宽 1100 居中（2026-11-08 第 3 版）：2560 全屏下输入框和气泡原来被
+        # 拉满 2100px，一行字横跨整个屏幕根本没法读。1100 对应约 60~70 字符的行宽，
+        # 是阅读舒适的经典 measure 区间。
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        body = QWidget()
+        body.setMaximumWidth(1520)
+        root = QVBoxLayout(body)
+        root.setContentsMargins(22, 18, 22, 18)
+        root.setSpacing(12)
 
         # ---- 顶部状态行（2026-11-07：套一层圆角描边容器，别让文字裸飘在背景图上）----
         head_host = QWidget()
@@ -225,6 +233,7 @@ class AiPage(QWidget):
         # ---- 会话切换（2026-11-06：多对话 + 重启不丢）----
         self.cb_chat = QComboBox()
         self.cb_chat.setMinimumWidth(190)
+        self.cb_chat.setMaximumWidth(280)   # 会话名可以很长，限宽+省略号，别把按钮挤到角落
         self.cb_chat.setToolTip("选择历史对话；切换后当前对话会自动保存")
         self.cb_chat.currentIndexChanged.connect(self._on_chat_changed)
         head.addWidget(self.cb_chat)
@@ -275,25 +284,34 @@ class AiPage(QWidget):
         self.att_host.setVisible(False)
         root.addWidget(self.att_host)
 
-        # ---- 输入区 ----
-        row = QHBoxLayout()
+        # ---- 输入区（2026-11-08：套一层输入卡，按钮与输入框成为一个整体）----
+        composer = QFrame()
+        composer.setObjectName("ComposerCard")
+        composer.setAttribute(Qt.WA_StyledBackground, True)
+        row = QHBoxLayout(composer)
+        row.setContentsMargins(10, 10, 10, 10)
         row.setSpacing(8)
         self.ed = QTextEdit()
-        self.ed.setFixedHeight(58)
+        self.ed.setFixedHeight(64)
         self.ed.setPlaceholderText("问点什么…（回车发送，Shift+回车换行；可直接粘贴图片或工作流 JSON）")
         self.ed.installEventFilter(self)
         row.addWidget(self.ed, 1)
         self.b_stop = QPushButton("停止")
-        self.b_stop.setFixedSize(60, 30)
+        self.b_stop.setFixedSize(64, 34)
         self.b_stop.setEnabled(False)
         self.b_stop.clicked.connect(self._stop)
         row.addWidget(self.b_stop, 0, Qt.AlignBottom)
         self.b_send = QPushButton("发送")
-        self.b_send.setFixedSize(74, 30)
+        self.b_send.setFixedSize(78, 34)
         self.b_send.setProperty("accent", True)
         self.b_send.clicked.connect(self._send)
         row.addWidget(self.b_send, 0, Qt.AlignBottom)
-        root.addLayout(row)
+        root.addWidget(composer)
+        self._composer = composer
+
+        outer.addStretch(1)
+        outer.addWidget(body, 50)
+        outer.addStretch(1)
 
         self._greet()
         self.refresh_backdrop()
@@ -539,11 +557,17 @@ class AiPage(QWidget):
         """
         if getattr(self, "_stream", None):
             return                              # 流式中别动，等结束
+        rows = []
         for i in range(self.flow.count()):
             it = self.flow.itemAt(i)
             w = it.widget() if it is not None else None
-            if w is None:
-                continue
+            if w is not None:
+                rows.append(w)
+        # 布局里没挂上的遗留控件也一并纳入（历史上出现过孤儿卡不跟随重排）
+        for ch in self.flow_host.children():
+            if isinstance(ch, QWidget) and ch not in rows:
+                rows.append(ch)
+        for w in rows:
             for lb in w.findChildren(QLabel):
                 kind = lb.property("chatKind")
                 if kind == "user":
@@ -909,7 +933,27 @@ class AiPage(QWidget):
             it = self.flow.takeAt(0)
             w = it.widget()
             if w is not None:
-                w.deleteLater()
+                w.setParent(None)      # 立刻脱离：只 deleteLater 的话在下一轮事件循环前
+                w.deleteLater()        # 还挂在页面上，会露出一张 640×480 的孤儿卡
+        self._sweep_orphans()
+
+    def _sweep_orphans(self):
+        """清掉没挂在 flow 布局里的遗留子控件（2026-11-08 修显示问题）
+
+        现象：切到历史会话后，页面上浮着一张 ~640×480 的空白卡片（问候卡没被真正移除）。
+        根因：takeAt() 只把控件从布局里摘掉，控件本身仍是 flow_host 的子控件，
+        在 deleteLater 生效前一直以初始尺寸显示。
+        """
+        keep = set()
+        for i in range(self.flow.count()):
+            w = self.flow.itemAt(i).widget()
+            if w is not None:
+                keep.add(w)
+        for ch in list(self.flow_host.children()):
+            if isinstance(ch, QWidget) and ch not in keep:
+                ch.hide()
+                ch.setParent(None)
+                ch.deleteLater()
 
     def _on_event(self, ev: dict):
         kind = ev.get("kind")
@@ -1145,6 +1189,12 @@ class AiPage(QWidget):
     def showEvent(self, e):
         super().showEvent(e)
         self.refresh_inst()
+        # 2026-11-08 修显示问题：历史消息/问候卡是在页面还没拿到真实宽度时渲染的，
+        # 正文被 setFixedWidth 钉在 ~300px，显示成一坨窄卡片（截图可见）。
+        # 首次显示后强制重排一次，按真实聊天区宽度重算。
+        if not getattr(self, "_relayout_done", False):
+            self._relayout_done = True
+            QTimer.singleShot(0, self._relayout_messages)
         if getattr(self, "_status_timer", None) is None:
             self._status_timer = QTimer(self)
             self._status_timer.setInterval(5000)

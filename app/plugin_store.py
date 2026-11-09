@@ -226,11 +226,14 @@ def _norm_repo(u: str) -> str:
     return u
 
 
-def load_registry_stats(force=False, progress=None, log=print) -> dict:
+def load_registry_stats(force=False, progress=None, log=print,
+                        offline_only=False) -> dict:
     """拉 ComfyUI 官方 Registry 的全部节点，建 {owner/repo: {downloads, stars, rating}} 索引
 
     官方 API 不支持排序，只能分页全量拉（约 62 页 / 50~60 秒），结果缓存 12 小时。
     progress: 可选回调 (done_pages, total_pages)
+    offline_only: 只读缓存不发网络（stale-while-revalidate 用：缓存过期时先把旧数据
+                  顶上显示，后台再刷新——2026-11-10 下载量列空窗事故）
     """
     cp = stats_cache_path()
     if not force and os.path.isfile(cp):
@@ -243,6 +246,13 @@ def load_registry_stats(force=False, progress=None, log=print) -> dict:
                     return stats
         except Exception:
             pass
+    if offline_only:
+        # 不管新旧，有缓存就用（网络一个字节都不发）
+        try:
+            with open(cp, "r", encoding="utf-8") as f:
+                return (json.load(f).get("stats") or {})
+        except Exception:
+            return {}
 
     def _get(url, timeout=25):
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 ComfyHub"})
@@ -254,11 +264,19 @@ def load_registry_stats(force=False, progress=None, log=print) -> dict:
         first = _get(f"{REGISTRY_API}?limit=100&page=1")
         total_pages = int(first.get("totalPages") or 1)
         pages = [first]
+        _fail_streak = 0
         log(f"[市场] 官方 Registry 共 {first.get('total')} 个节点 / {total_pages} 页")
         for p in range(2, total_pages + 1):
             try:
                 pages.append(_get(f"{REGISTRY_API}?limit=100&page={p}"))
+                _fail_streak = 0
             except Exception:
+                # 连续 8 页失败视为网络中断，提前收工（否则最坏 65 页 × 25s 干等）
+                _fail_streak = _fail_streak + 1
+                if _fail_streak >= 8:
+                    log(f"[市场] 热度数据连续 {_fail_streak} 页拉取失败，提前结束"
+                        f"（已取 {len(pages)} / {total_pages} 页）")
+                    break
                 continue
             if progress:
                 progress(p, total_pages)

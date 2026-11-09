@@ -11,11 +11,14 @@
      首次安装仍可能被 SmartScreen 拦一次，属预期（已在安装说明里写过）。
 
 便携版自替换：写一个 updater.cmd，等主进程 PID 退出后 robocopy 覆盖（**保留 data 目录**），
-再启动新版本并自删。主程序负责分离启动它并立刻退出，避免自己文件被占用。
+再启动新版本。主程序负责分离启动它并立刻退出，避免自己文件被占用。
+等待脚本全程 CREATE_NO_WINDOW 隐藏（2026-11-09：/min 会弹窗、批处理自删会报
+"The batch file cannot be found."，都已弃用；脚本残留由 clean_stale 回收）。
 """
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import ssl
 import sys
@@ -42,6 +45,9 @@ DEFAULT_THUMBPRINT = "7B50FEE7EF98AB41EA01204E9CDC92B63EB16E76"
 
 SETUP_PREFIX = "comfyhub_setup_"
 PORTABLE_PREFIX = "comfyhub_portable_"
+
+# GUI 进程 spawn 控制台子系统命令必须带它，否则每个 cmd/powershell 都弹黑窗
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 # ---------------------------------------------------------------- 版本比较
@@ -88,6 +94,34 @@ def updates_dir() -> str:
     d = os.path.join(data_root(), "updates")
     os.makedirs(d, exist_ok=True)
     return d
+
+
+def clean_stale(keep: str = "") -> None:
+    """清掉旧的更新工作目录与旧版本安装包，防堆积（2026-11-09 见三代安装包堆积）。
+
+    · comfyhub_inst_* / comfyhub_upd_* 工作目录：脚本已不自删，靠这里回收；
+    · comfyhub_setup_*.exe / comfyhub_portable_*.zip：只保留 keep 指定的那个
+      （通常是本次要装的包），其余删除。
+    任何单项删除失败都不阻断主流程。"""
+    d = updates_dir()
+    keep_abs = os.path.abspath(keep) if keep else ""
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return
+    for name in names:
+        p = os.path.join(d, name)
+        try:
+            if name.startswith(("comfyhub_inst_", "comfyhub_upd_")) and os.path.isdir(p):
+                shutil.rmtree(p, ignore_errors=True)
+            elif (os.path.isfile(p)
+                  and name.lower().startswith((SETUP_PREFIX, PORTABLE_PREFIX))
+                  and (name.lower().endswith(".exe") or name.lower().endswith(".zip"))):
+                if keep_abs and os.path.abspath(p) == keep_abs:
+                    continue
+                os.remove(p)
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------- 远端查询
@@ -258,7 +292,8 @@ def verify_signature(path: str, expect: str = "") -> dict:
         ps = ("(Get-AuthenticodeSignature -FilePath '%s').SignerCertificate.Thumbprint"
               % path.replace("'", "''"))
         out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-                             capture_output=True, text=True, timeout=30)
+                             capture_output=True, text=True, timeout=30,
+                             creationflags=NO_WINDOW)
         got = (out.stdout or "").strip().replace(" ", "").upper()
     except Exception as e:
         return {"ok": True, "warned": True, "detail": f"无法校验签名：{e}"}
@@ -290,6 +325,13 @@ def apply_installer(setup_path: str, log=print) -> dict:
     为什么不直接启动安装器（2026-11-04 实测事故）：本进程还在跑 → ComfyHub.exe 被占用
     → 安装器覆盖失败 → 装成"新 _internal + 旧 exe"的半破状态，版本号还是旧的。
     等自己退出后再装，文件必然全部空闲。
+
+    2026-11-09 修（弹黑窗事故）：
+    · 启动方式从 `cmd /c start "" /min` 改为 CREATE_NO_WINDOW 直跑——/min 只是最小化，
+      窗口照样弹；GUI 进程 spawn cmd 必须带 CREATE_NO_WINDOW 才真正隐藏。
+    · 脚本不再 `del "%~f0"` 自删——自删后 cmd 继续读文件会报
+      "The batch file cannot be found." 并转入交互态残留提示符。
+    · 等待用 ping 而不是 timeout——timeout 在无控制台输入下报错不等待，会变忙循环。
     """
     if not os.path.isfile(setup_path):
         return {"ok": False, "error": f"安装包不存在：{setup_path}"}
@@ -297,6 +339,7 @@ def apply_installer(setup_path: str, log=print) -> dict:
     if not sig.get("ok"):
         return {"ok": False, "error": sig.get("error") or "签名校验失败"}
     _stop_instances(log)
+    clean_stale(keep=setup_path)          # 顺手回收旧工作目录与旧安装包
     work = tempfile.mkdtemp(prefix="comfyhub_inst_", dir=updates_dir())
     cmd_path = os.path.join(work, "run_installer.cmd")
     log_path = os.path.join(updates_dir(), "update.log")
@@ -309,18 +352,20 @@ echo [%date% %time%] 等待主进程退出 >> "%LOG%"
 :waitloop
 tasklist /FI "PID eq %PID%" 2>nul | findstr /C:"%PID%" >nul
 if not errorlevel 1 (
-    timeout /t 1 /nobreak >nul
+    ping -n 2 127.0.0.1 >nul
     goto waitloop
 )
 echo [%date% %time%] 启动静默安装 >> "%LOG%"
 start "" "%SETUP%" /S
-timeout /t 3 /nobreak >nul
-del /f /q "%~f0" >nul 2>&1
+echo [%date% %time%] 启动返回 errorlevel=%errorlevel% >> "%LOG%"
+ping -n 3 127.0.0.1 >nul
+echo [%date% %time%] 更新脚本结束（安装器独立运行） >> "%LOG%"
 """
     try:
         with open(cmd_path, "w", encoding="utf-8", newline="\r\n") as f:
             f.write(script)
-        subprocess.Popen(["cmd", "/c", "start", "", "/min", cmd_path], shell=False)
+        subprocess.Popen(["cmd", "/c", cmd_path], shell=False,
+                         creationflags=NO_WINDOW)
     except Exception as e:
         return {"ok": False, "error": f"启动更新脚本失败：{e}"}
     return {"ok": True, "launched": True, "script": cmd_path,
@@ -328,11 +373,13 @@ del /f /q "%~f0" >nul 2>&1
 
 
 def make_portable_updater(zip_path: str, log=print) -> dict:
-    """生成 updater.cmd：等主进程退出 → 解压覆盖（保留 data）→ 启动 → 自删"""
+    """生成 updater.cmd：等主进程退出 → 解压覆盖（保留 data）→ 启动。
+    2026-11-09 同 apply_installer：CREATE_NO_WINDOW 隐藏、ping 等待、不自删。"""
     if not os.path.isfile(zip_path):
         return {"ok": False, "error": f"便携包不存在：{zip_path}"}
     target = os.path.dirname(exe_path())
     exe_name = os.path.basename(exe_path())
+    clean_stale(keep=zip_path)
     work = tempfile.mkdtemp(prefix="comfyhub_upd_", dir=updates_dir())
     cmd_path = os.path.join(work, "updater.cmd")
     log_path = os.path.join(updates_dir(), "update.log")
@@ -348,7 +395,7 @@ echo [%date% %time%] 等待主进程退出 >> "%LOG%"
 :waitloop
 tasklist /FI "PID eq %PID%" 2>nul | findstr /C:"%PID%" >nul
 if not errorlevel 1 (
-    timeout /t 1 /nobreak >nul
+    ping -n 2 127.0.0.1 >nul
     goto waitloop
 )
 echo [%date% %time%] 解压新版本 >> "%LOG%"
@@ -361,13 +408,13 @@ if exist "%TARGET%\\{exe_name}" (
 ) else (
     echo [%date% %time%] 启动失败：找不到 {exe_name} >> "%LOG%"
 )
-timeout /t 2 /nobreak >nul
-del /f /q "%~f0" >nul 2>&1
+echo [%date% %time%] 更新脚本结束 >> "%LOG%"
 """
     try:
         with open(cmd_path, "w", encoding="utf-8", newline="\r\n") as f:
             f.write(script)
-        subprocess.Popen(["cmd", "/c", "start", "", "/min", cmd_path], shell=False)
+        subprocess.Popen(["cmd", "/c", cmd_path], shell=False,
+                         creationflags=NO_WINDOW)
     except Exception as e:
         return {"ok": False, "error": f"启动更新脚本失败：{e}"}
     return {"ok": True, "script": cmd_path, "log": log_path}

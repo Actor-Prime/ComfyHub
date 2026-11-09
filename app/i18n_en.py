@@ -638,6 +638,8 @@ EN_DICT = {
     "内存": "Memory",
     "处理器": "CPU",
     "F 盘空间": "Disk F:",
+    "盘空间": "disk",          # 2026-11-10 磁盘卡动态盘符：f"{drive} {T('盘空间')}"
+    "显存": "VRAM",            # 2026-11-10 显卡卡副标题拆词：f"{T('显存')} x / y GB · ..."
     "占用": "Used",
     "核": "c",
     "线程": "t",
@@ -852,4 +854,51 @@ EN_DICT = {
     "已取消，未保存任何修改": "Cancelled — nothing was saved",
     "确认无误再保存；点「取消」不会写入任何内容。":
         "Review the changes before saving; clicking Cancel writes nothing.",
+    # ---- 环境检测「一键修复」（2026-11-08）----
+    "修复": "Fix",
+    "修复中…": "Fixing…",
+    "后台运行": "Run in background",
+    "全局 · 所有实例共用": "Global · shared by all instances",
+    "已继承全局共享库：": "Inheriting shared library: ",
+    "（原 models 目录仍会扫描，这里只挂本实例专用的）":
+        " (the instance models folder is still scanned; this mount is instance-only)",
+    "本实例的模型根目录（留空跟随 <根目录>/models）；下面的开关只挂本实例专用库，与「共享外挂库」叠加生效":
+        "This instance's model root (leave empty to follow <root>/models). "
+        "The switch below mounts an instance-only library and stacks with the shared library.",
+    "关掉这个窗口不影响安装，装完会刷新检测结果":
+        "Closing this window won't stop the install; results refresh when it finishes.",
+    "准备中…": "Preparing…",
+    # ---- 工作流「依赖清单 / 日志」双栏标题（2026-11-08）----
+    "依赖清单": "Dependencies",
+    "扫描 / 安装日志": "Scan / install log",
+    # ---- 工作台「快捷操作」四宫格（2026-11-08 新增）----
+    "快捷操作": "Quick actions",
+    "启动当前实例": "Start this instance",
+    "一键拉起 ComfyUI": "Launch ComfyUI in one click",
+    "打开输出目录": "Open output folder",
+    "直达出图结果": "Jump to generated images",
+    "查看运行日志": "View run log",
+    "排错从这里开始": "Start troubleshooting here",
+    "添加 ComfyUI": "Add ComfyUI",
+    "已有目录或全新安装": "Use an existing folder or install fresh",
+    "启动前检查未通过，已阻止启动": "Pre-launch check failed, start blocked",
+    "去修复（推荐）": "Fix it (recommended)",
+    "仍以 CPU 模式启动": "Start in CPU mode anyway",
+    "阶段": "Stage",
+    "准备": "Preparing",
+    "清理旧包": "Removing old packages",
+    "下载组件": "Downloading",
+    "安装组件": "Installing",
+    "装后验证": "Verifying",
+    "该实例的 Python 装的是 CPU 版 torch，无法使用显卡加速，ComfyUI 启动会直接崩溃（Torch not compiled with CUDA enabled）。\n点「去修复」到环境检测页一键重装 CUDA 版 torch（约 6GB 磁盘空间），或临时以 CPU 模式启动。":
+        "This instance's Python has a CPU-only torch build, so GPU acceleration\n"
+        "is unavailable and ComfyUI will crash at startup (Torch not compiled with\n"
+        "CUDA enabled).\n"
+        "Click \"Fix it\" to reinstall CUDA torch (~6GB disk space), or start in\n"
+        "CPU mode for now.",
+    "torch 是 CPU 版，但生成引擎设置为 CUDA：ComfyUI 启动会直接崩溃。\n点「去修复」到环境检测页重装对应版本的 torch，或在实例设置里把生成引擎改为 CPU。":
+        "torch is a CPU-only build but the engine is set to CUDA: ComfyUI will\n"
+        "crash at startup.\n"
+        "Click \"Fix it\" to reinstall the proper torch build, or switch the\n"
+        "generation engine to CPU in instance settings.",
 }
