@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """环境管理页：环境检测清单（对标 environment.js）+ 快照备份（envSnapshot.js）"""
 import os
+import re
 import shutil
 
 from PySide6.QtCore import Qt, QThread, Signal
@@ -9,9 +10,11 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTableWidget,
     QTableWidgetItem, QHeaderView, QMessageBox, QPlainTextEdit,
     QTabWidget, QFrame, QLineEdit, QFileDialog, QDialog, QCheckBox,
+    QProgressBar, QVBoxLayout,
     QScrollArea, QComboBox, QTextBrowser,
 )
 
+from app.ui.pages.comfyui_page import _FlowBox
 from app.i18n import T
 from app.tools import EnvBackup, Rescue
 from app.bootstrap import find_git
@@ -94,6 +97,208 @@ class DetectWorker(QThread):
         self.sig_done.emit()
 
 
+
+class FixDialog(QDialog):
+    """修复进度窗口：阶段 + 真实百分比进度条 + 实时日志
+
+    2026-11-08 用户报「这个修复中，能不能看进度」—— 加实时日志；
+    2026-11-09 再报「修复那里出个修复进度」—— 从"只会转的不确定条"升级为：
+    阶段（准备/清理旧包/下载组件/安装组件/装后验证）+ 真实百分比
+    （解析下载器日志「↓ 文件: 已下/总量 MB (p%)」）+ 失败红/成功绿。
+    阶段行按 i18n 铁律拆控件：静态前缀 + 动态序号 + 静态阶段名。
+    """
+    STAGES = ("准备", "清理旧包", "下载组件", "安装组件", "装后验证")
+
+    def __init__(self, title, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setWindowModality(Qt.NonModal)
+        self.resize(760, 430)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(16, 14, 16, 12)
+        v.setSpacing(10)
+        # 阶段行：静态「阶段」+ 动态「1/5」+ 阶段名 + 右侧百分比
+        row_stage = QHBoxLayout()
+        row_stage.setSpacing(8)
+        self.lb_stage_prefix = QLabel("阶段")
+        self.lb_stage_prefix.setObjectName("RowDesc")
+        self.lb_stage_num = QLabel("1/5")
+        self.lb_stage_num.setObjectName("RowDesc")
+        self.lb_stage_name = QLabel(self.STAGES[0])
+        self.lb_stage_name.setObjectName("RowTitle")
+        self.lb_pct = QLabel("0%")
+        self.lb_pct.setObjectName("RowTitle")
+        row_stage.addWidget(self.lb_stage_prefix)
+        row_stage.addWidget(self.lb_stage_num)
+        row_stage.addWidget(self.lb_stage_name)
+        row_stage.addStretch(1)
+        row_stage.addWidget(self.lb_pct)
+        v.addLayout(row_stage)
+        self.lb_head = QLabel("准备中…")
+        self.lb_head.setObjectName("RowDesc")
+        self.lb_head.setWordWrap(True)
+        v.addWidget(self.lb_head)
+        self.log = QPlainTextEdit()
+        self.log.setObjectName("LogConsole")
+        self.log.setReadOnly(True)
+        self.log.setLineWrapMode(QPlainTextEdit.NoWrap)
+        v.addWidget(self.log, 1)
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        self.pb = QProgressBar()
+        self.pb.setObjectName("FixProgress")
+        self.pb.setRange(0, 100)        # 真实百分比（下载日志可解析出进度）
+        self.pb.setTextVisible(False)
+        self.pb.setFixedHeight(4)
+        row.addWidget(self.pb, 1)
+        self.b_close = QPushButton("后台运行")
+        self.b_close.setToolTip("关掉这个窗口不影响安装，装完会刷新检测结果")
+        self.b_close.clicked.connect(self.close)
+        row.addWidget(self.b_close)
+        v.addLayout(row)
+
+    def set_stage(self, n):
+        n = max(1, min(5, int(n)))
+        self.lb_stage_num.setText(f"{n}/5")
+        self.lb_stage_name.setText(self.STAGES[n - 1])
+
+    def set_progress(self, pct, detail=""):
+        pct = max(0, min(100, int(pct)))
+        self.pb.setValue(pct)
+        self.lb_pct.setText(f"{pct}%")
+        if detail:
+            self.lb_head.setText(str(detail)[:150])
+
+    def add(self, text):
+        text = (text or "").rstrip()
+        if not text:
+            return
+        self.log.appendPlainText(text)
+        sb = self.log.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    def finish(self, ok, msg):
+        self.pb.setProperty("status", "ok" if ok else "fail")
+        self.pb.style().unpolish(self.pb)
+        self.pb.style().polish(self.pb)
+        if ok:
+            self.pb.setValue(100)
+            self.lb_pct.setText("100%")
+        self.lb_head.setText(("✅ 完成：" if ok else "❌ 失败：") + str(msg)[:150])
+        self.b_close.setText("关闭")
+        self.add(("完成：" if ok else "失败：") + str(msg))
+
+
+class FixWorker(QThread):
+    """环境修复：装便携 MinGit / 装便携 Python / 重装 CUDA 版 torch
+
+    2026-11-08：环境检测原来只报问题、不给动作 —— 检测出「PyTorch CUDA 仅 CPU」
+    用户只能自己去翻文档。这里把 bootstrap 里现成的安装函数接成"一键修复"。
+    2026-11-09：加阶段/百分比信号 —— 解析安装链日志换算真实进度
+    （下载器输出「↓ 文件: 已下/总量 MB (p%)」，正好映射到下载阶段），
+    解析异常绝不影响安装本体。
+    """
+    sig_log = Signal(str)
+    sig_stage = Signal(int)              # 阶段 1..5（准备/清理旧包/下载组件/安装组件/装后验证）
+    sig_progress = Signal(int, str)      # 总进度百分比, 当前状态描述（动态）
+    sig_done = Signal(int, bool, str)        # 索引, 是否成功, 结果说明
+
+    # 各阶段起始百分比：下载占大头（8→78），安装/验证给固定带
+    _STAGE_BASE = {1: 0, 2: 5, 3: 8, 4: 78, 5: 92}
+    _DL_RE = re.compile(r"↓\s*([^:：]+?)\s*[:：]\s*([\d.]+)\s*/\s*([\d.]+)\s*MB\s*\((\d+)%\)")
+
+    def __init__(self, idx, kind, inst):
+        super().__init__()
+        self.idx, self.kind, self.inst = idx, kind, inst
+        self._stage = 0
+        self._pct = 0
+        self._files = {}          # 文件名 -> [总量MB, 已下MB]
+
+    # ---------- 进度换算 ----------
+    def _log(self, msg):
+        self.sig_log.emit(msg)
+        try:
+            self._track(msg or "")
+        except Exception:
+            pass
+
+    def _emit_pct(self, pct, detail=""):
+        pct = max(self._pct, min(99, int(pct)))   # 单调不回退
+        self._pct = pct
+        self.sig_progress.emit(pct, detail)
+
+    def _set_stage(self, n):
+        if n <= self._stage:
+            return
+        self._stage = n
+        self.sig_stage.emit(n)
+        self._emit_pct(self._STAGE_BASE[n])
+
+    def _track(self, msg):
+        m = msg.strip()
+        if not m:
+            return
+        # 阶段识别（按安装链日志关键词）
+        if "卸载旧 torch" in m:
+            self._set_stage(2)
+        elif ("预下载 wheel" in m or "复用本地 wheel" in m or "下载 " in m
+              or self._DL_RE.search(m)):
+            self._set_stage(3)
+        elif ("回退直连 pip" in m or m.startswith("$ ")
+              or "Installing collected" in m or "Successfully installed" in m):
+            self._set_stage(4)
+        elif "自检" in m or m.startswith("✅ torch") or m.startswith("❌ torch"):
+            self._set_stage(5)
+        # 下载百分比：↓ 文件: 已下/总量 MB (p%)
+        md = self._DL_RE.search(m)
+        if md:
+            fname = md.group(1).strip()
+            self._files[fname] = [float(md.group(3)), float(md.group(2))]
+            self._emit_dl(fname)
+            return
+        if "复用本地 wheel" in m:
+            fname = m.split("：", 1)[-1].split(":", 1)[-1].strip()
+            if fname:
+                self._files.setdefault(fname, [1.0, 1.0])   # 秒复用记满格
+                self._emit_dl(fname)
+
+    def _emit_dl(self, cur=""):
+        total = sum(s for s, _ in self._files.values()) or 1.0
+        done = sum(d for _, d in self._files.values())
+        frac = max(0.0, min(1.0, done / total))
+        band = self._STAGE_BASE[4] - self._STAGE_BASE[3]
+        pct = self._STAGE_BASE[3] + band * frac
+        detail = ""
+        if cur and cur in self._files:
+            s, d = self._files[cur]
+            detail = f"下载 {cur}：{d:.0f}/{s:.0f} MB"
+        self._emit_pct(pct, detail)
+
+    def run(self):
+        try:
+            self._set_stage(1)
+            if self.kind == "git":
+                from app.bootstrap import install_min_git
+                p = install_min_git(log=self._log)
+                self.sig_done.emit(self.idx, bool(p), p or "安装失败")
+            elif self.kind == "python":
+                from app.bootstrap import install_portable_python, tools_root
+                p = install_portable_python(tools_root(), log=self._log)
+                self.sig_done.emit(self.idx, bool(p), p or "安装失败")
+            elif self.kind == "torch":
+                from app.bootstrap import install_torch, detect_gpu, tools_root
+                gpu = detect_gpu()
+                variant = getattr(gpu, "torch_variant", "") or "cu126"
+                ok = install_torch(self.inst.get("python_path", ""), variant,
+                                   log=self._log,
+                                   wheels_dir=os.path.join(tools_root(), "wheels"))
+                self.sig_done.emit(self.idx, bool(ok), f"torch {variant}")
+            else:
+                self.sig_done.emit(self.idx, False, "该项不支持自动修复")
+        except Exception as e:                       # noqa: BLE001
+            self.sig_done.emit(self.idx, False, f"{type(e).__name__}: {e}")
+
+
 class EnvPage(QWidget):
     # 线程安全日志：bk.create/restore 在工作线程里直接调 log，
     # QWidget 不能跨线程碰 → 经信号回主线程（auto connection 自动 queued）
@@ -112,7 +317,7 @@ class EnvPage(QWidget):
 
     def _build(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(18, 14, 18, 14)
+        root.setContentsMargins(22, 18, 22, 18)
 
         self.tabs = QTabWidget()
         root.addWidget(self.tabs, 1)
@@ -124,6 +329,8 @@ class EnvPage(QWidget):
     def _tab_detect(self):
         w = QWidget()
         v = QVBoxLayout(w)
+        v.setContentsMargins(22, 18, 22, 18)
+        v.setSpacing(10)
         bar = QHBoxLayout()
         self.lb_inst = QLabel()
         self.lb_inst.setStyleSheet("color:#9aa4b2;")
@@ -135,17 +342,35 @@ class EnvPage(QWidget):
         bar.addWidget(b_run)
         v.addLayout(bar)
 
+        # 检测项列表：和实例设置/系统设置一致，收进 1120 的居中内容列。
+        # 1520 宽下 7 张卡片铺满整屏、右侧"未检测"贴着屏幕边，读起来很散（2026-11-08）
+        body = QWidget()
+        bv = QVBoxLayout(body)
+        bv.setContentsMargins(0, 0, 0, 0)
+        bv.setSpacing(8)
+
         self.rows = []   # (row_frame, state_label)
+        # 第 3 项是「修复类型」：失败时该行右侧出现「修复」按钮，点了走 bootstrap
+        # 的安装函数（None = 硬件/无需修复，不显示按钮）
         CHECKS = [
-            ("GIT", "检测 Git，插件安装/更新的基础设施"),
-            ("Python", "管理当前实例的 Python 运行环境"),
-            ("PyTorch", "深度学习框架的版本检测"),
-            ("PyTorch CUDA", "检测 PyTorch 是否可用 GPU 加速"),
-            ("显卡", "检测显卡型号与显存"),
-            ("显卡驱动", "检测驱动版本，判断支持的 CUDA 上限"),
-            ("处理器 (CPU)", "处理器型号"),
+            ("GIT", "检测 Git，插件安装/更新的基础设施", "git"),
+            ("Python", "管理当前实例的 Python 运行环境", "python"),
+            ("PyTorch", "深度学习框架的版本检测", None),
+            ("PyTorch CUDA", "检测 PyTorch 是否可用 GPU 加速", "torch"),
+            ("显卡", "检测显卡型号与显存", None),
+            ("显卡驱动", "检测驱动版本，判断支持的 CUDA 上限", None),
+            ("处理器 (CPU)", "处理器型号", None),
         ]
-        for name, desc in CHECKS:
+        self._fix_kinds = [c[2] for c in CHECKS]
+        self.fix_btns = []
+        self._fixing = False      # 修复进行中：期间不重跑检测、不显示修复按钮
+        self._fix_idx = None
+        # 7 张检测卡：宽屏排两列（复用 comfyui_page 的 _FlowBox）。
+        # 单列铺满 2280 时每张卡的"名称+说明"后面直接接"未检测"，中间空 1800px
+        grid_host = _FlowBox()
+        grid_host.TWO_COL_MIN = 1500
+        grid_host._grid.setContentsMargins(0, 0, 0, 0)
+        for name, desc, fix_kind in CHECKS:
             f = QFrame()
             f.setObjectName("CheckRow")
             h = QHBoxLayout(f)
@@ -160,9 +385,30 @@ class EnvPage(QWidget):
             st.setObjectName("CheckState")
             st.setProperty("state", "pend")
             h.addWidget(st)
-            v.addWidget(f)
+            # 修复按钮：默认隐藏，检测失败且该项支持修复时才出现
+            fb = QPushButton("修复")
+            fb.setObjectName("FixBtn")
+            fb.setCursor(Qt.PointingHandCursor)
+            fb.setVisible(False)
+            fb.clicked.connect(
+                lambda _c=False, i=len(self.rows), k=fix_kind: self._start_fix(i, k))
+            h.addWidget(fb)
+            self.fix_btns.append(fb)
+            grid_host.addWidget(f)
             self.rows.append(st)
-        v.addStretch()
+        bv.addWidget(grid_host)   # 不给 stretch：给了会把卡片行拉高成 120px
+        bv.addStretch()
+        # 卡片列表类内容列 1600（第 3 版，同 comfyui_page 的理由）
+        body.setMaximumWidth(2280)
+        host = QWidget()
+        hl = QHBoxLayout(host)
+        hl.setContentsMargins(0, 0, 0, 0)
+        # 中间体给大 stretch（不是 1）：两侧 1:1 时 body 只能分到 1/3 宽度，
+        # 卡在 ~500px 反而更窄。50:1:1 让 body 先吃饱到 maxWidth，余量再对半补两侧。
+        hl.addStretch(1)
+        hl.addWidget(body, 50)
+        hl.addStretch(1)
+        v.addWidget(host, 1)
         return w
 
     def _set_state(self, i, text, ok):
@@ -172,6 +418,63 @@ class EnvPage(QWidget):
         st.style().unpolish(st)
         st.style().polish(st)
         st.setToolTip(text)
+        # 失败 + 该项支持修复 → 显示「修复」按钮（修复中不抢状态）
+        if i < len(self.fix_btns):
+            bt = self.fix_btns[i]
+            bt.setVisible(bool(not ok and self._fix_kinds[i] and not self._fixing))
+            bt.setEnabled(True)
+
+    # ---------- 一键修复 ----------
+    def _start_fix(self, idx, kind):
+        """点「修复」→ 后台跑 bootstrap 的安装函数，进度刷到状态标签上"""
+        inst = self._inst()
+        if not inst:
+            QMessageBox.information(self, "ComfyHub", "请先添加实例")
+            return
+        if kind == "torch" and not inst.get("python_path"):
+            QMessageBox.information(
+                self, "ComfyHub",
+                "该实例还没有配置 Python 路径，请先在「ComfyUI · 实例设置」里指定。")
+            return
+        self._fixing = True
+        self._fix_idx = idx
+        self.fix_btns[idx].setEnabled(False)
+        self.rows[idx].setText("修复中…")
+        # 进度窗口：pip 输出逐行灌进去，用户能看见走到哪一步
+        _names = {0: "GIT", 1: "Python", 3: "PyTorch CUDA"}
+        self._fix_dlg = FixDialog(f"正在修复：{_names.get(idx, '环境')}", self)
+        self._fix_dlg.show()
+        w = FixWorker(idx, kind, inst)
+        w.sig_log.connect(self._fix_dlg.add)
+        w.sig_log.connect(self._on_fix_log)
+        w.sig_stage.connect(self._fix_dlg.set_stage)
+        w.sig_progress.connect(self._fix_dlg.set_progress)
+        w.sig_done.connect(self._on_fix_done)
+        swap_worker(self, "_fix_worker", w)
+        w.start()   # 2026-11-09 修：漏了这行 → 线程永不启动，对话框永停「1/5 准备 0%」
+
+    def _on_fix_log(self, text):
+        # torch 要下几个 GB，把最后一行进度顶到状态标签上，用户能看见动静
+        if self._fix_idx is None:
+            return
+        lines = [l for l in (text or "").splitlines() if l.strip()]
+        if not lines:
+            return
+        self.rows[self._fix_idx].setText(lines[-1][:60])
+
+    def _on_fix_done(self, idx, ok, msg):
+        self._fixing = False
+        self._fix_idx = None
+        dlg = getattr(self, "_fix_dlg", None)
+        if dlg is not None:
+            dlg.finish(ok, msg)
+        if idx < len(self.fix_btns):
+            self.fix_btns[idx].setEnabled(True)
+        if not ok:
+            self.rows[idx].setText(f"修复失败：{msg}"[:60])
+            QMessageBox.warning(self, "修复失败", str(msg)[:500])
+        # 成败都重跑一遍检测，把真实结果刷出来
+        self._run_detect()
 
     def _run_detect(self):
         inst = self._inst()
@@ -202,9 +505,13 @@ class EnvPage(QWidget):
     def _tab_snapshot(self):
         w = QWidget()
         v = QVBoxLayout(w)
+        v.setContentsMargins(22, 18, 22, 18)
+        v.setSpacing(10)
         bar = QHBoxLayout()
+        bar.setSpacing(8)
         self.ed_label = QLineEdit()
         self.ed_label.setPlaceholderText("快照/备份备注（可空）")
+        self.ed_label.setMaximumWidth(320)
         b_backup = QPushButton("创建环境备份")
         b_backup.setProperty("accent", True)
         b_backup.clicked.connect(self._create_backup)
@@ -216,11 +523,14 @@ class EnvPage(QWidget):
         b_rb = QPushButton("回滚选中快照")
         b_rb.setProperty("danger", True)
         b_rb.clicked.connect(self._rollback)
-        bar.addWidget(self.ed_label, 1)
+        bar.addWidget(self.ed_label, 0)
         bar.addWidget(b_backup)
         bar.addWidget(b_snap)
+        # 破坏性操作（还原/回滚）与创建操作拉开距离，避免 4 个彩色按钮连成一排误点
+        bar.addSpacing(14)
         bar.addWidget(b_restore)
         bar.addWidget(b_rb)
+        bar.addStretch(1)
         v.addLayout(bar)
 
         self.tb = QTableWidget(0, 3)

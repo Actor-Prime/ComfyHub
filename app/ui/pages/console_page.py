@@ -53,7 +53,7 @@ class ConsolePage(QWidget):
 
     def _build(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(18, 14, 18, 14)
+        root.setContentsMargins(22, 18, 22, 18)
 
         bar = QHBoxLayout()
         lb = QLabel("全局运行日志（全部实例）")

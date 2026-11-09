@@ -123,7 +123,8 @@ class WorkflowPage(QWidget):
     def _build_smart_tab(self):
         w = QWidget()
         root = QVBoxLayout(w)
-        root.setContentsMargins(12, 10, 12, 10)
+        root.setContentsMargins(22, 18, 22, 18)
+        root.setSpacing(10)
 
         # 步骤 1：选择工作流（实例工作流目录优先）
         hb = QHBoxLayout()
@@ -132,6 +133,8 @@ class WorkflowPage(QWidget):
         hb.addWidget(lb_src)
         self.cb_wf = QComboBox()
         self.cb_wf.setMinimumWidth(320)
+        # 注意：这里不能限宽 —— 限宽后剩余宽度被 Qt 摊给右侧按钮，四个按钮之间
+        # 会被撑出空隙（2026-11-08 实测）。下拉占满、按钮紧跟，才是这一行的正确形态。
         self.cb_wf.setPlaceholderText("—— 从当前实例的工作流目录选择 ——")
         self.cb_wf.currentIndexChanged.connect(self._on_wf_pick)
         hb.addWidget(self.cb_wf, 1)
@@ -160,18 +163,31 @@ class WorkflowPage(QWidget):
 
         # 步骤 2：结果
         split = QHBoxLayout()
-        # 左：插件需求表
+        split.setSpacing(12)
+        # 左：插件需求表（套标题，否则空表 + 空日志两块黑，看不出这是一分为二的）
+        col_l = QVBoxLayout()
+        col_l.setSpacing(6)
+        lb_l = QLabel("依赖清单")
+        lb_l.setObjectName("SectionLabel")
+        col_l.addWidget(lb_l)
         self.tb = QTableWidget(0, 4)
         self.tb.setHorizontalHeaderLabels(["状态", "条目", "来源/仓库", "操作"])
         self.tb.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.tb.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.tb.setEditTriggers(QTableWidget.NoEditTriggers)
-        split.addWidget(self.tb, 2)
+        col_l.addWidget(self.tb, 1)
+        split.addLayout(col_l, 2)
         # 右：日志
+        col_r = QVBoxLayout()
+        col_r.setSpacing(6)
+        lb_r = QLabel("扫描 / 安装日志")
+        lb_r.setObjectName("SectionLabel")
+        col_r.addWidget(lb_r)
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setObjectName("LogConsole")
-        split.addWidget(self.log, 1)
+        col_r.addWidget(self.log, 1)
+        split.addLayout(col_r, 1)
         root.addLayout(split, 1)
 
         # 步骤 3：执行

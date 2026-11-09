@@ -270,6 +270,68 @@ def detect_gpus() -> list:
         return []
 
 
+def torch_build_of(python_exe: str) -> "str | None":
+    """快速判定解释器里 torch 的构建变体：'cuda' / 'cpu' / None（未装或判不出）。
+    只读 Lib/site-packages/torch/version.py 的 cuda 字段，不 import torch
+    （import 要秒级冷启动，启动门卫等不起）。"""
+    try:
+        base = os.path.join(os.path.dirname(os.path.abspath(python_exe)),
+                            "Lib", "site-packages")
+        vp = os.path.join(base, "torch", "version.py")
+        if not os.path.isfile(vp):
+            return None
+        with open(vp, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                s = line.strip().replace(" ", "")
+                # torch 2.15+ 的 version.py 带类型注解：cuda:Optional[str]=None
+                if s.startswith("cuda=") or s.startswith("cuda:"):
+                    val = s.split("=", 1)[-1].strip().strip("\"'")
+                    return "cpu" if val in ("None", "") else "cuda"
+    except Exception:
+        pass
+    return None
+
+
+# 启动前环境预检的拦截文案（静态文案，i18n 词表可精确匹配）
+REASON_CPU_TORCH_GPU = (
+    "该实例的 Python 装的是 CPU 版 torch，无法使用显卡加速，"
+    "ComfyUI 启动会直接崩溃（Torch not compiled with CUDA enabled）。\n"
+    "点「去修复」到环境检测页一键重装 CUDA 版 torch（约 6GB 磁盘空间），"
+    "或临时以 CPU 模式启动。")
+REASON_CPU_TORCH_CPU_ENGINE = (
+    "torch 是 CPU 版，但生成引擎设置为 CUDA：ComfyUI 启动会直接崩溃。\n"
+    "点「去修复」到环境检测页重装对应版本的 torch，"
+    "或在实例设置里把生成引擎改为 CPU。")
+
+
+def env_block_reason(inst: dict) -> "str | None":
+    """启动前环境预检：torch 构建与生成引擎不匹配时返回拦截原因，匹配/判不出返回 None。
+
+    起因（2026-11-09）：共享 Python 装了 CPU 版 torch（安装链 CUDA 失败静默回退），
+    ComfyUI 的 comfy/model_management.py 默认 GPU 分支会直接调
+    torch.cuda.current_device()，CPU 版 torch 抛
+    "AssertionError: Torch not compiled with CUDA enabled"，import 阶段就崩——
+    环境检测页能体检出来但不拦启动，这里补上门卫。"""
+    backend = inst.get("engine_backend")
+    if backend is None:
+        backend = "cpu" if inst.get("device") == "cpu" else "cuda"
+    if backend in ("cpu", "dml"):
+        return None        # --cpu / --directml 模式不走 CUDA 分支，CPU 版 torch 没问题
+    py = inst.get("python_path") or ""
+    if not py or not os.path.isfile(py):
+        return None        # 解释器缺失由 start() 的前置检查负责
+    if torch_build_of(py) != "cpu":
+        return None        # CUDA 构建、或判不出（不误拦）
+    try:
+        from app.bootstrap import detect_gpu
+        gpu = detect_gpu()
+        if gpu is not None and gpu.vendor == "nvidia":
+            return REASON_CPU_TORCH_GPU
+    except Exception:
+        pass
+    return REASON_CPU_TORCH_CPU_ENGINE
+
+
 def build_command(inst: dict, port: int | None = None) -> list:
     """根据实例配置构造启动命令行（含高级设置字段）
 
@@ -475,6 +537,12 @@ class ComfyProcess(QObject):
                 f"[ComfyHub] ❌ 该实例未配置 Python 解释器（当前值: {_py or '空'}），无法启动。\n"
                 "请到「ComfyUI」页 →「实例设置」里指定 Python 路径，"
                 "或到「工具管理」安装共享便携 Python 后重试。")
+            return
+        # ★ 启动前环境预检（2026-11-09）：torch 构建 vs 引擎模式。
+        #   不匹配时 ComfyUI 在 import 阶段就崩，这里拦下给修复引导。
+        _why = env_block_reason(inst)
+        if _why:
+            self.log_line.emit(f"[ComfyHub] ❌ 已阻止启动（环境预检未通过）：{_why}")
             return
         # ★ 启动前：① 恢复上次未完成的插件方案切换 ② 按 last_profile 自动应用方案
         try:

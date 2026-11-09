@@ -473,7 +473,7 @@ class ProfilesPage(QWidget):
 
     def _build(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 12, 16, 12)
+        root.setContentsMargins(22, 18, 22, 18)
         t = QLabel("⚡ 启动模式 · 快照隔离")
         t.setStyleSheet("font-size:17px; font-weight:bold; color:#fff;")
         root.addWidget(t)

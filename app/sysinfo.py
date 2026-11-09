@@ -2,6 +2,7 @@
 """硬件/系统信息（对标管理大师 os.js：CPU / 内存 / 显卡 / 磁盘）"""
 import os
 import shutil
+import time
 
 import psutil
 
@@ -36,6 +37,35 @@ def gpu_info_display() -> str:
         return g.label
     except Exception as e:
         return f"检测失败: {e}"
+
+
+# 显存占用缓存：nvidia-smi 启动开销 ~200ms，禁止每秒 spawn（2026-11-10 工作台显存卡）
+_VRAM_CACHE = {"ts": 0.0, "data": {}}
+
+
+def gpu_vram_usage(max_age: float = 3.0) -> dict:
+    """N 卡显存实时占用。返回 {used_mb, total_mb, percent}，无 N 卡/查询失败返回 {}。
+    结果缓存 max_age 秒：工作台每秒刷新不能带起 nvidia-smi 进程风暴。"""
+    now = time.time()
+    if now - _VRAM_CACHE["ts"] < max_age:
+        return _VRAM_CACHE["data"]
+    data = {}
+    try:
+        r = run(["nvidia-smi", "--query-gpu=memory.used,memory.total",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=5)
+        # 多卡取第一行（主显示卡）；输出形如 "2148, 12288"
+        line = (r.stdout or "").strip().splitlines()[0]
+        parts = [p.strip() for p in line.split(",")]
+        used_mb, total_mb = float(parts[0]), float(parts[1])
+        if total_mb > 0:
+            data = {"used_mb": used_mb, "total_mb": total_mb,
+                    "percent": used_mb / total_mb * 100}
+    except Exception:
+        pass
+    _VRAM_CACHE["ts"] = now
+    _VRAM_CACHE["data"] = data
+    return data
 
 
 def disk_info(drive: str = "F:\\") -> dict:
