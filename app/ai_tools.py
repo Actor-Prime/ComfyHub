@@ -25,7 +25,8 @@ from app.ui2api import build as ui2api_build, fetch_obj_info
 class ToolCtx:
     """工具执行上下文；MCP 模式下 mainwin=None"""
 
-    def __init__(self, cfg: dict, inst: dict, mainwin=None, log=print):
+    def __init__(self, cfg: dict, inst: dict, mainwin=None, log=print,
+                 profile=None):
         self.cfg = cfg or {}
         self.inst = inst or {}
         self.mainwin = mainwin            # GUI 模式才有：用于后台下载队列
@@ -38,6 +39,12 @@ class ToolCtx:
         self.workflows_dir = (os.path.join(self.comfyui_path, "user", "default", "workflows")
                               if self.comfyui_path else "")
         self.output_dir = os.path.join(self.comfyui_path, "output") if self.comfyui_path else ""
+        # 2026-11-11 会话工作台：绑定的默认工作流 / 模型名。
+        # 工作流名缺省时由 _wf_path 兜底——不同会话跑不同模态（视频/生图/音乐），
+        # 靠模型自己每次去 list_workflows 挑，实测会挑错模态，也白烧一轮 token。
+        p = profile if isinstance(profile, dict) else {}
+        self.default_workflow = str(p.get("workflow") or "").strip()
+        self.default_model = str(p.get("model") or "").strip()
 
     def ok(self, **kw):
         kw.setdefault("ok", True)
@@ -471,6 +478,20 @@ def _wf_name(args) -> str:
 
 def _wf_path(ctx, name):
     name = str(name or "").strip()
+    if name and not name.lower().endswith(".json"):
+        name += ".json"
+    # 会话工作台绑定的默认工作流（2026-11-11）：没给名字、或给的名字在目录里
+    # 根本不存在，一律回落到绑定值。模型经常把工作流名记错/编造，
+    # 直接报错会白烧一轮工具往返；而回落到错的模态更难查，所以只认用户钉死的那一个。
+    dw = str(getattr(ctx, "default_workflow", "") or "").strip()
+    if dw:
+        if not dw.lower().endswith(".json"):
+            dw += ".json"
+        dw = os.path.basename(dw)
+        dp = os.path.join(ctx.workflows_dir, dw)
+        cur = os.path.join(ctx.workflows_dir, os.path.basename(name)) if name else ""
+        if ctx.workflows_dir and os.path.isfile(dp) and (not name or not os.path.isfile(cur)):
+            name, cur = dw, dp
     if not name:
         try:
             names = [f for f in os.listdir(ctx.workflows_dir) if f.endswith(".json")]
@@ -478,8 +499,6 @@ def _wf_path(ctx, name):
             names = []
         hint = "、".join(sorted(names)[:12]) if names else "（目录里没有工作流）"
         raise ValueError(f"工作流名不能为空。可选：{hint}")
-    if not name.lower().endswith(".json"):
-        name += ".json"
     p = os.path.join(ctx.workflows_dir, os.path.basename(name))
     if not os.path.isfile(p):
         raise FileNotFoundError(f"工作流不存在：{name}（用 list_workflows 查列表）")
@@ -682,6 +701,19 @@ def _t_wait_job(args, ctx: ToolCtx):
                   note=f"等了 {limit}s 还没完成，可用 get_job 再查")
 
 
+def _t_ask_user(args: dict, ctx: ToolCtx) -> dict:
+    """向用户呈现选择项（UI 渲染成可点按钮）；本身无副作用。
+
+    2026-11-11：助手反问（要不要启动实例/用哪个工作流）此前只能用户打字回，
+    对齐 WorkBuddy 的选项卡交互——模型调本工具给选项，UI 在回复下方渲染按钮。
+    """
+    options = [str(o).strip() for o in (args.get("options") or [])
+               if str(o).strip()][:6]
+    return {"ok": True, "options": options,
+            "note": "选项按钮已展示给用户，用户点击或输入后会作为下一条消息发来；"
+                    "本轮回复到此为止即可"}
+
+
 TOOLS = [
     {"name": "get_health", "desc": "实例体检：ComfyUI/torch 版本、GPU 与显存、队列深度。排查或派任务前先调这个。",
      "schema": {"type": "object", "properties": {}, "required": []}, "fn": _t_health},
@@ -751,11 +783,20 @@ TOOLS = [
     {"name": "get_job", "desc": "按 prompt_id 查任务状态：排队/执行中/完成/报错，完成时给出成图绝对路径。",
      "schema": {"type": "object", "properties": {
          "prompt_id": {"type": "string"}}, "required": ["prompt_id"]}, "fn": _t_job_status},
+    {"name": "ask_user", "desc": "需要用户在 2~4 个明确选项里做选择或确认时使用"
+                                "（如「要不要启动实例」「用哪个工作流」）；选项会渲染成可点按钮，"
+                                "用户点了自动作为回复。开放性问题不要用它，直接文字提问。",
+     "schema": {"type": "object", "properties": {
+         "question": {"type": "string", "description": "向用户提的问题（一句话，正文里正常写出来）"},
+         "options": {"type": "array", "items": {"type": "string"},
+                     "description": "2~4 个选项，每项 ≤12 字，用户点击即作为回复发出"}},
+         "required": ["options"]}, "fn": _t_ask_user},
 ]
 
 
-def build_ctx(cfg: dict, inst: dict, mainwin=None, log=print) -> ToolCtx:
-    return ToolCtx(cfg, inst, mainwin=mainwin, log=log)
+def build_ctx(cfg: dict, inst: dict, mainwin=None, log=print,
+              profile=None) -> ToolCtx:
+    return ToolCtx(cfg, inst, mainwin=mainwin, log=log, profile=profile)
 
 
 def schemas() -> list:

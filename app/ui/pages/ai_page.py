@@ -19,12 +19,14 @@ import os
 from PySide6.QtCore import (QBuffer, QEvent, QRect, QSize, Qt, QThread,
                             QTime, QTimer, Signal)
 from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFrame,
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog,
+                               QDialogButtonBox, QFormLayout, QFrame,
                                QHBoxLayout, QInputDialog, QLabel,
+                               QLineEdit, QListWidget, QListWidgetItem, QMenu,
                                QPushButton, QScrollArea, QSizePolicy, QStyle,
                                QTextEdit, QToolButton, QVBoxLayout, QWidget)
 
-from app import ai_agent, ai_chat_store
+from app import ai_agent, ai_chat_store, ai_skills
 
 
 # ---------------------------------------------------------------- 图片预览
@@ -129,19 +131,37 @@ def _md_to_html(text: str) -> str:
     return "".join(out)
 
 
+def chat_label(c: dict) -> str:
+    """会话列表显示文案：标题 + 用途标 + 条数（2026-11-11）
+
+    视频/生图/音乐三条会话并排时，光看标题分不清谁配了哪个工作流，
+    所以把用途（或工作流名）缀在标题后面。
+    """
+    label = (c or {}).get("title") or "新对话"
+    prof = ai_skills.norm_profile((c or {}).get("profile"))
+    tag = prof.get("topic") or os.path.splitext(prof.get("workflow") or "")[0]
+    if tag and tag not in label:
+        label += f"  ·  {tag}"
+    if (c or {}).get("count"):
+        label += f"（{c['count']} 条）"
+    return label
+
+
 class _AgentWorker(QThread):
     """ai_agent.run_agent 的线程壳；事件经 sig_event(dict) 回 UI"""
     sig_event = Signal(dict)
     sig_done = Signal()
 
     def __init__(self, cfg, inst, text, history, attachments=None, mainwin=None,
-                 summary="", summary_upto=0):
+                 summary="", summary_upto=0, skills=None, profile=None):
         super().__init__()
         self.cfg, self.inst, self.text, self.history = cfg, inst, text, history
         self.attachments = attachments or []
         self.mainwin = mainwin          # 工具里启停实例要用（QTimer 编组回 UI 线程）
         self.summary = summary          # 已压缩的早期对话摘要（2026-11-06）
         self.summary_upto = summary_upto
+        self.skills = list(skills or [])  # 本会话勾选的技能（2026-11-11）
+        self.profile = dict(profile or {})  # 本会话工作台设定（2026-11-11）
         self.stop_flag = threading.Event()
 
     def run(self):
@@ -153,7 +173,9 @@ class _AgentWorker(QThread):
                                attachments=self.attachments,
                                mainwin=self.mainwin,
                                summary=self.summary,
-                               summary_upto=self.summary_upto)
+                               summary_upto=self.summary_upto,
+                               skills=self.skills,
+                               profile=self.profile)
         finally:
             self.sig_done.emit()
 
@@ -199,6 +221,9 @@ class AiPage(QWidget):
         self._chat_id = ""          # 当前会话 id（2026-11-06 多会话持久化）
         self._summary = ""          # 早期对话压缩摘要（2026-11-06）
         self._summary_upto = 0
+        self._chat_skills = []      # 本会话勾选的技能 id（2026-11-11）
+        self._profile = {}          # 本会话工作台设定（2026-11-11：用途/实例/工作流/模型）
+        self._pending_options = []  # ask_user 工具待渲染的选项按钮（2026-11-11）
         self._build()
         self._boot_chats()
 
@@ -209,7 +234,39 @@ class AiPage(QWidget):
         # 是阅读舒适的经典 measure 区间。
         outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
+        outer.setSpacing(10)
+
+        # ---- 左侧会话栏（2026-11-11：常驻 + 可折叠，会话级 skill 挂这里）----
+        self.side = QWidget()
+        self.side.setObjectName("AiSide")
+        self.side.setAttribute(Qt.WA_StyledBackground, True)
+        self.side.setFixedWidth(232)
+        side_root = QVBoxLayout(self.side)
+        side_root.setContentsMargins(10, 14, 10, 12)
+        side_root.setSpacing(8)
+        b_new = QPushButton("＋ 新建对话")
+        b_new.setProperty("accent", True)
+        b_new.setCursor(Qt.PointingHandCursor)
+        b_new.setToolTip("开一个新对话（当前对话自动保存）")
+        b_new.clicked.connect(self._new_chat)
+        side_root.addWidget(b_new)
+        self.lst_chat = QListWidget()
+        self.lst_chat.setObjectName("ChatList")
+        self.lst_chat.setFrameShape(QFrame.NoFrame)
+        self.lst_chat.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.lst_chat.currentItemChanged.connect(self._on_chat_item_changed)
+        self.lst_chat.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.lst_chat.customContextMenuRequested.connect(self._chat_menu)
+        side_root.addWidget(self.lst_chat, 1)
+        self.side.setStyleSheet(
+            "QWidget#AiSide { background: rgba(27,32,41,0.92); border-radius: 12px; }"
+            "QListWidget#ChatList { background: transparent; border: none;"
+            "  color: #c9d3e0; font-size: 12px; outline: none; }"
+            "QListWidget#ChatList::item { padding: 8px 10px; border-radius: 8px;"
+            "  margin: 2px 0; }"
+            "QListWidget#ChatList::item:hover { background: #262e3a; }"
+            "QListWidget#ChatList::item:selected { background: #2f3a4a; color: #e6edf7; }")
+
         body = QWidget()
         body.setMaximumWidth(1520)
         root = QVBoxLayout(body)
@@ -230,22 +287,13 @@ class AiPage(QWidget):
         self.lb_inst.setStyleSheet("color:#a9b1bd; font-size:12px;")
         head.addWidget(self.lb_inst)
         head.addStretch(1)
-        # ---- 会话切换（2026-11-06：多对话 + 重启不丢）----
-        self.cb_chat = QComboBox()
-        self.cb_chat.setMinimumWidth(190)
-        self.cb_chat.setMaximumWidth(280)   # 会话名可以很长，限宽+省略号，别把按钮挤到角落
-        self.cb_chat.setToolTip("选择历史对话；切换后当前对话会自动保存")
-        self.cb_chat.currentIndexChanged.connect(self._on_chat_changed)
-        head.addWidget(self.cb_chat)
-        for _txt, _tip, _fn in (("＋ 新建", "开一个新对话（当前对话自动保存）", self._new_chat),
-                                ("重命名", "给当前对话改个名字", self._rename_chat),
-                                ("删除", "删除当前对话", self._delete_chat)):
-            _b = QPushButton(_txt)
-            _b.setStyleSheet(self.ST_LINK)
-            _b.setCursor(Qt.PointingHandCursor)
-            _b.setToolTip(_tip)
-            _b.clicked.connect(lambda _=False, f=_fn: f())
-            head.addWidget(_b)
+        # ---- 会话切换（2026-11-06 多对话；2026-11-11 顶栏下拉 → 左侧常驻栏）----
+        self.b_side = QPushButton("☰ 会话")
+        self.b_side.setStyleSheet(self.ST_LINK)
+        self.b_side.setCursor(Qt.PointingHandCursor)
+        self.b_side.setToolTip("收起/展开左侧会话列表")
+        self.b_side.clicked.connect(self._toggle_side)
+        head.addWidget(self.b_side)
         root.addWidget(head_host)
 
         # ---- 消息流 ----
@@ -296,6 +344,12 @@ class AiPage(QWidget):
         self.ed.setPlaceholderText("问点什么…（回车发送，Shift+回车换行；可直接粘贴图片或工作流 JSON）")
         self.ed.installEventFilter(self)
         row.addWidget(self.ed, 1)
+        self.b_skills = QPushButton("⚙ 会话设定")
+        self.b_skills.setFixedHeight(34)
+        self.b_skills.setCursor(Qt.PointingHandCursor)
+        self.b_skills.setToolTip("给这条对话固定一套工作台：用途 / 实例 / 工作流 / 模型 / 技能")
+        self.b_skills.clicked.connect(self._pick_session)
+        row.addWidget(self.b_skills, 0, Qt.AlignBottom)
         self.b_stop = QPushButton("停止")
         self.b_stop.setFixedSize(64, 34)
         self.b_stop.setEnabled(False)
@@ -310,6 +364,7 @@ class AiPage(QWidget):
         self._composer = composer
 
         outer.addStretch(1)
+        outer.addWidget(self.side)
         outer.addWidget(body, 50)
         outer.addStretch(1)
 
@@ -593,9 +648,32 @@ class AiPage(QWidget):
 
     # -------------------------------------------------- 消息组件
     def _greet(self):
+        # 配了工作台的会话，开场就把配置摊开（2026-11-11）：
+        # 用户开着三条不同用途的对话，进来第一眼要能确认「我现在在哪个工作台」。
+        p = ai_skills.norm_profile(self._profile)
+        if p:
+            bits = []
+            if p.get("topic"):
+                bits.append("用途：" + p["topic"])
+            if p.get("workflow"):
+                bits.append("工作流：" + p["workflow"])
+            if p.get("model"):
+                bits.append("模型：" + p["model"])
+            if p.get("inst_id"):
+                bits.append("实例：" + self._inst_name(p["inst_id"]))
+            names = [s["name"] for s in ai_skills.list_skills()
+                     if s["id"] in (self._chat_skills or [])]
+            if names:
+                bits.append("技能：" + "、".join(names))
+            self._ai_card("本对话工作台：\n"
+                          + "\n".join("· " + b for b in bits)
+                          + "\n\n直接说需求就行，我只在这套配置下干活。")
+            return
         self._ai_card(
             "我是 ComfyHub 的 AI 助手，可以帮你查看实例状态、读日志排错、"
-            "管理模型、检查和运行工作流。点上方快捷指令，或直接输入问题。")
+            "管理模型、检查和运行工作流。点上方快捷指令，或直接输入问题。\n\n"
+            "想把这条对话固定成某个用途（视频 / 生图 / 音乐）？点底部「⚙ 会话设定」"
+            "绑好工作流和技能，之后它只在这套配置下干活，不同对话互不干扰。")
 
     def _fit_user_bubble(self, lb: QLabel, text: str):
         """按当前聊天区宽度给气泡定型（2026-11-07：抽出以便窗口缩放后重排）"""
@@ -768,10 +846,8 @@ class AiPage(QWidget):
 
     # -------------------------------------------------- 交互
     def _inst(self):
-        try:
-            return self.mainwin.current_inst()
-        except Exception:
-            return {}
+        """当前生效实例：会话绑了实例就用它，否则跟随主窗口当前实例"""
+        return self._profile_inst()
 
     def _quick(self, text):
         self.ed.setPlainText(text)
@@ -799,7 +875,9 @@ class AiPage(QWidget):
         self._worker = _AgentWorker(self.cfg, inst, text, list(self._history), atts,
                                     mainwin=self.mainwin,
                                     summary=self._summary,
-                                    summary_upto=self._summary_upto)
+                                    summary_upto=self._summary_upto,
+                                    skills=self._chat_skills,
+                                    profile=self._profile)
         self._worker.sig_event.connect(self._on_event)
         self._worker.sig_done.connect(self._on_done)
         self.b_send.setEnabled(False)
@@ -834,21 +912,27 @@ class AiPage(QWidget):
             self._greet()
 
     def _reload_chat_list(self, select: str = ""):
-        self.cb_chat.blockSignals(True)
-        self.cb_chat.clear()
+        self.lst_chat.blockSignals(True)
+        self.lst_chat.clear()
         chats = ai_chat_store.list_chats()
         for c in chats:
-            label = c.get("title") or "新对话"
-            if c.get("count"):
-                label += f"（{c['count']} 条）"
-            self.cb_chat.addItem(label, c["id"])
-        if not chats:
-            self.cb_chat.addItem("（新对话）", "")
+            label = chat_label(c)
+            prof = ai_skills.norm_profile(c.get("profile"))
+            it = QListWidgetItem(label)
+            it.setData(Qt.UserRole, c["id"])
+            tips = [label]
+            if prof.get("workflow"):
+                tips.append("工作流：" + prof["workflow"])
+            if prof.get("model"):
+                tips.append("模型：" + prof["model"])
+            it.setToolTip("\n".join(tips))
+            self.lst_chat.addItem(it)
         if select:
-            i = self.cb_chat.findData(select)
-            if i >= 0:
-                self.cb_chat.setCurrentIndex(i)
-        self.cb_chat.blockSignals(False)
+            for i in range(self.lst_chat.count()):
+                if self.lst_chat.item(i).data(Qt.UserRole) == select:
+                    self.lst_chat.setCurrentRow(i)
+                    break
+        self.lst_chat.blockSignals(False)
 
     def _open_chat(self, cid: str):
         if not cid:
@@ -860,6 +944,15 @@ class AiPage(QWidget):
                          if m.get("role") in ("user", "assistant")]
         self._summary = str(d.get("summary") or "")
         self._summary_upto = int(d.get("summary_upto") or 0)
+        self._chat_skills = list(d.get("skills") or [])
+        # 工作台设定随会话走：切过去就是另一套工作流/模型/技能，
+        # 三个状态必须一起换（2026-11-11），漏一个就会「串台」
+        self._profile = ai_skills.norm_profile(d.get("profile"))
+        self._update_session_btn()
+        self._pending_options = []
+        # 待发附件属于上一条会话的上下文，切走必须清掉（2026-11-11）
+        self._atts.clear()
+        self._refresh_atts()
         self._clear_flow()
         if self._history:
             for m in self._history:
@@ -874,15 +967,29 @@ class AiPage(QWidget):
             self._greet()
 
     def _save_chat(self):
-        if not self._chat_id or not self._history:
+        if not self._chat_id:
             return
-        ai_chat_store.save(self._chat_id, self._history,
-                           summary=self._summary, upto=self._summary_upto)
+        # 只配了工作台、还没说话的会话也要落盘（2026-11-11）：
+        # 否则「先建会话、配好 H3 工作流、再发第一条」会把刚配的设定丢掉。
+        if not self._history and ai_skills.is_empty(self._profile):
+            return
+        title = ""
+        if not self._history:        # 还没消息：拿用途当标题，列表里一眼能认
+            title = str((self._profile or {}).get("topic") or "") or "新对话"
+        ai_chat_store.save(self._chat_id, self._history, title=title,
+                           summary=self._summary, upto=self._summary_upto,
+                           skills=self._chat_skills, profile=self._profile)
 
-    def _on_chat_changed(self, idx: int):
+    def _on_chat_item_changed(self, cur, _prev):
         if self._worker is not None:      # 正在回答时不许切，免得串台
+            self.lst_chat.blockSignals(True)
+            for i in range(self.lst_chat.count()):
+                if self.lst_chat.item(i).data(Qt.UserRole) == self._chat_id:
+                    self.lst_chat.setCurrentRow(i)
+                    break
+            self.lst_chat.blockSignals(False)
             return
-        cid = self.cb_chat.itemData(idx) or ""
+        cid = cur.data(Qt.UserRole) if cur else ""
         if cid and cid != self._chat_id:
             self._open_chat(cid)
 
@@ -894,7 +1001,13 @@ class AiPage(QWidget):
         self._history = []
         self._summary = ""
         self._summary_upto = 0
+        self._chat_skills = []
+        self._profile = {}
+        self._update_session_btn()
+        self._pending_options = []
         self._last_user = ""
+        self._atts.clear()          # 换会话清附件，别把上一条的图带过去
+        self._refresh_atts()
         self._clear_flow()
         self._greet()
         self._reload_chat_list()
@@ -922,10 +1035,208 @@ class AiPage(QWidget):
         self._history = []
         self._summary = ""
         self._summary_upto = 0
+        self._chat_skills = []
+        self._profile = {}
+        self._update_session_btn()
+        self._pending_options = []
         self._last_user = ""
+        self._atts.clear()          # 换会话清附件，别把上一条的图带过去
+        self._refresh_atts()
         self._clear_flow()
         self._greet()
         self._reload_chat_list()
+
+    # ------------------------------------------ 会话栏折叠 / 右键菜单（2026-11-11）
+    def _toggle_side(self):
+        self.side.setVisible(not self.side.isVisible())
+        self.b_side.setText("☰ 会话" if self.side.isVisible() else "» 会话")
+
+    def _chat_menu(self, pos):
+        it = self.lst_chat.itemAt(pos)
+        if not it:
+            return
+        cid = it.data(Qt.UserRole)
+        if cid and cid != self._chat_id and self._worker is None:
+            self._open_chat(cid)          # 右键先切到该会话，操作作用于当前
+        menu = QMenu(self)
+        act_r = menu.addAction("重命名")
+        act_c = menu.addAction("以此工作台新建")
+        act_c.setEnabled(not ai_skills.is_empty(self._profile))
+        act_d = menu.addAction("删除")
+        act = menu.exec(self.lst_chat.mapToGlobal(pos))
+        if act == act_r:
+            self._rename_chat()
+        elif act == act_c:
+            self._new_from_profile()
+        elif act == act_d:
+            self._delete_chat()
+
+    def _new_from_profile(self):
+        """复制当前工作台开一个新对话（同用途多条会话，省得重配）"""
+        if self._worker is not None:
+            return
+        prof = ai_skills.norm_profile(self._profile)
+        skills = list(self._chat_skills or [])
+        self._new_chat()
+        if not ai_skills.is_empty(prof):
+            self._profile, self._chat_skills = prof, skills
+            self._update_session_btn()
+            self._save_chat()
+            self._reload_chat_list(select=self._chat_id)
+            self._clear_flow()
+            self._greet()
+
+    # -------------------------------------- 会话工作台设定（2026-11-11）
+    def _update_session_btn(self):
+        # 按钮文字恒定（i18n 词表精确匹配）；动态信息一律走 tooltip
+        p = ai_skills.norm_profile(self._profile)
+        bits = []
+        if p.get("topic"):
+            bits.append("用途：" + p["topic"])
+        if p.get("workflow"):
+            bits.append("工作流：" + p["workflow"])
+        if p.get("model"):
+            bits.append("模型：" + p["model"])
+        if p.get("inst_id"):
+            bits.append("实例：" + self._inst_name(p["inst_id"]))
+        if self._chat_skills:
+            bits.append(f"技能 {len(self._chat_skills)} 个")
+        self.b_skills.setToolTip(
+            ("本对话工作台：\n· " + "\n· ".join(bits) + "\n（点击修改）") if bits
+            else "给这条对话固定一套工作台：用途 / 实例 / 工作流 / 模型 / 技能")
+
+    def _inst_name(self, iid: str) -> str:
+        try:
+            for i in self.mainwin.cfg.get("instances") or []:
+                if str(i.get("id") or "") == str(iid):
+                    return i.get("name") or "实例"
+        except Exception:
+            pass
+        return "（已删除的实例）"
+
+    def _profile_inst(self):
+        """会话绑定的实例；没绑或已删除则回落当前实例"""
+        iid = str((self._profile or {}).get("inst_id") or "")
+        if iid:
+            try:
+                for i in self.mainwin.cfg.get("instances") or []:
+                    if str(i.get("id") or "") == iid:
+                        return i
+            except Exception:
+                pass
+        try:
+            return self.mainwin.current_inst()
+        except Exception:
+            return {}
+
+    def _pick_session(self):
+        """一条对话 = 一套工作台：用途 / 实例 / 工作流 / 模型 / 技能
+
+        用户场景（2026-11-11）：A 对话做 H3 视频、B 对话做 Qwen 生图、
+        C 对话做 minimax 音乐。三条对话各挂各的技能与工作流，
+        切换时上下文与配置都不串——所以配置必须存在**会话**里，不是全局。
+        """
+        prof = ai_skills.norm_profile(self._profile)
+        try:
+            insts = list(self.mainwin.cfg.get("instances") or [])
+        except Exception:
+            insts = []
+        dlg = QDialog(self)
+        dlg.setWindowTitle("会话设定")
+        dlg.setMinimumWidth(560)
+        v = QVBoxLayout(dlg)
+        v.setSpacing(8)
+        tip = QLabel("给这条对话固定一套工作台。不同对话各配各的——"
+                     "比如「H3 视频」挂视频工作流、「Qwen 生图」挂生图工作流，"
+                     "切换对话时配置与上下文互不影响。")
+        tip.setWordWrap(True)
+        v.addWidget(tip)
+
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignRight)
+        ed_topic = QLineEdit(prof.get("topic") or "")
+        ed_topic.setPlaceholderText("例：H3 视频制作 / Qwen 生图 / minimax 音乐")
+        form.addRow("用途", ed_topic)
+
+        cb_inst = QComboBox()
+        cb_inst.addItem("跟随当前实例", "")
+        for i in insts:
+            cb_inst.addItem(i.get("name") or "实例", str(i.get("id") or ""))
+        j = cb_inst.findData(prof.get("inst_id") or "")
+        cb_inst.setCurrentIndex(j if j >= 0 else 0)
+        form.addRow("实例", cb_inst)
+
+        cb_wf = QComboBox()
+        form.addRow("工作流", cb_wf)
+
+        def _fill_wf():
+            want = cb_wf.currentData()
+            if want is None:                  # 首次填充：用已保存的绑定
+                want = prof.get("workflow") or ""
+            cb_wf.blockSignals(True)
+            cb_wf.clear()
+            cb_wf.addItem("不绑定（让 AI 自己找）", "")
+            iid = cb_inst.currentData() or ""
+            path = ""
+            for i in insts:
+                if str(i.get("id") or "") == str(iid):
+                    path = i.get("comfyui_path") or ""
+                    break
+            if not iid:      # 跟随当前实例：取主窗口当下选中的那个，不是会话绑定值
+                try:
+                    path = (self.mainwin.current_inst() or {}).get("comfyui_path") or ""
+                except Exception:
+                    path = ""
+            wd = os.path.join(path, "user", "default", "workflows") if path else ""
+            names = []
+            if wd and os.path.isdir(wd):
+                names = sorted(f for f in os.listdir(wd)
+                               if f.lower().endswith(".json"))
+            for fn in names:
+                cb_wf.addItem(fn, fn)
+            if want and want not in names:
+                # 换实例/文件改名时不要把绑定静默清空：显式标出来让用户决定
+                cb_wf.addItem(f"{want}（当前实例未找到）", want)
+            k = cb_wf.findData(want)
+            cb_wf.setCurrentIndex(k if k >= 0 else 0)
+            cb_wf.blockSignals(False)
+
+        _fill_wf()
+        cb_inst.currentIndexChanged.connect(lambda _i: _fill_wf())
+
+        ed_model = QLineEdit(prof.get("model") or "")
+        ed_model.setPlaceholderText("例：qwen_image_2512.safetensors（可留空）")
+        form.addRow("模型", ed_model)
+        v.addLayout(form)
+
+        skills = ai_skills.list_skills()
+        boxes = []
+        if skills:
+            v.addWidget(QLabel("本对话启用的技能："))
+            for s in skills:
+                cbx = QCheckBox(s["name"])
+                cbx.setToolTip((s["desc"] or "") + "\n\n" + (s["body"] or "")[:300])
+                cbx.setChecked(s["id"] in self._chat_skills)
+                v.addWidget(cbx)
+                boxes.append((s["id"], cbx))
+        else:
+            hint = QLabel("没有技能文件。把 markdown 放进：\n" + ai_skills.user_dir())
+            hint.setWordWrap(True)
+            v.addWidget(hint)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        v.addWidget(bb)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        self._profile = ai_skills.norm_profile({
+            "topic": ed_topic.text(), "inst_id": cb_inst.currentData() or "",
+            "workflow": cb_wf.currentData() or "", "model": ed_model.text()})
+        self._chat_skills = [sid for sid, cbx in boxes if cbx.isChecked()]
+        self._update_session_btn()
+        self._save_chat()                          # 设定本身也落盘（可能还没说话）
+        self._reload_chat_list(select=self._chat_id)   # 标题/用途标即时可见
 
     def _clear_flow(self):
         self._tl_widget = None
@@ -981,6 +1292,11 @@ class AiPage(QWidget):
             self._save_chat()
         elif kind == "tool":
             self._tool_item(ev.get("name", "?"), ev.get("args") or {})
+            if ev.get("name") == "ask_user":
+                opts = [str(o).strip() for o in ((ev.get("args") or {})
+                        .get("options") or []) if str(o).strip()]
+                if opts:
+                    self._pending_options = opts[:6]
         elif kind == "tool_result":
             self._finish_tool_item(ev.get("name", "?"), ev.get("ok", False),
                                    ev.get("brief", ""), int(ev.get("ms") or 0))
@@ -1002,6 +1318,31 @@ class AiPage(QWidget):
         self._worker = None
         self._save_chat()
         self._reload_chat_list(select=self._chat_id)   # 刷新标题/条数
+        self._option_row()                             # ask_user 选项按钮（2026-11-11）
+
+    # ---------- ask_user 选项按钮（2026-11-11）----------
+    def _option_row(self):
+        """轮次结束时把 ask_user 的选项渲染成按钮行（选完即焚，防重复点）"""
+        if not self._pending_options:
+            return
+        opts, self._pending_options = self._pending_options, []
+        row = QWidget()
+        h = QHBoxLayout(row)
+        h.setContentsMargins(2, 2, 2, 2)
+        h.setSpacing(8)
+        for o in opts:
+            b = QPushButton(o)
+            b.setStyleSheet(self.ST_CHIP)
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _=False, t=o, rr=row: self._pick_option(t, rr))
+            h.addWidget(b)
+        h.addStretch(1)
+        self.flow.addWidget(row)
+
+    def _pick_option(self, text: str, row):
+        for b in row.findChildren(QPushButton):
+            b.setEnabled(False)               # 选完禁用整行，防重复发送
+        self._quick(text)
 
     # ---------- 流式渲染 ----------
     def _stream_begin(self):

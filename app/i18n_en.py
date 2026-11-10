@@ -19,6 +19,10 @@ EN_DICT = {
     "当前实例": "Current instance",
     "外部模型库": "External model library",
     # ---- AI 助手页（2026-11-03）----
+    "＋ 新建对话": "＋ New chat",
+    "☰ 会话": "☰ Chats",
+    "» 会话": "» Chats",
+    "⚙ 会话设定": "⚙ Session",
     "发送": "Send",
     "清空对话": "Clear chat",
     "快捷体检": "Quick health check",
@@ -819,6 +823,16 @@ EN_DICT = {
     "删除对话": "Delete conversation",
     "删除当前对话？此操作不可恢复。":
         "Delete this conversation? This cannot be undone.",
+
+    # ---- 会话工作台设定（2026-11-11）----
+    "会话设定": "Session setup",
+    "用途": "Purpose",
+    "实例": "Instance",
+    "模型": "Model",
+    "以此工作台新建": "New chat with this setup",
+    "跟随当前实例": "Follow current instance",
+    "不绑定（让 AI 自己找）": "Unbound (let the AI pick)",
+    "本对话启用的技能：": "Skills enabled for this chat:",
 
     # ---- 上下文压缩（2026-11-06）----
     "关闭（只保留最近几条）": "Off (keep only recent messages)",

@@ -17,6 +17,7 @@ from app import ai_assist
 from app import ai_context
 from app import ai_models
 from app import ai_persona
+from app import ai_skills
 from app import ai_tools
 
 MAX_ROUNDS = 8          # 单次提问最多工具往返数
@@ -28,7 +29,7 @@ def _clip(obj) -> str:
     return s if len(s) <= MAX_TOOL_RESULT else s[:MAX_TOOL_RESULT] + "…(截断)"
 
 
-def _system_prompt(ctx) -> str:
+def _system_prompt(ctx, skills_text: str = "", profile_text: str = "") -> str:
     inst = ctx.inst
     # 助手设定（2026-11-06）：设置页可改；没写就用出厂默认，**不留空**
     raw = ""
@@ -58,6 +59,8 @@ def _system_prompt(ctx) -> str:
         "不许说「出图完成」；\n"
         "6. patch_workflow 的 ops 必须是对象数组（node/index/value），"
         "参数名不支持时先 list_workflows 看真实文件名再重试。\n"
+        "7. 需要用户在 2~4 个明确选项里选择/确认时（如「要不要启动」），调 ask_user 工具，"
+        "选项按钮会出现在你的问题下方，用户点了自动回复；开放性问题直接文字提问。\n"
         "\n【剧本 A：根据用户给的图片生成同风格图】\n"
         "1) 先看图，用一句话提炼「风格 + 主体 + 配色 + 构图 + 画质词」，这是给生成模型的提示词；\n"
         "2) list_workflows 看有哪些工作流（**不要凭空编造工作流名**），必要时 check_workflow 确认能跑；\n"
@@ -70,7 +73,8 @@ def _system_prompt(ctx) -> str:
         "3) run_workflow → wait_job → 回报图片路径。若 JSON 不是工作流（例如只是参数清单），\n"
         "   说明它缺什么，并以现有工作流为底改提示词。\n"
         "\n原则：一次只改必要的东西；失败时读返回的 error 字段如实说明，不要猜。"
-    )
+    ) + (("\n\n" + profile_text) if profile_text else "") \
+      + (("\n\n" + skills_text) if skills_text else "")
 
 
 def _chat_tools(settings: dict, messages: list, tools: list,
@@ -244,7 +248,8 @@ def _user_content(user_text: str, attachments=None):
 
 def run_agent(cfg: dict, inst: dict, user_text: str, history: list,
               emit, stop_flag=None, log=print, attachments=None,
-              mainwin=None, summary: str = "", summary_upto: int = 0) -> None:
+              mainwin=None, summary: str = "", summary_upto: int = 0,
+              skills=None, profile=None) -> None:
     """处理一次用户提问。history 为 UI 侧已有对话（仅 user/assistant 文本消息）。
 
     emit(kind, **kw) 事件回调；stop_flag 为 threading.Event，轮间检查。
@@ -253,12 +258,16 @@ def run_agent(cfg: dict, inst: dict, user_text: str, history: list,
     mainwin：GUI 模式下必须传主窗口——工具里的启停实例、下载队列都靠它
     （2026-11-06 修：之前没传，导致界面里点「帮忙启动实例」被误判成 --mcp 外挂模式）。
     summary / summary_upto：已压缩的早期对话摘要与覆盖到的条数（由会话存档提供）。
+    skills：本会话勾选的技能 id 列表（2026-11-11，可空）。
+    profile：本会话工作台设定（2026-11-11）——topic/inst_id/workflow/model，
+    决定「这条会话干什么、用哪个工作流」。同时把绑定的工作流塞给工具层做默认值，
+    省掉模型每次 list_workflows 挑工作流（挑错 = 跑错模态，用户最烦的点）。
     """
     st = cfg.get("settings") or {}
     if not (st.get("ai_enabled") and st.get("ai_base_url") and st.get("ai_api_key")):
         emit("error", text="AI 接入未启用：请到「系统设置 → AI 接入」填写接口地址与 API Key")
         return
-    ctx = ai_tools.build_ctx(cfg, inst, mainwin=mainwin, log=log)
+    ctx = ai_tools.build_ctx(cfg, inst, mainwin=mainwin, log=log, profile=profile)
 
     # ---- 模型画像：思考强度 / 输出上限 / 上下文条数（2026-11-03）----
     prof = ai_models.detect(str(st.get("ai_model") or ""), str(st.get("ai_base_url") or ""))
@@ -269,7 +278,9 @@ def run_agent(cfg: dict, inst: dict, user_text: str, history: list,
     if tip:
         emit("notice", text=tip)
 
-    messages = [{"role": "system", "content": _system_prompt(ctx)}]
+    messages = [{"role": "system", "content": _system_prompt(
+        ctx, ai_skills.render(skills),
+        ai_skills.render_profile(profile, str((inst or {}).get("name") or "")))}]
 
     # ---- 上下文压缩（2026-11-06）：早期对话压成摘要，避免截断把最初目标弄丢 ----
     hist = list(history or [])
