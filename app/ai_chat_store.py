@@ -54,18 +54,23 @@ def title_of(msgs: list, fallback: str = "新对话") -> str:
 
 
 def save(cid: str, messages: list, title: str = "",
-         summary: str = None, upto: int = None) -> None:
+         summary: str = None, upto: int = None, skills=None,
+         profile=None) -> None:
     """写一个会话；messages 只保留 role/content。
 
     summary / upto 为「上下文压缩」产物（2026-11-06）：
     传 None 表示沿用文件里已有的值（普通保存不会把摘要清掉）。
+    skills 为本会话勾选的技能 id 列表（2026-11-11）：None 同样沿用旧值。
+    profile 为本会话的「工作台设定」（2026-11-11）：主题 / 绑定实例 /
+    默认工作流 / 默认模型。None 同样沿用旧值，{} 表示清空。
     """
     try:
         msgs = _clip(messages)
         now = time.time()
         path = _path(cid)
         created = now
-        old_summary, old_upto = "", 0
+        old_summary, old_upto, old_skills, old_profile = "", 0, [], {}
+        old_title, old_renamed = "", False
         if os.path.isfile(path):
             try:
                 with open(path, encoding="utf-8") as f:
@@ -73,12 +78,23 @@ def save(cid: str, messages: list, title: str = "",
                 created = prev.get("created") or now
                 old_summary = prev.get("summary") or ""
                 old_upto = int(prev.get("summary_upto") or 0)
+                old_skills = list(prev.get("skills") or [])
+                old_profile = dict(prev.get("profile") or {})
+                old_title = prev.get("title") or ""
+                old_renamed = bool(prev.get("renamed"))
             except Exception:
                 pass
-        data = {"id": cid, "title": (title or title_of(msgs)), "created": created,
+        # 用户手动改过的名字优先（2026-11-11）：多会话并排时，
+        # 每次发消息都把「H3 视频专用」变回首条消息的前 24 字，等于白改名。
+        final_title = ((old_title if old_renamed else "")
+                       or title or title_of(msgs))
+        data = {"id": cid, "title": final_title, "created": created,
                 "updated": now, "messages": msgs,
                 "summary": old_summary if summary is None else str(summary),
-                "summary_upto": old_upto if upto is None else max(0, int(upto))}
+                "summary_upto": old_upto if upto is None else max(0, int(upto)),
+                "skills": old_skills if skills is None else list(skills),
+                "profile": old_profile if profile is None else dict(profile or {}),
+                "renamed": old_renamed}
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False)
@@ -97,11 +113,14 @@ def load(cid: str) -> dict:
             d.setdefault("messages", [])
             d.setdefault("summary", "")
             d.setdefault("summary_upto", 0)
+            d.setdefault("skills", [])
+            d.setdefault("profile", {})
             return d
     except Exception:
         pass
     return {"id": cid, "title": "新对话", "messages": [],
-            "summary": "", "summary_upto": 0, "updated": 0}
+            "summary": "", "summary_upto": 0, "skills": [],
+            "profile": {}, "updated": 0}
 
 
 def delete(cid: str) -> None:
@@ -114,6 +133,7 @@ def delete(cid: str) -> None:
 def rename(cid: str, title: str) -> None:
     d = load(cid)
     d["title"] = (title or "").strip()[:40] or title_of(d.get("messages"))
+    d["renamed"] = True          # 手动改名标记：后续保存不再用首条消息覆盖
     try:
         with open(_path(cid), "w", encoding="utf-8") as f:
             json.dump(d, f, ensure_ascii=False)
@@ -122,7 +142,7 @@ def rename(cid: str, title: str) -> None:
 
 
 def list_chats() -> list:
-    """[{id,title,updated,count}]，按更新时间倒序"""
+    """[{id,title,updated,count,profile}]，按更新时间倒序"""
     out = []
     try:
         for fn in os.listdir(_dir()):
@@ -134,7 +154,8 @@ def list_chats() -> list:
                 out.append({"id": d.get("id") or fn[:-5],
                             "title": d.get("title") or "新对话",
                             "updated": float(d.get("updated") or 0),
-                            "count": len(d.get("messages") or [])})
+                            "count": len(d.get("messages") or []),
+                            "profile": dict(d.get("profile") or {})})
             except Exception:
                 continue
     except Exception:
