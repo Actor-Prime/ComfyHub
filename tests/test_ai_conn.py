@@ -122,6 +122,9 @@ page._on_ai_tested({"ok": False, "models": [], "model": "", "latency_ms": 0,
 check("3h 失败状态条显示原因", "失败" in page.lb_ai_state.text(), page.lb_ai_state.text())
 
 # 选另一个模型后保存 → 绑定写入设置
+# （2026-11-12：_save 会弹「本次将保存 N 处修改」确认框，无人值守测试要放行）
+import app.ui.changes_dialog as _cd
+_cd.confirm_changes = lambda *a, **k: True
 page.cb_ai_model.setCurrentText("mimo-v2.6-pro")
 page._save()
 check("3i 保存后 ai_model 跟随下拉",

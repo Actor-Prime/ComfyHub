@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 from app import workflow_scan, installer
 from app.installer import PlanExecutor
 from app.workers import swap_worker
+from app.ui.theme import card_table
 
 
 class ScanWorker(QThread):
@@ -175,7 +176,7 @@ class WorkflowPage(QWidget):
         self.tb.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.tb.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.tb.setEditTriggers(QTableWidget.NoEditTriggers)
-        col_l.addWidget(self.tb, 1)
+        col_l.addWidget(card_table(self.tb), 1)
         split.addLayout(col_l, 2)
         # 右：日志
         col_r = QVBoxLayout()

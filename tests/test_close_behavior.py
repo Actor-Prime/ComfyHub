@@ -166,6 +166,10 @@ class FakeMain:
 
 
 sp_mod.save_config = lambda cfg: None
+# _save 会弹「本次将保存 N 处修改」确认框（2026-11-06 加的）；无人值守测试要放行，
+# 否则卡在模态框上跑不完（2026-11-12 修：与 test_ai_conn 同因）
+import app.ui.changes_dialog as _cd
+_cd.confirm_changes = lambda *a, **k: True
 cfg = {"settings": {}}
 page = SettingsPage(cfg, FakeMain())
 check("3a 下拉默认=每次询问", page.cb_close.currentData() == "ask",

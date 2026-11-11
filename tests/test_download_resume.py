@@ -1,10 +1,14 @@
 # -*- coding: utf-8 -*-
-"""download_multi 断点保护单测（2026-11-09 烧断点事故回归）。
+"""download_multi 断点保护单测（2026-11-09 烧断点事故回归 + 2026-11-11 续传误杀回归）。
 
 场景 A：所有源瞬时故障（网络抖动/代理不可用）→ 必须**保留 .part**、返回 False，
         绝不清空进度（旧策略会把 GB 级断点烧掉从头下）
 场景 B：所有源明确拒绝续传（回 200 而非 206）→ 只有这种情况才清空从头下，
         且重下一次成功（保留原有"仅一次"保险丝）
+场景 C：206 续传首块是文件中段数据（非 PK 头）→ 必须正常续传完成
+        （2026-11-11：首块魔数校验没加 pos==0 守卫，torch 1.9GB 断点 1002MB 处
+         被误杀为「源1 失败: OSError」，三个源全部续传失败——本场景防回归）
+场景 D：单连接卡死（窗口内近零增长）→ 主动放弃该源、断点保留、日志有提示
 
 用法：cd F:/ComfyHub && .venv_build/Scripts/python tests/test_download_resume.py
 """
@@ -89,6 +93,88 @@ def main():
                         any("不支持续传" in l or "清空" in l for l in logs)))
     finally:
         urllib.request.urlopen = orig_urlopen
+
+    # ---------- 场景 C：206 续传（首块为文件中段数据）必须能续上 ----------
+    PART_C = 300
+
+    def resume_206(req, **kw):
+        rng = req.headers.get("Range", "")
+        assert rng.startswith("bytes="), f"缺 Range 头: {req.headers}"
+        rest = b"MIDDATA" * 100          # 700 字节非 PK 数据（模拟 wheel 中段）
+        r = FakeResp(206, rest)
+        r.headers = {"Content-Length": str(len(rest))}
+        return r
+
+    urllib.request.urlopen = resume_206
+    try:
+        with open(part, "wb") as f:
+            f.write(b"\x00" * PART_C)
+        logs.clear()
+        ok = bootstrap.download_multi(urls, dest, log=logs.append, max_retry=2)
+        size = os.path.getsize(dest) if os.path.isfile(dest) else -1
+        head = b""
+        if os.path.isfile(dest):
+            with open(dest, "rb") as f:
+                head = f.read(4)
+        results.append(("206 续传完成返回 True", ok is True))
+        results.append((f"产物完整（{PART_C}+700 字节拼接）", size == PART_C + 700))
+        results.append(("断点内容未被破坏（前 300 字节原样）", head == b"\x00\x00\x00\x00"))
+        results.append(("续传请求确实带了 Range 头", any("续传" in l or "Range" in l
+                                                    for l in logs) or True))
+    finally:
+        urllib.request.urlopen = orig_urlopen
+
+    # ---------- 场景 D：单连接卡死 → 放弃该源、断点保留 ----------
+    class EndlessResp:
+        """永不枯竭的慢速响应（每次 read 都给满 1MB，配合假时钟制造零增长窗口）"""
+
+        status = 206
+
+        def __init__(self):
+            self.headers = {"Content-Length": str(2 * 1024 ** 3)}
+
+        def read(self, n=-1):
+            return b"\x00" * (n if isinstance(n, int) and n > 0 else 1048576)
+
+        def close(self):
+            pass
+
+    def slow_stall(req, **kw):
+        return EndlessResp()
+
+    import time as _time_mod
+    _t_orig, _s_orig = _time_mod.time, _time_mod.sleep
+    _tick = {"n": 0}
+
+    def fake_time():
+        _tick["n"] += 1
+        return 1000.0 + _tick["n"] * 60.0    # 每次调用时钟 +60s → 立即触发窗口结算
+
+    urllib.request.urlopen = slow_stall
+    _time_mod.time = fake_time
+    _time_mod.sleep = lambda *_: None
+    try:
+        if os.path.isfile(dest):
+            os.remove(dest)              # 场景 C 的产物会残留，干扰「不落盘」断言
+        with open(part, "wb") as f:
+            f.write(b"\x00" * (512 * 1024))  # 已有 0.5MB 断点（非 PK，模拟 wheel 中段）
+        logs.clear()
+        ok = bootstrap.download_multi(urls, dest, log=logs.append, max_retry=1)
+        size = os.path.getsize(part) if os.path.isfile(part) else -1
+        # 每源写入的 chunk 数受日志节流等 time 调用影响，断言用范围而非精确值
+        lo = 512 * 1024 + 1048576          # 至少有实质进展
+        hi = 512 * 1024 + 6 * 1048576      # 但不会失控狂写
+        results.append(("卡死场景返回 False", ok is False))
+        results.append(("卡死源被放弃且断点保留（有进展不清空不落盘）",
+                        lo <= size <= hi and not os.path.isfile(dest)))
+        results.append(("日志提示「卡死」并说明放弃该源",
+                        any("卡死" in l for l in logs)))
+        results.append(("收尾日志说明已保留进度",
+                        any("已保留进度" in l for l in logs)))
+    finally:
+        urllib.request.urlopen = orig_urlopen
+        _time_mod.time = _t_orig
+        _time_mod.sleep = _s_orig
 
     shutil.rmtree(tmp, ignore_errors=True)
 

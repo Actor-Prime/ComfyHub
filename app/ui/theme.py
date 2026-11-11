@@ -188,6 +188,11 @@ QPushButton:disabled {
 }
 
 /* ===== 标签页 ===== */
+/* 2026-11-12 用户反馈「环境管理页的 tab 像 UI 缺失」：
+   未选中 tab 原来纯透明（background: transparent）+ 无边框，在深色页面底色上
+   只剩几行灰字，整条标签栏看不出是个控件。现在未选中态给一档「比页面亮」的底
+   (#171c23) + 细边框 (#2c3442)，选中态仍与面板同色并带 2px 蓝色指示条，
+   层次为：页面 #141920 < 标签条 #171c23 < 面板 #1b2029 < 悬停 #1e242d。 */
 QTabWidget::pane {
     border: 1px solid #343e4d;
     border-radius: 12px;
@@ -195,16 +200,20 @@ QTabWidget::pane {
     background: #1b2029;
 }
 QTabBar::tab {
-    background: transparent;
+    background: #171c23;
     color: #94a2b4;
     padding: 9px 20px;
-    border: 1px solid transparent;
+    border: 1px solid #2c3442;
     border-bottom: none;
     border-top-left-radius: 10px;
     border-top-right-radius: 10px;
     margin-right: 2px;
 }
-QTabBar::tab:hover { color: #e6edf7; background: #1e242d; }
+QTabBar::tab:hover {
+    color: #e6edf7;
+    background: #1e242d;
+    border-color: #343e4d;
+}
 QTabBar::tab:selected {
     background: #1b2029;
     color: #e6edf7;
@@ -213,13 +222,27 @@ QTabBar::tab:selected {
 }
 
 /* ===== 表格 ===== */
+/* 2026-11-12 用户报障「框边缘缺失」：QTableWidget 是 QAbstractScrollArea，
+   内部 viewport 是矩形会盖住自身 QSS 的边框 —— 四个角的边框根本画不出来
+   （横竖线在角上断成两截），圆角更无从谈起。
+   所以边框/圆角统一交给外层 #TableCard 容器（见 theme.card_table），
+   表格自己只保留行线/表头样式。 */
 QTableWidget {
-    background: #14181e;
+    background: transparent;
     alternate-background-color: #171c23;
     gridline-color: #2c3442;
+    border: none;
+    border-radius: 0;
+}
+#TableCard {
+    background: #14181e;
     border: 1px solid #343e4d;
     border-radius: 12px;
 }
+#TableCard QTableWidget { background: transparent; border: none; }
+#TableCard QHeaderView { background: transparent; }
+#TableCard QHeaderView::section:first { border-top-left-radius: 11px; }
+#TableCard QHeaderView::section:last { border-top-right-radius: 11px; }
 QTableWidget::item { padding: 4px 6px; }
 QHeaderView::section {
     background: #1b2029;
@@ -801,6 +824,67 @@ QGroupBox::title { color: #dbe3ee; }
 #Card:hover, #StatCard:hover, #RowCard:hover { border-color: #4c8dff; }
 
 """
+
+
+# 靠 objectName 吃 QSS 背景 + 圆角的「卡片类」控件。
+# Qt 铁律：**QWidget/QFrame 要 QSS 画背景和圆角，必须开 WA_StyledBackground**，
+# 否则样式表只管描边、不裁圆角也不填背景 —— 表现就是「圆角缺失、边框只剩直边」
+# （2026-11-12 用户报障：工作台目录卡、实例设置行卡、环境检测卡全是直角）。
+_CARD_IDS = {
+    "Card", "Banner", "RowCard", "SectionBox", "StatCard", "CheckRow",
+    "ActionBar", "ComposerCard", "PaneCard", "BannerBox", "TableCard",
+    # 带背景+圆角的徽章类（QLabel）：同样交给样式表画背景，圆角才不会漏直角
+    "ScopeBadge", "BadgeInstalled", "CheckState", "CatChip", "StatIcon",
+}
+
+
+def card_table(tb) -> "QFrame":
+    """把 QTableWidget 套进圆角卡片，返回容器（**用它 addWidget，别用表格本身**）。
+
+    原因：表格内部 viewport 是矩形，会盖住自身 QSS 边框 —— 角部边框画不出来
+    （用户报障「框边缘缺失」），圆角也永远是直角。边框/圆角交给外层容器后，
+    表头的首尾 section 再补上圆角，四角就都顺了。
+    """
+    from PySide6.QtCore import Qt as _Qt
+    from PySide6.QtWidgets import QFrame, QVBoxLayout
+    box = QFrame()
+    box.setObjectName("TableCard")
+    box.setAttribute(_Qt.WA_StyledBackground, True)
+    lay = QVBoxLayout(box)
+    lay.setContentsMargins(1, 1, 1, 1)      # 留 1px 让表格不压掉容器边框
+    lay.setSpacing(0)
+    lay.addWidget(tb)
+    return box
+
+
+def polish_styled_bg(root) -> int:
+    """兜底：遍历控件树，给卡片类控件补 WA_StyledBackground 并重新 polish。
+
+    源码里该设的地方都设了，这里是防漏网（动态创建的卡片、后加的新卡片 ID）。
+    返回本次补开的控件数。
+    """
+    if root is None:
+        return 0
+    from PySide6.QtCore import Qt as _Qt
+    from PySide6.QtWidgets import QWidget as _QW
+    n = 0
+    try:
+        targets = [root] + list(root.findChildren(_QW))
+    except Exception:
+        return 0
+    for w in targets:
+        try:
+            if w.objectName() not in _CARD_IDS:
+                continue
+            if w.testAttribute(_Qt.WA_StyledBackground):
+                continue
+            w.setAttribute(_Qt.WA_StyledBackground, True)
+            w.style().unpolish(w)
+            w.style().polish(w)
+            n += 1
+        except Exception:
+            continue
+    return n
 
 
 def page_scrim_rgba(alpha: float, strength: float = 0.25) -> str:

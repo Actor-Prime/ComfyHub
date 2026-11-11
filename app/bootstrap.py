@@ -342,6 +342,11 @@ def _download_threaded(url: str, dest: str, size: int, log=print,
     return True
 
 
+# 单连接卡死检测：窗口内增长不足下限 → 主动放弃当前源换下一家（断点保留）
+STALL_WINDOW_S = 45.0
+STALL_MIN_BYTES = 2 * 1048576     # ≈45KB/s，低于此视为卡死/被限速到不可用
+
+
 def download_multi(url_or_tpl: str | list, dest: str, log=print,
                    max_retry: int = 8, proxy: str = "", expected_sha: str | None = None,
                    timeout: int = 20) -> bool:
@@ -349,8 +354,12 @@ def download_multi(url_or_tpl: str | list, dest: str, log=print,
 
     设计要点（踩过的坑）：
     · **选定源后下到底，绝不中途按速度切换**——切换 + 不支持 Range 的源会导致进度清零，
-      形成"0~3MB 无限循环"（v0.5.73 的死循环事故）
+      形成"0~3MB 无限循环"（v0.5.73 的死循环事故）。唯一例外：窗口内几乎零增长
+      （卡死/被限速）才放弃当前源，且断点保留、换源原地续传
     · 只有当前源**抛异常/断开**才换下一个源；有进度时，不支持续传(Range)的源直接跳过
+    · 首块魔数校验（防 HTML 错误页）**只在从头下载时做**——206 续传的首块是文件
+      中段数据，必然不是 PK/gzip 头，误杀会让所有源续传全部失败
+      （2026-11-11：torch 1.9GB 断点 1002MB 处续传被误杀事故）
     · 所有源都失败且**全都明确拒绝续传** → 清空 .part 从头下（只做一次）；
       瞬时故障（网络抖动/代理不可用）一律保留 .part 直接失败——重试原地续传，
       绝不烧掉 GB 级进度（2026-11-09：1263MB 断点被烧事故）
@@ -384,8 +393,8 @@ def download_multi(url_or_tpl: str | list, dest: str, log=print,
         for ui, url in enumerate(_ordered):
             if pos > 0 and url in no_range:
                 continue      # 有进度时，不重头下不支持续传的源
-            if failed_count.get(url, 0) >= 2:
-                continue      # 该源已连续失败两次，本轮直接跳过（避免空转）
+            if failed_count.get(url, 0) >= 3:
+                continue      # 该源已连续失败三次，本轮直接跳过（避免空转）
             try:
                 headers = {"User-Agent": "Mozilla/5.0 ComfyHub/0.2"}
                 if pos > 0:
@@ -428,6 +437,8 @@ def download_multi(url_or_tpl: str | list, dest: str, log=print,
                 import time as _t
                 _last_log = 0.0
                 _first = True
+                _win_start = _t.time()    # 卡死检测窗口起点
+                _win_bytes = pos
                 with open(tmp, mode) as f:
                     while True:
                         chunk = r.read(1 << 20)
@@ -435,10 +446,14 @@ def download_multi(url_or_tpl: str | list, dest: str, log=print,
                             break
                         # ★ 首个数据块校验：必须是 ZIP(PK\x03\x04) 或 GZIP(\x1f\x8b) 或 TAR
                         #   否则说明拿到的是 HTML/错误页（镜像反爬、登录墙等），立刻换源
+                        #   ★ 仅从头下载(pos==0)时做——206 续传首块是文件中段数据，
+                        #     必然不是包头，误杀会让断点续传永远失败（IOError=OSError 别名，
+                        #     用户看到的就是「源1 失败: OSError」）
                         if _first:
                             _first = False
-                            if not (chunk[:4] == b"PK\x03\x04" or chunk[:2] == b"\x1f\x8b"
-                                    or chunk[:5] == b"ustar"):
+                            if pos == 0 and not (chunk[:4] == b"PK\x03\x04"
+                                                 or chunk[:2] == b"\x1f\x8b"
+                                                 or chunk[:5] == b"ustar"):
                                 raise IOError("响应不是压缩包（可能是网页/错误页）")
                         f.write(chunk)
                         _now = _t.time()
@@ -450,6 +465,13 @@ def download_multi(url_or_tpl: str | list, dest: str, log=print,
                                     f"({_cur * 100 // max(total, 1)}%)")
                             else:
                                 log(f"  ↓ {name}: {_cur / 1048576:.1f} MB")
+                        # 卡死检测：窗口内几乎零增长 → 放弃该源（断点保留，换源原地续传）
+                        if _now - _win_start >= STALL_WINDOW_S:
+                            _grow = f.tell() - _win_bytes
+                            if _grow < STALL_MIN_BYTES:
+                                raise IOError(f"源限速/卡死（{_now - _win_start:.0f} 秒仅增长 "
+                                              f"{_grow / 1048576:.1f}MB），放弃该源")
+                            _win_start, _win_bytes = _now, f.tell()
                 got = os.path.getsize(tmp)
                 # 完整性：有 Content-Length 时校验大小，防止连接中断被当成成功
                 if total > 0 and got < total:
@@ -463,12 +485,14 @@ def download_multi(url_or_tpl: str | list, dest: str, log=print,
                 last_err = e
                 failed_count[url] = failed_count.get(url, 0) + 1
                 now = os.path.getsize(tmp) if os.path.exists(tmp) else 0
-                log(f"  源{ui + 1} 失败（已得 {now / 1048576:.1f}MB）: {type(e).__name__}")
+                # 异常消息一并打出（如「源限速/卡死」「响应不是压缩包」），别只给类型名
+                log(f"  源{ui + 1} 失败（已得 {now / 1048576:.1f}MB）: "
+                    f"{type(e).__name__}: {e}")
 
         # 一轮结束：判断是否还有源可用
         pos_now = os.path.getsize(tmp) if os.path.exists(tmp) else 0
         usable = [u for u in urls
-                  if not (pos_now > 0 and u in no_range) and failed_count.get(u, 0) < 2]
+                  if not (pos_now > 0 and u in no_range) and failed_count.get(u, 0) < 3]
         if pos_now > 0 and not usable and not restart_done:
             # ★ 2026-11-09 修：只有「所有源都明确拒绝续传」才允许清空从头下。
             #   瞬时故障（网络抖动/代理不可用）必须保留 .part 直接失败——
@@ -482,14 +506,15 @@ def download_multi(url_or_tpl: str | list, dest: str, log=print,
                 except OSError:
                     pass
                 continue
-            log(f"  所有源暂时不可用（已保留进度 {pos_now / 1048576:.1f}MB，"
-                "重试将原地续传，不会清空）")
             break
         if pos_now == 0:
             log(f"  第 {attempt} 轮全部源失败: {last_err}")
         import time as _t2
         _t2.sleep(min(2 * attempt, 8))
 
+    if os.path.exists(tmp) and os.path.getsize(tmp) > 0:
+        log(f"  下载失败（已保留进度 {os.path.getsize(tmp) / 1048576:.1f}MB，"
+            "重试将原地续传，不会清空）")
     return False
 
 
@@ -830,9 +855,16 @@ def install_torch(python_exe: str, variant: str, log=print,
             if os.path.isfile(dest) and sha and _sha256_of(dest) == sha:
                 log(f"复用本地 wheel：{fname}")
             else:
+                # 源顺序：官方 → 阿里（平铺镜像，最新）→ 上交（301→s3，Range 保留）→ 腾讯
+                # 腾讯是 PyPI 风格布局（多一层包名目录），且同步滞后于官方
+                # （2026-11 实测 cu130 止步 torch 2.9.1）——新版 wheel 在此 404 会
+                # 快速跳过，旧版可用，故放在末位当补充
+                _pkg = fname.split("-", 1)[0]      # torch / torchvision / torchaudio
                 srcs = [url,
                         f"https://mirrors.aliyun.com/pytorch-wheels/{variant}/{fname}",
-                        f"https://mirror.sjtu.edu.cn/pytorch-wheels/{variant}/{fname}"]
+                        f"https://mirror.sjtu.edu.cn/pytorch-wheels/{variant}/{fname}",
+                        f"https://mirrors.cloud.tencent.com/pytorch-wheels/"
+                        f"whl/{variant}/{_pkg}/{fname}"]
                 log(f"预下载 wheel：{fname}（断点续传+多源）")
                 if not download_multi(srcs, dest, log=log, expected_sha=sha or None):
                     log(f"❌ {fname} 多源下载失败")

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """主窗口：窄图标导航 + 全局顶栏（对标管理大师布局）"""
 import os
+import time as _time
 import uuid
 
 from PySide6.QtCore import QSize, Qt, QRect, QTimer
@@ -277,12 +278,31 @@ class MainWindow(QMainWindow):
         from PySide6.QtCore import QTimer as _QT
         _QT.singleShot(6000, lambda: self.check_updates(manual=False))
 
+        # 延迟提醒（2026-11-12 用户需求）：启动满 1 小时后若仍有新版本，主动提醒一次；
+        # 用 60s tick 的轻量判断（只在内存里算时间，联网仍受 update_last_check 节流）
+        self._update_started = _time.time()
+        self._update_reminded = set()     # 本会话已提醒过的版本
+        self._reminder_open = False       # 防模态期间 tick 重入
+        self._update_mode = ""
+        self._update_timer = QTimer(self)
+        self._update_timer.setInterval(60 * 1000)
+        self._update_timer.timeout.connect(self._update_tick)
+        self._update_timer.start()
+
         # ---------- 主题与语言（2026-11-01）----------
         self._apply_theme()
         self.settings_page.sig_saved.connect(self._apply_theme)   # 设置页保存后实时重绘
         self._init_theme_watch()
         from app.i18n import apply_language
         apply_language(self, str((self.cfg.get("settings") or {}).get("lang", "zh")))
+
+        # 兜底（2026-11-12 用户报障「圆角缺失/框边缘缺失」）：
+        # 卡片类控件若漏设 WA_StyledBackground，QSS 就只画直边不裁圆角。
+        # 启动扫一遍 + 每次切页扫当前页（覆盖懒加载/动态创建的卡片）。
+        from app.ui.theme import polish_styled_bg
+        polish_styled_bg(self)
+        self.stack.currentChanged.connect(
+            lambda _idx: polish_styled_bg(self.stack.currentWidget()))
 
     # ---------- 主题 ----------
     def _apply_theme(self):
@@ -564,17 +584,27 @@ class MainWindow(QMainWindow):
     def goto(self, row):
         self.nav.setCurrentRow(row)
 
-    # ---------- 版本更新（2026-11-04）----------
-    def check_updates(self, manual: bool = False):
-        """检查更新：manual=False 时受「启动时自动检查」开关约束"""
+    # ---------- 版本更新（2026-11-04 / 延迟提醒 2026-11-12）----------
+    def check_updates(self, manual: bool = False, mode: str = ""):
+        """检查更新。
+
+        mode:
+          manual  —— 用户点「检查更新」，结果一律弹窗反馈
+          auto    —— 启动 6 秒后的自动检查（受「启动时自动检查」开关约束）
+          delayed —— 启动满 1 小时后的主动提醒检查（受「延迟提醒」开关约束）
+        """
         from app import updater
         from app.ui.update_banner import CheckWorker
         st = self.cfg.get("settings") or {}
-        if not manual and not bool(st.get("update_auto_check", True)):
+        mode = mode or ("manual" if manual else "auto")
+        if mode == "auto" and not bool(st.get("update_auto_check", True)):
+            return
+        if mode == "delayed" and not bool(st.get("update_delayed_check", True)):
             return
         if self._check_worker is not None and self._check_worker.isRunning():
             return
-        self._update_manual = manual
+        self._update_mode = mode
+        self._update_manual = (mode == "manual")
         self._check_worker = CheckWorker(self.cfg, force=manual, parent=self)
         self._check_worker.sig_done.connect(self._on_update_checked)
         self._check_worker.start()
@@ -583,7 +613,9 @@ class MainWindow(QMainWindow):
         from PySide6.QtWidgets import QMessageBox
         from app import updater
         self._check_worker = None
-        manual = bool(getattr(self, "_update_manual", False))
+        mode = self._update_mode or ("manual" if getattr(self, "_update_manual", False)
+                                     else "auto")
+        manual = mode == "manual"
         if not info.get("ok"):
             if manual:
                 QMessageBox.information(self, "检查更新",
@@ -598,6 +630,66 @@ class MainWindow(QMainWindow):
             return
         self._update_info = info
         self.update_banner.show_update(info)
+        if mode == "delayed":
+            # 主动提醒：弹一次；「已提醒过该版本」由 _show_update_reminder 记账
+            self._show_update_reminder(info)
+
+    # ---------- 延迟提醒（启动满 1 小时）----------
+    def _update_tick(self):
+        """每分钟一次的时间判断；真联网受 30 分钟节流（update_last_check）"""
+        try:
+            from app import update_notify
+        except Exception:
+            return
+        if self._reminder_open:
+            return
+        st = self.cfg.get("settings") or {}
+        now = _time.time()
+        if not update_notify.should_remind(st, self._update_started, now):
+            return
+        info = self._update_info
+        if info and info.get("has_update"):
+            if info.get("latest") in self._update_reminded:
+                return
+            self._show_update_reminder(info)
+            return
+        if not update_notify.can_recheck(st, now):
+            return
+        self.check_updates(mode="delayed")
+
+    def _show_update_reminder(self, info: dict):
+        from app import update_notify
+        from app.ui.update_reminder import UpdateReminderDialog
+        ver = str(info.get("latest") or "")
+        if not ver or ver in self._update_reminded or self._reminder_open:
+            return
+        self._reminder_open = True
+        try:
+            dlg = UpdateReminderDialog(info, self)
+            dlg.exec()
+            act = dlg.action
+        finally:
+            self._reminder_open = False
+        st = self.cfg.setdefault("settings", {})
+        if act == "update":
+            self._on_update_clicked()
+            return
+        self._update_reminded.add(ver)      # 同一会话不再对同一版本重复弹
+        if act == "later":
+            until = update_notify.snooze(st, dlg.delay_hours)
+            save_config(self.cfg)
+            import datetime as _dt
+            try:
+                when = _dt.datetime.fromtimestamp(until).strftime("%m-%d %H:%M")
+            except Exception:
+                when = ""
+            self.statusBar().showMessage(f"已延后提醒：{when}" if when else "已延后提醒",
+                                         6000)
+        elif act == "never":
+            # 复用「跳过此版本」语义：之后的自动检查一律不再提示该版本
+            st["update_skipped_version"] = ver
+            save_config(self.cfg)
+            self.update_banner.hide()
 
     def _on_update_clicked(self):
         from PySide6.QtWidgets import QDialog

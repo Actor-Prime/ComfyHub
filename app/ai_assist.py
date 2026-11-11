@@ -24,6 +24,9 @@ _HOST_WHITELIST = (
 
 _URL_RE = re.compile(r"https?://[^\s\"'<>)\]]+")
 
+# 地址末尾的版本段：/v1 /v2 /v3 /v4（含 /api/paas/v4 这种多段路径）
+_VER_TAIL = re.compile(r"/v\d+$")
+
 # 清单里混着语音/向量类模型（如 mimo-v2.5-asr / tts），chat 不能用的先跳过，
 # 否则「不填模型」时会默认选中 asr，测试必然失败（2026-11-01 实测踩到）
 _NON_CHAT_HINTS = ("asr", "tts", "voiceclone", "voicedesign", "whisper",
@@ -49,13 +52,22 @@ def enabled(settings: dict) -> bool:
 
 
 def _v1_base(base_url: str) -> str:
-    """统一成 https://host/v1（用户常只填到域名，或连 /v1 都省）"""
+    """统一成带版本段的 base。
+
+    默认补 /v1；但**已带版本段的原样用**——智谱是 /api/paas/v4、火山方舟是
+    /api/v3，盲补 /v1 会拼出 /v4/v1/chat/completions → 404
+    （2026-11-12 加服务商预设时暴露的坑）。
+    """
     base = (base_url or "").strip().rstrip("/")
     if not base:
         raise ValueError("接口地址为空")
-    if not base.endswith("/v1") and "/chat/completions" not in base:
-        base += "/v1"
-    return base
+    if "/chat/completions" in base:
+        return base
+    # 已带版本段（/v1 /v2 /v3 /v4）或以 /openai 结尾（Gemini、DeepInfra、
+    # Novita 的兼容层形态）→ 原样用，别盲补 /v1；智谱是 /v4、火山是 /v3
+    if _VER_TAIL.search(base) or base.endswith("/openai"):
+        return base
+    return base + "/v1"
 
 
 def _ssl_ctx():

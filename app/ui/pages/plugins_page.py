@@ -21,6 +21,7 @@ from app import plugin_store as store
 from app.i18n import T
 from app.config import save_config
 from app.workers import swap_worker
+from app.ui.theme import card_table
 
 
 # 状态列警告图标（PIL 自绘 assets/warn_triangle.png，见 assets/SOURCES.md）。
@@ -291,7 +292,7 @@ class PluginsPage(QWidget):
         # 双击 Git 地址列 → 浏览器打开仓库页（单击只选中；2026-10-27 用户定）
         self.tb.cellDoubleClicked.connect(self._on_installed_click)
         self.tb.doubleClicked.connect(self._toggle)
-        root.addWidget(self.tb, 1)
+        root.addWidget(card_table(self.tb), 1)
 
         bar = QHBoxLayout()
         self.lb_tip = QLabel("双击行 = 启用/禁用；调好后点「存为方案」保存成启动模式。")
@@ -369,7 +370,7 @@ class PluginsPage(QWidget):
         # 双击插件名 → 系统默认浏览器打开仓库页面（2026-10-27 用户定：单击只选中，
         # 双击才跳转，避免误开）
         self.tb_market.cellDoubleClicked.connect(self._on_market_click)
-        root.addWidget(self.tb_market, 1)
+        root.addWidget(card_table(self.tb_market), 1)
 
         tip = QLabel("数据来源：ComfyUI-Manager 官方插件清单（6000+）。安装走 git clone，"
                      "网络不佳时可在「系统设置」配置代理后点「刷新清单」。")

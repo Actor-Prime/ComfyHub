@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 from app import kernel_store, profiles, health_check
 from app.config import VRAM_MODES
 from app.workflow_scan import load_workflow, extract_class_types
-from app.ui.theme import fit_table
+from app.ui.theme import fit_table, card_table
 from app.workers import swap_worker
 
 LAUNCH_MODES = {
@@ -161,7 +161,7 @@ class KernelManageDialog(QDialog):
         self.tb.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tb.setSelectionBehavior(QAbstractItemView.SelectRows)
         fit_table(self.tb)
-        root.addWidget(self.tb, 1)
+        root.addWidget(card_table(self.tb), 1)
 
         bar = QHBoxLayout()
         b_imp = QPushButton("📥 从实例导入…")
@@ -316,7 +316,7 @@ class FromWorkflowDialog(QDialog):
         self.tb.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
         self.tb.setEditTriggers(QAbstractItemView.NoEditTriggers)
         fit_table(self.tb)
-        root.addWidget(self.tb, 1)
+        root.addWidget(card_table(self.tb), 1)
 
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
@@ -517,7 +517,7 @@ class ProfilesPage(QWidget):
         self.tb.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tb.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tb.itemSelectionChanged.connect(self._on_select)
-        split.addWidget(self.tb)
+        split.addWidget(card_table(self.tb))
 
         # 右：详情表单
         right = QWidget()
