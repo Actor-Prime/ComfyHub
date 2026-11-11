@@ -1134,8 +1134,7 @@ class SetupWizard(QWizard):
             _target = root if "comfyui" in _bn else os.path.join(root, "ComfyUI")
             self.ed_dir.setText(_target)
             self.lb_scan.setText(
-                f"📁 目录不存在，将在此全新安装：\n{_target}\n"
-                "（安装开始时才创建，现在不会动你的磁盘）")
+                f"📁 目录不存在，将在此全新安装：\n{_target}")
             p1 = self.page(0)          # ← 此前漏了这行，导致输入不存在路径直接 NameError 崩溃
             self._apply_fresh_buttons()
             if not self.ed_name.text().strip():
@@ -1214,8 +1213,7 @@ class SetupWizard(QWizard):
                 self.lb_scan.setStyleSheet("color:#e8a33d;")
                 self.lb_scan.setText(
                     f"🔍 已扫描 {root} 的全部子目录，未发现现成实例\n"
-                    f"点「下一步」将在此位置全新安装：{_orig}\n"
-                    "（现在不会动你的磁盘，安装开始时才创建）")
+                    f"点「下一步」将在此位置全新安装：{_orig}")
                 p1.setFinalPage(False)
                 self.button(QWizard.NextButton).setEnabled(True)
                 self.button(QWizard.FinishButton).setEnabled(False)
@@ -1336,7 +1334,7 @@ class SetupWizard(QWizard):
         self.lb_scan.setStyleSheet("color:#e8a33d;")
         self.lb_scan.setText(
             f"🆕 已选「新建新实例」：点「下一步」将在此全新安装到\n{target}\n"
-            "（现在不会动你的磁盘，安装开始时才创建；上方安装参数可按需调整）")
+            "（上方安装参数可按需调整）")
         self.lb_scan.show()
 
     def _begin_verify(self):

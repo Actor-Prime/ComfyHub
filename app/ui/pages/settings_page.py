@@ -8,6 +8,7 @@ ComfyUI 实例设置页（comfyui_page.py 第三分区），本页只保留网�
 import os
 
 from PySide6.QtCore import Qt, Signal, QThread
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QComboBox,
     QPushButton, QGroupBox, QFormLayout, QMessageBox, QScrollArea,
@@ -17,6 +18,7 @@ from PySide6.QtWidgets import (
 
 from app.config import save_config, APP_VERSION
 from app.bootstrap import PYPI_MIRRORS
+from app.i18n import T
 
 
 class _AiTestWorker(QThread):
@@ -408,32 +410,76 @@ class SettingsPage(QWidget):
         self.ck_ai = QCheckBox("启用 AI 接入（仅确定性查不到时调用）")
         self.ck_ai.setChecked(bool(st.get("ai_enabled", False)))
         f_ai.addRow("", self.ck_ai)
-        self.ed_ai_base = QLineEdit(st.get("ai_base_url", ""))
+
+        # ---- 服务商预设（2026-11-12 用户需求）----
+        # 先选服务商：自动填好接口地址与候选模型；选「自定义」才手填地址。
+        # 判定逻辑：存 ai_provider；旧配置没有该键 → 按 base_url 域名反查，
+        # 查不到归「自定义」（保证老用户配置一字不改地显示出来）
+        from app import ai_providers as _prov
+        _saved_base = str(st.get("ai_base_url", "") or "")
+        _pid = str(st.get("ai_provider", "") or "").strip()
+        if not _pid:
+            _pid = _prov.match(_saved_base)
+        self.cb_ai_provider = QComboBox()
+        self.cb_ai_provider.setMaxVisibleItems(24)     # 分组后条目多，一次多看几行
+        # 分组渲染：国内 / 国际（含各厂海外站）/ 自定义。
+        # 组标题项 data=None 且 disabled —— 否则用户能选中一个没有 base 的假项
+        for _gname, _items in _prov.grouped():
+            if self.cb_ai_provider.count():
+                self.cb_ai_provider.insertSeparator(self.cb_ai_provider.count())
+            if _gname:
+                self.cb_ai_provider.addItem(f"—— {T(_gname)} ——", None)
+                _it = self.cb_ai_provider.model().item(
+                    self.cb_ai_provider.count() - 1)
+                if _it is not None:
+                    _it.setEnabled(False)      # 标题不可选
+                    _f = _it.font()            # 加粗 + 强调色：分组一眼可辨
+                    _f.setBold(True)
+                    _it.setFont(_f)
+                    _it.setForeground(QColor("#7aa2d0"))
+            for _p in _items:
+                self.cb_ai_provider.addItem(T(_p["name"]), _p["id"])
+        _i_pid = self.cb_ai_provider.findData(_pid)
+        self.cb_ai_provider.setCurrentIndex(_i_pid if _i_pid >= 0 else
+                                            self.cb_ai_provider.count() - 1)
+        self.cb_ai_provider.setToolTip(
+            "选预设会自动填好接口地址与候选模型；你的服务商不在列表里就选最下面"
+            "「自定义」，手动填地址")
+        f_ai.addRow("服务商:", self.cb_ai_provider)
+        self.lb_ai_prov_hint = QLabel("")
+        self.lb_ai_prov_hint.setWordWrap(True)
+        self.lb_ai_prov_hint.setStyleSheet("color:#6c7a8c; font-size:11px;")
+        f_ai.addRow("", self.lb_ai_prov_hint)
+
+        # 接口地址：预设下只读（显示实际地址，不黑盒），自定义下可编辑
+        self.ed_ai_base = QLineEdit(_saved_base)
         self.ed_ai_base.setPlaceholderText(
             "OpenAI 兼容端点，如 https://api.deepseek.com/v1")
-        # 接口地址 + 「测试接口」（2026-11-01）：一次点击完成「测连通 + 拉模型清单 + 绑定模型」
-        row_base = QHBoxLayout()
-        row_base.setSpacing(8)
-        # 地址框 stretch=1 铺满、按钮紧随其后（第 3 版）：
-        # 之前为了修"按钮被弹到最右"加过末尾 addStretch(1)，但那是配合 fixedWidth
-        # 用的；现在字段不定宽，末尾 stretch 会把地址框缩成 340px、和下面 7 个字段
-        # 的右边缘对不上。
-        row_base.addWidget(self.ed_ai_base, 1)
-        self.b_ai_test = QPushButton("测试接口")
-        self.b_ai_test.clicked.connect(self._test_ai)
-        row_base.addWidget(self.b_ai_test)
-        f_ai.addRow("接口地址:", row_base)
+        self.ed_ai_base.setToolTip(
+            "选「自定义」后可修改。预设地址来自各家官方文档，出问题请对照官网")
+        f_ai.addRow("接口地址:", self.ed_ai_base)
+
+        # API Key +「测试接口」：按钮随 Key 走（与常见 AI 客户端一致，
+        # 也避免预设模式地址行只读时按钮跟着变灰）
+        row_key = QHBoxLayout()
+        row_key.setSpacing(8)
         self.ed_ai_key = QLineEdit(st.get("ai_api_key", ""))
         self.ed_ai_key.setEchoMode(QLineEdit.Password)
         self.ed_ai_key.setPlaceholderText("API Key（仅存本机 config.json）")
-        f_ai.addRow("API Key:", self.ed_ai_key)
-        # 模型名：可编辑下拉 —— 点「测试接口」后自动填入接口返回的模型清单供选择
+        row_key.addWidget(self.ed_ai_key, 1)
+        self.b_ai_test = QPushButton("测试接口")
+        self.b_ai_test.setToolTip("测连通 + 拉该 Key 可用的模型清单，并自动选中一个")
+        self.b_ai_test.clicked.connect(self._test_ai)
+        row_key.addWidget(self.b_ai_test)
+        f_ai.addRow("API Key:", row_key)
+
+        # 模型名：可编辑下拉 —— 预设给候选，测试后换成接口返回的真实清单
         self.cb_ai_model = QComboBox()
         self.cb_ai_model.setEditable(True)
         _cur_model = str(st.get("ai_model", "") or "")
-        if _cur_model:
-            self.cb_ai_model.addItem(_cur_model)
-        self.cb_ai_model.setCurrentText(_cur_model)
+        for _m in _prov.get(_pid)["models"]:
+            self.cb_ai_model.addItem(_m)
+        self.cb_ai_model.setCurrentText(_cur_model or _prov.default_model(_pid))
         if self.cb_ai_model.lineEdit():
             self.cb_ai_model.lineEdit().setPlaceholderText(
                 "模型名，如 mimo-v2.6-pro / deepseek-chat")
@@ -524,6 +570,9 @@ class SettingsPage(QWidget):
         self.lb_ai_profile.setStyleSheet("color:#7f8894; font-size:11px;")
         f_ai.addRow("", self.lb_ai_profile)
         self.cb_ai_model.currentTextChanged.connect(self._refresh_ai_profile)
+        # 服务商切换：填地址/候选模型/只读态（构造完再接线，避免初始化期乱触发）
+        self.cb_ai_provider.currentIndexChanged.connect(self._on_provider_changed)
+        self._apply_provider(self.cb_ai_provider.currentData() or "custom", init=True)
 
         # ---- 字段宽度：不再单独钉宽（第 3 版）----
         # 上一版把 7 个控件钉成 420、助手设定钉成 720，结果是「字段 420 / 文本框 720 /
@@ -606,6 +655,15 @@ class SettingsPage(QWidget):
         self.ck_upd_auto.setChecked(bool(st.get("update_auto_check", True)))
         self.ck_upd_auto.toggled.connect(self._save_update_prefs)
         row_up.addWidget(self.ck_upd_auto)
+        # 延迟提醒（2026-11-12 用户需求）：启动满 1 小时仍有新版就弹一次，可延后/不再提醒
+        self.ck_upd_delayed = QCheckBox("启动一小时后提醒")
+        self.ck_upd_delayed.setChecked(bool(st.get("update_delayed_check", True)))
+        self.ck_upd_delayed.setToolTip(
+            "启动满 1 小时后，如果发现新版本会弹窗提醒一次。\n"
+            "弹窗里可以选择「延后提醒」（1 小时 / 4 小时 / 1 天 / 3 天 / 1 周）"
+            "或「不再提醒此版本」。这项与上面「启动时自动检查」互不影响")
+        self.ck_upd_delayed.toggled.connect(self._save_update_prefs)
+        row_up.addWidget(self.ck_upd_delayed)
         self.b_upd_skip = QPushButton("清除「跳过版本」")
         self.b_upd_skip.setVisible(bool(st.get("update_skipped_version")))
         self.b_upd_skip.clicked.connect(self._clear_skipped_version)
@@ -755,11 +813,22 @@ class SettingsPage(QWidget):
         skipped = st.get("update_skipped_version")
         if skipped:
             parts.append(f"已跳过版本：{skipped}")
+        # 延后提醒的到期时间（动态值单独拼，别进词表）
+        try:
+            from app import update_notify
+            _until = update_notify.snooze_until(st)
+            import time as _t2
+            if _until > _t2.time():
+                parts.append("提醒已延后至：" +
+                             _t2.strftime("%m-%d %H:%M", _t2.localtime(_until)))
+        except Exception:
+            pass
         self.lb_upd_state.setText("　·　".join(parts))
 
     def _save_update_prefs(self, *_):
         st = self.cfg.setdefault("settings", {})
         st["update_auto_check"] = bool(self.ck_upd_auto.isChecked())
+        st["update_delayed_check"] = bool(self.ck_upd_delayed.isChecked())
         save_config(self.cfg)
 
     def _clear_skipped_version(self):
@@ -776,6 +845,48 @@ class SettingsPage(QWidget):
         if hasattr(win, "check_updates"):
             win.check_updates(manual=True)
             self._refresh_update_state()
+
+    def _on_provider_changed(self, _idx: int = 0):
+        self._apply_provider(self.cb_ai_provider.currentData() or "custom")
+
+    def _apply_provider(self, pid: str, init: bool = False):
+        """切服务商：预设 → 自动填地址 + 候选模型（地址只读灰底）；
+        自定义 → 地址可编辑、不覆盖用户已填内容。
+
+        init=True 仅构造时用：保留存档里的模型名（可能用户手填过），空才用预设默认；
+        用户主动切换则直接换成新家的默认模型（旧模型名对新服务商无意义）。
+        """
+        from app import ai_providers as _prov
+        p = _prov.get(pid)
+        custom = p["id"] == _prov.CUSTOM_ID
+        # ---- 接口地址 ----
+        # 只读态用「虚线边框 + 次级文字色」明确「这不是能改的」，但仍可选中复制；
+        # 不写 border-radius/padding，避免与主题里的输入框规格不一致（对齐铁律）
+        self.ed_ai_base.setReadOnly(not custom)
+        self.ed_ai_base.setStyleSheet(
+            "" if custom else
+            "QLineEdit{background:#14181e;color:#8b98a8;"
+            "border:1px dashed #39424f;}")
+        if not custom:
+            if self.ed_ai_base.text().strip() != p["base"]:
+                self.ed_ai_base.setText(p["base"])
+            self.ed_ai_base.setCursorPosition(0)      # 长地址回显开头，别停在尾巴
+        # ---- 模型候选（blockSignals 防中途触发画像刷新）----
+        old_model = self.cb_ai_model.currentText().strip()
+        self.cb_ai_model.blockSignals(True)
+        self.cb_ai_model.clear()
+        self.cb_ai_model.addItems(p["models"])
+        if init:
+            keep = old_model or _prov.default_model(p["id"])
+        elif custom:
+            keep = old_model          # 切自定义：保留手上的模型名，别清空
+        else:
+            keep = _prov.default_model(p["id"])
+        self.cb_ai_model.setCurrentText(keep)
+        self.cb_ai_model.blockSignals(False)
+        # ---- 提示语（动态文本必须显式 T()，否则英文界面残留中文）----
+        self.lb_ai_prov_hint.setText(T(p.get("hint", "")))
+        self._refresh_ai_profile(self.cb_ai_model.currentText())
 
     def _refresh_ai_profile(self, model_text: str = ""):
         """按模型名/域名识别画像，给用户一句人话说明这套参数会怎么生效"""
@@ -795,8 +906,15 @@ class SettingsPage(QWidget):
         """测连通 + 拉模型清单 + 把选中模型绑定到下拉（2026-11-01）"""
         base = self.ed_ai_base.text().strip()
         key = self.ed_ai_key.text().strip()
-        if not base or not key:
-            QMessageBox.warning(self, "ComfyHub", "请先填写接口地址与 API Key。")
+        if not base:
+            # 预设模式地址是自动填的，这里为空 = 选了「自定义」却没填
+            QMessageBox.warning(self, "ComfyHub",
+                                "请先填写接口地址（选一个服务商，或选「自定义」后手填）。")
+            self.ed_ai_base.setFocus()
+            return
+        if not key:
+            QMessageBox.warning(self, "ComfyHub", "请先填写 API Key。")
+            self.ed_ai_key.setFocus()
             return
         if getattr(self, "_ai_worker", None) and self._ai_worker.isRunning():
             return
@@ -877,7 +995,8 @@ class SettingsPage(QWidget):
     _SAVE_LABELS = {
         "mirror": "PyPI 镜像", "gh_proxy": "GitHub 代理", "git_proxy": "Git Clone 代理",
         "tools_dir": "共享工具目录", "close_behavior": "关闭按钮行为",
-        "ai_enabled": "AI 接入", "ai_base_url": "接口地址", "ai_api_key": "API Key",
+        "ai_enabled": "AI 接入", "ai_provider": "AI 服务商",
+        "ai_base_url": "接口地址", "ai_api_key": "API Key",
         "ai_model": "模型名", "ai_think": "思考强度", "ai_max_tokens": "最大输出",
         "ai_ctx_msgs": "上下文条数", "ai_compress": "上下文压缩", "ai_persona": "助手设定",
         "ai_direct": "AI 直连", "theme": "主题", "bg_image": "背景图",
@@ -896,6 +1015,11 @@ class SettingsPage(QWidget):
         old_tools = str(self.cfg["settings"].get("tools_dir", "")).strip()
         st = self.cfg["settings"]
         old = dict(st)
+        from app import ai_providers as _prov
+        # 老配置没有 ai_provider 键：按地址反查补一个再比对，否则「什么都没改」
+        # 也会被判成「AI 服务商：空 → deepseek」而弹确认框打扰用户
+        if "ai_provider" not in old:
+            old["ai_provider"] = _prov.match(old.get("ai_base_url", ""))
         # 先收集到 pending，确认后才真正写入 st —— 取消则一个字节都不动
         pending = {
             "mirror": self.cb_mirror.currentText(),
@@ -904,9 +1028,14 @@ class SettingsPage(QWidget):
             "tools_dir": new_tools,
             "close_behavior": self.cb_close.currentData() or "ask",
             "ai_enabled": self.ck_ai.isChecked(),
+            "ai_provider": str(self.cb_ai_provider.currentData() or "custom"),
             "ai_base_url": self.ed_ai_base.text().strip(),
             "ai_api_key": self.ed_ai_key.text().strip(),
-            "ai_model": self.cb_ai_model.currentText().strip() or "deepseek-chat",
+            # 模型名留空时用该服务商的默认候选兜底（候选为空的厂商才落到通用值）
+            "ai_model": (self.cb_ai_model.currentText().strip()
+                         or _prov.default_model(
+                             str(self.cb_ai_provider.currentData() or "custom"))
+                         or "deepseek-chat"),
             "ai_think": str(self.cb_ai_think.currentData() or "off"),
             "ai_max_tokens": int(self.sp_ai_max.value()),
             "ai_ctx_msgs": int(self.cb_ai_ctx.currentData() or 12),

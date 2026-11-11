@@ -27,6 +27,7 @@ from app import instance as inst_lib
 from app.workers import swap_worker
 from app.ui.pages.model_market_widget import ModelMarketWidget
 from app.ui.download_center import DownloadCenter
+from app.ui.theme import card_table
 
 
 class DlWorker(QThread):
@@ -254,7 +255,7 @@ class ModelsPage(QWidget):
         #  · 「全部」类别表    → 下钻到该类别（等同点上面的 chip）
         #  · 文件明细/搜索表  → 在资源管理器里选中该文件
         self.tb.cellDoubleClicked.connect(self._on_row_dbl)
-        lv.addWidget(self.tb, 1)
+        lv.addWidget(card_table(self.tb), 1)
 
     # ---------- 范围/chips/搜索 ----------
     def _scope_key(self) -> str:

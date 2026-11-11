@@ -291,9 +291,9 @@ class CivitaiDialog(QDialog):
             self.tb_files.setItem(i, 1, sz)
             self.tb_files.setItem(i, 2, QTableWidgetItem(f["type"]))
             self.tb_files.setCellWidget(i, 3, self._ops_widget(f))
-        from app.ui.theme import fit_table
+        from app.ui.theme import fit_table, card_table
         fit_table(self.tb_files)   # 对话框懒创建，主窗扫描覆盖不到，就地统一行高
-        v1.addWidget(self.tb_files)
+        v1.addWidget(card_table(self.tb_files))
         root.addWidget(g1, 1)
 
         g2 = QGroupBox("HF 镜像同名同步仓库（可下载）")
@@ -311,7 +311,7 @@ class CivitaiDialog(QDialog):
         self.tb_hf.setEditTriggers(QTableWidget.NoEditTriggers)
         self.tb_hf.verticalHeader().setVisible(False)
         fit_table(self.tb_hf)
-        v2.addWidget(self.tb_hf)
+        v2.addWidget(card_table(self.tb_hf))
         root.addWidget(g2, 1)
 
         bb = QHBoxLayout()
@@ -412,6 +412,8 @@ class ModelCard(QFrame):
     def __init__(self, m: dict, installed: bool, civitai: bool, parent=None):
         super().__init__(parent)
         self.setObjectName("Card")
+        # QSS 背景/圆角需要 WA_StyledBackground，否则 QFrame 只画直边
+        self.setAttribute(Qt.WA_StyledBackground, True)
         self.setSizePolicy(_QSP.Expanding, _QSP.Fixed)
         self.repo_id = m.get("id") or ""
         self.installed = installed
@@ -518,6 +520,7 @@ class ModelMarketWidget(QWidget):
         # 状态条：圆点 + 文案 + 全局操作
         st = QFrame()
         st.setObjectName("Banner")
+        st.setAttribute(Qt.WA_StyledBackground, True)
         h = QHBoxLayout(st)
         h.setContentsMargins(10, 6, 10, 6)
         self.dot = QLabel()

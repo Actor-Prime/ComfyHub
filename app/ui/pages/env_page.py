@@ -20,6 +20,7 @@ from app.tools import EnvBackup, Rescue
 from app.bootstrap import find_git
 from app.winsub import run as sub_run
 from app.workers import swap_worker
+from app.ui.theme import card_table
 
 
 # ---------------- 检测线程 ----------------
@@ -373,6 +374,7 @@ class EnvPage(QWidget):
         for name, desc, fix_kind in CHECKS:
             f = QFrame()
             f.setObjectName("CheckRow")
+            f.setAttribute(Qt.WA_StyledBackground, True)   # 否则 QSS 圆角/填充不生效
             h = QHBoxLayout(f)
             h.setContentsMargins(14, 10, 14, 10)
             left = QVBoxLayout()
@@ -539,7 +541,7 @@ class EnvPage(QWidget):
         self.tb.setSelectionBehavior(QTableWidget.SelectRows)
         self.tb.setEditTriggers(QTableWidget.NoEditTriggers)
         self.tb.itemSelectionChanged.connect(self._show_detail)
-        v.addWidget(self.tb, 1)
+        v.addWidget(card_table(self.tb), 1)
 
         # 详情面板：选中行 → 展示事件 / 内核 / 插件版本 / 工作流 / 模型哈希
         self.detail = QTextBrowser()
@@ -708,7 +710,7 @@ class EnvPage(QWidget):
         self.tb_deps.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.tb_deps.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         self.tb_deps.setEditTriggers(QTableWidget.NoEditTriggers)
-        v.addWidget(self.tb_deps, 1)
+        v.addWidget(card_table(self.tb_deps), 1)
 
         hint = QLabel("首次加载需要点上方【依赖检测】；卸载前请先停止 ComfyUI。")
         hint.setStyleSheet("color:#7d8797;")

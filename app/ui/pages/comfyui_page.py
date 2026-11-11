@@ -18,6 +18,7 @@ from app.log import log_exc
 from app.ui.nav import NAV
 from app.workers import BgWorker, RmWorker, swap_worker, wait_all
 from app.process import build_command, port_in_use
+from app.ui.theme import card_table
 
 
 class _Row(QFrame):
@@ -43,6 +44,8 @@ class _Row(QFrame):
         """
         super().__init__()
         self.setObjectName("RowCard")
+        # 不设这个 Qt 只画直边不裁圆角（QSS 背景需要 WA_StyledBackground）
+        self.setAttribute(Qt.WA_StyledBackground, True)
         v = QVBoxLayout(self)
         v.setContentsMargins(18, 11, 18, 11)
         v.setSpacing(5)
@@ -531,7 +534,7 @@ class ComfyuiPage(QWidget):
         self.tb_kver.setEditTriggers(QTableWidget.NoEditTriggers)
         self.tb_kver.setSelectionBehavior(QTableWidget.SelectRows)
         # 不再设最大高度：列表向下撑满到窗口底部操作栏（2026-10-27 报障改）
-        t2v.addWidget(self.tb_kver, 1)
+        t2v.addWidget(card_table(self.tb_kver), 1)
         # 「加载更多」（2026-11-02 用户定）：一次只画 20 行，拉到底点按钮再追加；
         # 滚动条触底也会自动追加。无剩余时按钮隐藏。
         self.b_kmore = QPushButton("加载更多")

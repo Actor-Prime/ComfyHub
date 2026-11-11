@@ -51,7 +51,8 @@ _TABLE = [
     (("mimo",), ("xiaomimimo",), Profile(
         "mimo", "小米 MiMo", "thinking.type", 131072, True, "off", 4000,
         "实测：thinking.type 与 chat_template_kwargs 均有效，顶层 enable_thinking 无效")),
-    (("glm-4.5", "glm-4.6", "glm-4p", "glm-z1"), ("bigmodel", "zhipu"), Profile(
+    (("glm-4.5", "glm-4.6", "glm-4.7", "glm-4p", "glm-5", "glm-z1"),
+     ("bigmodel", "zhipu"), Profile(
         "zhipu", "智谱 GLM", "thinking.type", 131072, True, "off", 4000,
         "GLM-4.5 起支持 thinking.type 开关")),
     (("qwen3", "qwen-3", "qwen2.5-72b", "qwen-max"), ("dashscope", "aliyun"), Profile(

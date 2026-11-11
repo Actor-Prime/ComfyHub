@@ -383,6 +383,34 @@ EN_DICT = {
     "排队中": "Queued",
     "下载任务": "Downloads",
     "暂无下载任务": "No download tasks",
+    "下载中": "Downloading",
+    "完成": "Done",
+    "重试": "Retry",
+    "复制详情": "Copy details",
+    "清空已完成": "Clear finished",
+    "已取消（断点保留，可重试）": "Cancelled (partial file kept, retryable)",
+    "清掉完成 / 已取消 / 失败的任务记录":
+        "Clear finished, cancelled and failed task records",
+    "复制完整错误：": "Copy full error:",
+    "进行中": "in progress",
+    "失败": "failed",
+    # ---- 失败原因人话化（download_center.friendly_error）----
+    "连接超时（网络不通或镜像站无响应）":
+        "Connection timed out (no network or mirror not responding)",
+    "连接被拒绝（目标服务器未响应）":
+        "Connection refused (target server not responding)",
+    "域名解析失败（DNS 不可用）": "DNS lookup failed (resolver unavailable)",
+    "连接被重置（代理或网络中断）":
+        "Connection reset (proxy or network drop)",
+    "文件不存在（可能已改名或删除）":
+        "File not found (renamed or deleted?)",
+    "需要授权（登录态或令牌无效）":
+        "Authorization required (login or token invalid)",
+    "证书校验失败（可换源或关闭校验）":
+        "Certificate verification failed (switch source or disable check)",
+    "请求超时（服务端响应过慢）": "Request timed out (server too slow)",
+    "磁盘空间不足": "Not enough disk space",
+    "文件不完整（可重试续传）": "Incomplete file (retry to resume)",
 
     # ================= 实例对话框 =================
     "例如: --reserve-vram 2 --fast": "e.g. --reserve-vram 2 --fast",
@@ -624,6 +652,29 @@ EN_DICT = {
     # 更新横幅（0.8.11 漏词表，2026-11-05 补）
     "立即更新": "Update now",
     "跳过此版本": "Skip this version",
+    # ---------- 延迟更新提醒（2026-11-12）----------
+    "启动一小时后提醒": "Remind me one hour after launch",
+    "启动满 1 小时后，如果发现新版本会弹窗提醒一次。\n"
+    "弹窗里可以选择「延后提醒」（1 小时 / 4 小时 / 1 天 / 3 天 / 1 周）"
+    "或「不再提醒此版本」。这项与上面「启动时自动检查」互不影响":
+        "One hour after launch, if a new version is found, a reminder pops up once.\n"
+        "There you can snooze (1 hour / 4 hours / 1 day / 3 days / 1 week) or "
+        "stop reminders for that version. Independent of \"Check on startup\" above.",
+    "发现新版本": "New version found",
+    "有新版本可用": "A new version is available",
+    "现在更新会关闭正在运行的实例；也可以稍后提醒或跳过这个版本。":
+        "Updating now closes running instances. You can also snooze the reminder "
+        "or skip this version.",
+    "延后提醒": "Remind me later",
+    "不再提醒此版本": "Don't remind me for this version",
+    "1 小时": "1 hour",
+    "4 小时": "4 hours",
+    "1 天": "1 day",
+    "3 天": "3 days",
+    "1 周": "1 week",
+    "已延后提醒": "Reminder snoozed",
+    "已清除「跳过版本」，下次检查会重新提示。":
+        "\"Skip version\" cleared — the next check will prompt again.",
     "更新 ComfyHub": "Update ComfyHub",
     "正在取消…": "Cancelling…",
     "更新失败": "Update failed",
@@ -915,4 +966,135 @@ EN_DICT = {
         "crash at startup.\n"
         "Click \"Fix it\" to reinstall the proper torch build, or switch the\n"
         "generation engine to CPU in instance settings.",
+
+    # ---------- AI 服务商预设（2026-11-12）----------
+    "服务商:": "Provider:",
+    "AI 服务商": "AI provider",
+    "国内": "China",
+    "国际": "International",
+    "选预设会自动填好接口地址与候选模型；你的服务商不在列表里就选最下面「自定义」，手动填地址":
+        "Picking a preset fills the endpoint and candidate models. If your provider "
+        "is not listed, choose \"Custom\" at the bottom and type the endpoint.",
+    "选「自定义」后可修改。预设地址来自各家官方文档，出问题请对照官网":
+        "Editable after choosing \"Custom\". Preset endpoints come from each "
+        "vendor's official docs.",
+    "请先填写接口地址（选一个服务商，或选「自定义」后手填）。":
+        "Fill the endpoint first (pick a provider, or choose \"Custom\" and type it).",
+    "请先填写 API Key。": "Fill in the API Key first.",
+    "测连通 + 拉该 Key 可用的模型清单，并自动选中一个":
+        "Test connectivity, fetch the models this key can use, and select one.",
+    # 服务商名
+    "DeepSeek 官方": "DeepSeek (official)",
+    "小米 MiMo": "Xiaomi MiMo",
+    "阿里百炼（通义千问）": "Alibaba Bailian (Qwen)",
+    "智谱 GLM": "Zhipu GLM",
+    "月之暗面 Kimi": "Moonshot Kimi",
+    "MiniMax": "MiniMax",
+    "硅基流动 SiliconFlow": "SiliconFlow",
+    "火山方舟（豆包）": "Volcano Ark (Doubao)",
+    "腾讯混元 Hunyuan": "Tencent Hunyuan",
+    "百度千帆（文心）": "Baidu Qianfan (ERNIE)",
+    "讯飞星火 Spark": "iFlytek Spark",
+    "阶跃星辰 StepFun": "StepFun",
+    "百川智能 Baichuan": "Baichuan",
+    "魔搭 ModelScope": "ModelScope",
+    "OpenAI 官方": "OpenAI (official)",
+    "Google Gemini": "Google Gemini",
+    "Anthropic Claude": "Anthropic Claude",
+    "xAI Grok": "xAI Grok",
+    "Mistral AI": "Mistral AI",
+    "Groq": "Groq",
+    "Together AI": "Together AI",
+    "OpenRouter": "OpenRouter",
+    "DeepInfra": "DeepInfra",
+    "Cerebras": "Cerebras",
+    "NVIDIA NIM": "NVIDIA NIM",
+    "HuggingFace Router": "HuggingFace Router",
+    "Novita AI": "Novita AI",
+    "Fireworks AI": "Fireworks AI",
+    "Kimi 国际版": "Kimi (international)",
+    "智谱 GLM 国际版（z.ai）": "Zhipu GLM (z.ai)",
+    "通义国际版（DashScope Intl）": "Qwen (DashScope Intl)",
+    "MiniMax 国际版": "MiniMax (international)",
+    "硅基流动国际版": "SiliconFlow (international)",
+    "自定义（手动填写）": "Custom (manual entry)",
+    # 各服务商提示
+    "platform.deepseek.com 申请 Key。对话模型无思考开关":
+        "Get a key at platform.deepseek.com. Chat models have no thinking switch.",
+    "platform.xiaomimimo.com 申请 Key。thinking.type 开关实测有效":
+        "Get a key at platform.xiaomimimo.com. The thinking.type switch works.",
+    "bailian.console.aliyun.com 申请 Key。用「兼容模式」地址，不是原生 DashScope":
+        "Get a key at bailian.console.aliyun.com. Use the compatible-mode "
+        "endpoint, not native DashScope.",
+    "bigmodel.cn 申请 Key。GLM-4.5 起支持 thinking.type 开关":
+        "Get a key at bigmodel.cn. GLM-4.5+ supports the thinking.type switch.",
+    "platform.moonshot.cn 申请 Key。在境外可用「Kimi 国际版」":
+        "Get a key at platform.moonshot.cn. Outside China, use \"Kimi (international)\".",
+    "platform.minimaxi.com 申请 Key（海外站是 api.minimax.io，Key 不通用）":
+        "Get a key at platform.minimaxi.com (overseas site api.minimax.io uses "
+        "a different key).",
+    "cloud.siliconflow.cn 申请 Key。模型名带「厂商/」前缀":
+        "Get a key at cloud.siliconflow.cn. Model names carry a \"vendor/\" prefix.",
+    "console.volcengine.com/ark 创建「推理接入点」后用其 ID 作模型名":
+        "Create an inference endpoint at console.volcengine.com/ark and use its "
+        "ID as the model name.",
+    "console.cloud.tencent.com/hunyuan 开通后申请 Key（OpenAI 兼容模式）":
+        "Enable Hunyuan at console.cloud.tencent.com and request a key "
+        "(OpenAI-compatible mode).",
+    "console.bce.baidu.com/qianfan 申请 Key（v2 接口是 OpenAI 兼容的）":
+        "Get a key at console.bce.baidu.com/qianfan (the v2 API is "
+        "OpenAI-compatible).",
+    "console.xfyun.cn 申请 APIPassword 当 Key；点「测试接口」自动拉模型清单":
+        "Get an APIPassword at console.xfyun.cn and use it as the key; "
+        "\"Test\" fetches the model list.",
+    "platform.stepfun.com 申请 Key": "Get a key at platform.stepfun.com",
+    "platform.baichuan-ai.com 申请 Key；点「测试接口」自动拉模型清单":
+        "Get a key at platform.baichuan-ai.com; \"Test\" fetches the model list.",
+    "modelscope.cn 绑定阿里云账号拿免费额度；模型名形如 Qwen/Qwen3-32B":
+        "Bind an Alibaba Cloud account at modelscope.cn for free quota; "
+        "model ids look like Qwen/Qwen3-32B.",
+    "境外服务，需能直连或走代理（下方「直连」勾选要取消）":
+        "Overseas service — needs direct access or a proxy "
+        "(uncheck \"Direct\" below).",
+    "aistudio.google.com 申请 Key。走 Gemini 的 OpenAI 兼容端点":
+        "Get a key at aistudio.google.com. Uses Gemini's OpenAI-compatible endpoint.",
+    "console.anthropic.com 申请 Key。走 OpenAI 兼容层，部分参数不生效":
+        "Get a key at console.anthropic.com. Uses the OpenAI-compat layer; "
+        "some parameters are ignored.",
+    "console.x.ai 申请 Key。境外服务，需代理":
+        "Get a key at console.x.ai. Overseas service — proxy required.",
+    "console.mistral.ai 申请 Key。境外服务，需代理":
+        "Get a key at console.mistral.ai. Overseas service — proxy required.",
+    "console.groq.com 申请 Key。超快推理，模型多为开源件":
+        "Get a key at console.groq.com. Very fast inference on open models.",
+    "api.together.ai 申请 Key。开源模型托管，模型名带组织前缀":
+        "Get a key at api.together.ai. Open-model hosting; ids carry an org prefix.",
+    "openrouter.ai 一个 Key 通吃各家；模型名形如 openai/gpt-5.4":
+        "One key for many labs at openrouter.ai; ids look like openai/gpt-5.4.",
+    "deepinfra.com 申请 Key。开源模型按量计费":
+        "Get a key at deepinfra.com. Pay-as-you-go open models.",
+    "cloud.cerebras.ai 申请 Key；点「测试接口」自动拉模型清单":
+        "Get a key at cloud.cerebras.ai; \"Test\" fetches the model list.",
+    "build.nvidia.com 申请 Key，有免费额度":
+        "Get a key at build.nvidia.com (free tier available).",
+    "huggingface.co/settings/tokens 申请 Token；模型名形如 Qwen/Qwen3-32B":
+        "Create a token at huggingface.co/settings/tokens; ids look like Qwen/Qwen3-32B.",
+    "novita.ai 申请 Key；点「测试接口」自动拉模型清单":
+        "Get a key at novita.ai; \"Test\" fetches the model list.",
+    "fireworks.ai 申请 Key；模型名形如 accounts/fireworks/models/…":
+        "Get a key at fireworks.ai; ids look like accounts/fireworks/models/…",
+    "platform.moonshot.ai 申请 Key（与国内 platform.moonshot.cn 账号不通用）":
+        "Get a key at platform.moonshot.ai (separate from the China site).",
+    "z.ai 申请 Key（与国内 bigmodel.cn 账号不通用）":
+        "Get a key at z.ai (separate from bigmodel.cn).",
+    "新加坡站点，与国内百炼账号不通用。用「兼容模式」地址":
+        "Singapore region — separate from mainland Bailian accounts. "
+        "Use the compatible-mode endpoint.",
+    "platform.minimax.io 申请 Key（与国内站账号不通用）":
+        "Get a key at platform.minimax.io (separate from the China site).",
+    "siliconflow.com 申请 Key（与国内 .cn 账号不通用）":
+        "Get a key at siliconflow.com (separate from the .cn site).",
+    "填任意 OpenAI 兼容端点：中转站、Azure（…/openai/v1 + 部署名）、自建 vLLM / Ollama":
+        "Any OpenAI-compatible endpoint: relays, Azure (…/openai/v1 + deployment), "
+        "self-hosted vLLM / Ollama."
 }

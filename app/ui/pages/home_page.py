@@ -396,6 +396,9 @@ class HomePage(QWidget):
     def _dir_card(self, icon, name, sub):
         f = QFrame()
         f.setObjectName("RowCard")
+        # QSS 的 background/border-radius 要 WA_StyledBackground 才会绘制，
+        # 否则只剩 QFrame 自绘的直边 → 「圆角缺失、像缺了边框」（2026-11-12 用户报障）
+        f.setAttribute(Qt.WA_StyledBackground, True)
         f.setCursor(Qt.PointingHandCursor)
         f.setFixedHeight(72)
         v = QVBoxLayout(f)
