@@ -13,8 +13,12 @@ Kimi / OpenAI 均可），配置存 cfg["settings"]：
 """
 import json
 import re
+import socket
 import ssl
+import urllib.error
 import urllib.request
+
+from app.i18n import T
 
 # 推断结果只接受这些站点的链接（防幻觉域名）
 _HOST_WHITELIST = (
@@ -78,6 +82,120 @@ def _ssl_ctx():
     return ctx
 
 
+# ---------------------------------------------------------------- 错误人话化
+class ApiError(RuntimeError):
+    """HTTP 4xx/5xx 包装：保留状态码 + 服务端原文，交给 describe_error 翻人话。
+
+    为什么单独包一层（2026-11-12 用户反馈）：界面上原来直接甩
+    「HTTPError: HTTP Error 401: Unauthorized」——用户既看不懂，也不知道该去改哪里。
+    原始信息不丢（气泡 tooltip + 日志里都有），但展示必须先给人话。
+    """
+
+    def __init__(self, status: int, detail: str = "", url: str = ""):
+        self.status = int(status or 0)
+        self.detail = (detail or "").strip()[:400]
+        self.url = url or ""
+        super().__init__(f"HTTP {self.status}: {self.detail or '无返回内容'}")
+
+
+def _read_error_body(e) -> str:
+    """从 HTTPError 里抠出服务端给的原因（OpenAI 风格 {error:{message}}）"""
+    try:
+        raw = e.read() or b""
+    except Exception:
+        return ""
+    txt = raw[:4000].decode("utf-8", "ignore").strip()
+    try:
+        d = json.loads(txt)
+    except Exception:
+        return txt[:400]
+    if not isinstance(d, dict):
+        return txt[:400]
+    err = d.get("error")
+    if isinstance(err, dict):
+        return str(err.get("message") or err.get("msg") or "")[:400]
+    if isinstance(err, str):
+        return err[:400]
+    for k in ("message", "msg", "detail", "error_msg"):
+        if d.get(k):
+            return str(d[k])[:400]
+    return txt[:400]
+
+
+_STATUS_TIPS_ZH = {
+    401: ("认证失败（401）：API Key 无效，或与所选服务商/套餐对不上。\n"
+          "常见原因：① Key 没复制完整；② 套餐 Key 与按量 Key 不能混用"
+          "（Coding Plan / Token Plan 的 Key 打到按量端点必 401，反之亦然）；"
+          "③ Key 已停用或欠费。\n"
+          "到「系统设置 → AI 接入」核对条目后点「测试接口」验证一次。"),
+    403: ("拒绝访问（403）：这个 Key 没有该模型或套餐的权限。\n"
+          "确认模型在当前套餐内、套餐没过期，或者换一个模型名再试。"),
+    404: ("地址不对（404）：接口地址或模型名不存在。\n"
+          "套餐端点和按量端点是两个不同地址（如 GLM 的 /api/coding/paas/v4 与 "
+          "/api/paas/v4），确认服务商条目没选错；模型名可点「测试接口」自动拉取。"),
+    429: ("请求被限流（429）：调用太频繁，或套餐额度 / 账户余额已用尽。\n"
+          "稍等一会儿再试，或去厂商控制台看额度与频率限制。"),
+    402: "余额不足（402）：账户欠费或本期额度已用完，去厂商控制台充值/续订。",
+    400: ("请求被拒绝（400）：参数或模型名有问题。\n"
+          "多数是模型名不存在，或该模型不支持工具调用（本助手需要 function calling）。"
+          "到「系统设置 → AI 接入」核对模型名，或换一个支持工具调用的模型。"),
+}
+
+
+def describe_error(e, one_line: bool = False) -> str:
+    """底层异常 → 用户看得懂的一段话（带下一步动作）。
+
+    覆盖：HTTP 4xx/5xx（含服务端原文）、连不上 / 超时 / 代理问题、其余兜底。
+    one_line=True 用于只能显示一行的位置（设置页「测试接口」状态栏）。
+    """
+    out = _describe_error(e)
+    if one_line:
+        out = " ".join(str(out).split())
+        return out if len(out) <= 200 else out[:198] + "…"
+    return out
+
+
+def _describe_error(e) -> str:
+    status = int(getattr(e, "status", 0) or getattr(e, "code", 0) or 0)
+    detail = str(getattr(e, "detail", "") or "").strip()
+
+    if status:
+        if status in _STATUS_TIPS_ZH:
+            msg = T(_STATUS_TIPS_ZH[status])
+        elif 500 <= status < 600:
+            msg = T("服务端出错（{s}）：厂商侧故障，不是你的配置问题。"
+                    "稍后重试；持续出现就换个模型或联系厂商。").format(s=status)
+        else:
+            msg = T("请求失败（HTTP {s}）。").format(s=status)
+        if detail and status not in (401, 403):
+            # 401/403 的原文通常只有 Unauthorized/Forbidden，没有信息量
+            msg += "\n" + T("服务端原文：") + detail[:160]
+        return msg
+
+    # ---- 网络层 ----
+    reason = getattr(e, "reason", e)
+    txt = f"{type(reason).__name__} {reason}".lower()
+    if isinstance(reason, (TimeoutError, socket.timeout)) or "timed out" in txt \
+            or "timeout" in txt or "超时" in str(reason):
+        return T("请求超时：网络慢，或者接口一直没响应。\n"
+                 "境外服务需要能走代理（把「直连」取消勾选）；"
+                 "国内接口一般勾上「直连」更快更稳。")
+    if "certificate" in txt or "ssl" in txt:
+        return T("证书校验失败：网络中间有拦截（公司网关 / 代理），"
+                 "换个网络或关掉代理再试。")
+    if isinstance(reason, urllib.error.URLError) or "getaddrinfo" in txt \
+            or "name or service not known" in txt:
+        return T("连不上服务器：{r}\n检查接口地址是否写错、网络能否访问该站点；"
+                 "境外服务请确认代理已开启。").format(r=reason)
+    if "10061" in txt or "refused" in txt or "积极拒绝" in str(reason):
+        return T("连接被拒绝：目标端口没开（{r}）。检查接口地址和端口。").format(r=reason)
+    if "10054" in txt or "reset" in txt:
+        return T("连接被重置：代理或网络中途断开，重试一次；"
+                 "反复出现请换网络或关闭代理。")
+
+    return f"{type(e).__name__}: {e}"
+
+
 def make_request(url: str, api_key: str, data: bytes = None):
     """构造请求（流式接口需要自己接管读取，故与 _request 拆开）"""
     return urllib.request.Request(url, data=data, headers={
@@ -96,10 +214,16 @@ def open_request(req, timeout: int = 20, direct: bool = False):
     direct=True：绕过系统代理直连。2026-11-06 实测踩到——系统里挂了本地代理
     （127.0.0.1:xxxxx）时代理一抖动，请求会长时间无数据，界面就卡在「思考中」。
     国产接口直连通常更快更稳，国外接口则需要走代理。
+
+    HTTP 4xx/5xx 统一包成 ApiError（2026-11-12）：带着状态码和服务端原因往上抛，
+    调用方用 describe_error() 翻成人话再给界面。
     """
-    if direct:
-        return _DIRECT_OPENER.open(req, timeout=timeout)
-    return urllib.request.urlopen(req, timeout=timeout, context=_ssl_ctx())
+    try:
+        if direct:
+            return _DIRECT_OPENER.open(req, timeout=timeout)
+        return urllib.request.urlopen(req, timeout=timeout, context=_ssl_ctx())
+    except urllib.error.HTTPError as e:
+        raise ApiError(e.code, _read_error_body(e), getattr(e, "url", "") or "") from e
 
 
 def _request(url: str, api_key: str, data: bytes = None, timeout: int = 20,
@@ -163,7 +287,7 @@ def test_connection(base_url: str, api_key: str, model: str = "",
         models = list_models(base_url, api_key, timeout=min(timeout, 15))
     except Exception as e:
         return {"ok": False, "models": [], "model": "", "latency_ms": 0,
-                "reply": "", "msg": "拉取模型列表失败：%s: %s" % (type(e).__name__, e)}
+                "reply": "", "msg": "拉取模型列表失败：" + describe_error(e, one_line=True)}
     use = pick_chat_model(models, (model or "").strip())
     if not use:
         return {"ok": False, "models": models, "model": "",
@@ -175,7 +299,7 @@ def test_connection(base_url: str, api_key: str, model: str = "",
     except Exception as e:
         return {"ok": False, "models": models, "model": use,
                 "latency_ms": int((time.time() - t0) * 1000), "reply": "",
-                "msg": "对话请求失败：%s: %s" % (type(e).__name__, e)}
+                "msg": "对话请求失败：" + describe_error(e, one_line=True)}
     return {"ok": True, "models": models, "model": use,
             "latency_ms": int((time.time() - t0) * 1000),
             "reply": (reply or "").strip()[:40],

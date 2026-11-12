@@ -12,6 +12,7 @@ OpenAI 兼容 /chat/completions + function calling，驱动 app/ai_tools.py 的�
   emit("error", text=...)             本轮失败原因
 """
 import json
+import os
 
 from app import ai_assist
 from app import ai_context
@@ -19,6 +20,7 @@ from app import ai_models
 from app import ai_persona
 from app import ai_skills
 from app import ai_tools
+from app.i18n import T
 
 MAX_ROUNDS = 8          # 单次提问最多工具往返数
 MAX_TOOL_RESULT = 3000  # 单个工具结果喂回模型的字符上限（越小越快：每轮都要重新 prefill）
@@ -166,6 +168,8 @@ def _stream_chat(settings: dict, messages: list, tools: list,
     _sock_timeout = min(timeout, 45)                    # 45s 没数据就当网络不通，别干等
     try:
         _resp = ai_assist.open_request(req, timeout=_sock_timeout, direct=_direct)
+    except ai_assist.ApiError:
+        raise        # 401/403/404 这类是配置问题，原样上抛——伪装成超时只会更迷惑
     except Exception as e:
         raise TimeoutError(f"等待模型响应超时或连接失败（{_sock_timeout}s）："
                            f"{type(e).__name__}") from e
@@ -325,11 +329,13 @@ def run_agent(cfg: dict, inst: dict, user_text: str, history: list,
             log(f"[AI] 第 {round_i + 1} 轮 · {__import__('time').time() - _r0:.1f}s · "
                 f"think={think} max_tokens={max_tokens} ctx={ctx_msgs}")
         except Exception as e:
-            msg = f"{type(e).__name__}: {e}"
+            log(f"[AI] 第 {round_i + 1} 轮失败：{type(e).__name__}: {e}")
+            # 界面只给人话（describe_error），原始异常留在日志与气泡 tooltip 里
+            msg = ai_assist.describe_error(e)
             if "tools" in str(e).lower() or "function" in str(e).lower():
-                msg += "（当前接口可能不支持 function calling，"
-                msg += "请换支持工具调用的模型，如 deepseek-chat / glm-4.5 等）"
-            emit("error", text=msg)
+                msg += "\n" + T("（当前接口可能不支持 function calling，"
+                                "请换支持工具调用的模型，如 deepseek-chat / glm-4.7 等）")
+            emit("error", text=msg, raw=f"{type(e).__name__}: {e}")
             return
         calls = msg.get("tool_calls") or []
         content = (msg.get("content") or "").strip()
@@ -362,7 +368,8 @@ def run_agent(cfg: dict, inst: dict, user_text: str, history: list,
             _ms = int((_time.time() - _t0) * 1000)
             ok = result.get("ok", True)
             brief = _brief(name, result)
-            emit("tool_result", name=name, ok=ok, brief=brief, ms=_ms)
+            emit("tool_result", name=name, ok=ok, brief=brief, ms=_ms,
+                 artifacts=_artifacts(name, args, result))
             _imgs = result.get("images") or []
             if _imgs:
                 emit("image", paths=_imgs)
@@ -397,6 +404,40 @@ def run_agent(cfg: dict, inst: dict, user_text: str, history: list,
         log(f"[AI] 收尾轮失败：{type(e).__name__}: {e}")
     emit("error", text=f"连续 {MAX_ROUNDS} 轮工具调用未得到最终回答，"
                        f"请把问题拆小一点再问（例如先只说要看哪个模型类别）")
+
+
+def _artifacts(name: str, args: dict, result: dict) -> list:
+    """工具产出的「文件类结果」→ 右侧概要栏的产物清单（2026-11-12）
+
+    只收**落盘的东西**（生成的图、写出的工作流、下载的模型、日志导出），
+    查询类的返回值不算产物。kind 用于列表图标；label 是给人看的短名。
+    """
+    if not isinstance(result, dict) or not result.get("ok", True):
+        return []
+    out, seen = [], set()
+
+    def _push(kind, path, label=""):
+        p = str(path or "").strip()
+        if not p or p in seen:
+            return
+        seen.add(p)
+        out.append({"kind": kind, "path": p,
+                    "label": (label or os.path.basename(p.replace("\\", "/")))[:80]})
+
+    for p in (result.get("images") or []):
+        _push("image", p)
+    # 工作流类工具把结果写在 name/path/file 上
+    for key in ("path", "file", "saved_path"):
+        v = result.get(key)
+        if isinstance(v, str) and ("/" in v or "\\" in v):
+            _push("workflow" if name.endswith("workflow") else "file", v)
+    if name == "download_model" and result.get("dest"):
+        base = os.path.basename(str(args.get("file_path") or "").replace("\\", "/"))
+        _push("model", os.path.join(str(result["dest"]), base) if base
+              else str(result["dest"]))
+    if name == "get_logs" and result.get("log_file"):
+        _push("log", result["log_file"])
+    return out
 
 
 def _brief(name: str, result: dict) -> str:

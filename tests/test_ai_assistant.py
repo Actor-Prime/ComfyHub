@@ -73,7 +73,7 @@ from app import ai_tools  # noqa: E402
 
 schemas = ai_tools.schemas()
 names = [s["function"]["name"] for s in schemas]
-check("2a 17 个工具 schema 齐全", len(schemas) == 17 and
+check("2a 18 个工具 schema 齐全", len(schemas) == 18 and
       all(s["function"]["parameters"].get("type") == "object" for s in schemas), str(names))
 check("2b 关键工具在列",
       all(n in names for n in ("get_health", "control_instance", "run_workflow", "get_job",
@@ -103,7 +103,7 @@ _cap = {}
 _orig_build = ai_tools.build_ctx
 
 
-def _fake_build(cfg, inst, mainwin=None, log=print):
+def _fake_build(cfg, inst, mainwin=None, log=print, profile=None):
     _cap["mainwin"] = mainwin
     raise RuntimeError("stop-here")          # 拿到参数就中断，别真发 HTTP
 

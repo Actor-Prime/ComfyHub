@@ -21,8 +21,8 @@ import os
 from PySide6.QtCore import Qt, QThread, Signal, QTimer
 from PySide6.QtGui import QFontMetrics, QGuiApplication
 from PySide6.QtWidgets import (
-    QToolButton, QMenu, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QProgressBar, QPushButton, QWidgetAction,
+    QApplication, QToolButton, QMenu, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QProgressBar, QPushButton, QWidgetAction, QScrollArea, QSizePolicy, QFrame,
 )
 
 from app import model_store as ms
@@ -37,8 +37,30 @@ _C_ACCENT = "#4c8dff"    # 强调（下载中）
 _C_OK = "#3ecf8e"        # 成功
 _C_ERR = "#f0616d"       # 危险 / 失败
 _C_IDLE = "#4a5260"      # 已取消 / 未开始
+_C_AI = "#7aa2d0"        # AI 来源徽标
 
-_PANEL_W = 440           # 面板宽度（固定，行内文案按此排版）
+# 面板宽度（2026-11-12 改自适应）：原来是写死 440，用户反馈「不同电脑分辨率下
+# 下载栏内容显示不全」——高 DPI 机器上字体实测宽度比 100% 缩放时大，440 逻辑像素
+# 放不下「文件名 + 取消 + 长失败文案 + 复制详情」，QLabel 没有 wordWrap 时
+# minimumSizeHint 就是全宽，压不动 → 整块被撑出屏幕被裁。
+# 现在按字体度量算宽度，并受屏幕可用宽度约束（两边留白），同时面板限高可滚动。
+_PANEL_W_MIN = 420
+_PANEL_W_MAX = 640
+_PANEL_H_RATIO = 0.55    # 面板最高占屏幕可用高度的比例（任务多时滚动）
+
+
+def panel_width(font=None) -> int:
+    """面板宽度：约 30 个汉字宽的排版空间，随字体/屏幕变化（420~640）。"""
+    fm = QFontMetrics(font or QApplication.font())
+    want = fm.horizontalAdvance("测") * 30 + 72
+    scr = QGuiApplication.primaryScreen()
+    cap = int(scr.availableGeometry().width() * 0.42) if scr else 760
+    return max(_PANEL_W_MIN, min(want, cap, _PANEL_W_MAX))
+
+
+def panel_max_height() -> int:
+    scr = QGuiApplication.primaryScreen()
+    return int(scr.availableGeometry().height() * _PANEL_H_RATIO) if scr else 520
 
 # 常见网络/磁盘异常 → 人话。命中即用，未命中回落原文（截断显示）
 _FRIENDLY_RULES = (
@@ -139,22 +161,25 @@ class _TaskRow(QWidget):
     sig_cancel = Signal(str)
     sig_retry = Signal(str)
 
-    def __init__(self, task_id, fname, parent=None):
+    def __init__(self, task_id, fname, parent=None, source="ui"):
         super().__init__(parent)
         self.task_id = task_id
         self.fname = fname
+        self.source = source            # "ui" 页面内下载 / "ai" AI 助手触发
         self.raw_error = ""
         self.state = "排队中"
         self.setObjectName("dlRow")
         self.setStyleSheet(
             "QWidget#dlRow { background: transparent;"
             " border-bottom: 1px solid #232b36; }")
+        # 行本身不横向撑开面板：宽度永远由面板给
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
 
         v = QVBoxLayout(self)
         v.setContentsMargins(6, 8, 6, 8)
         v.setSpacing(5)
 
-        # ---- 第一行：图标 + 文件名 + 行内按钮 ----
+        # ---- 第一行：图标 + [AI] + 文件名 + 行内按钮 ----
         h1 = QHBoxLayout()
         h1.setSpacing(7)
         self.lb_icon = QLabel("•")
@@ -162,21 +187,37 @@ class _TaskRow(QWidget):
         self.lb_icon.setStyleSheet(f"color:{_C_MUTED}; font-size:13px;")
         h1.addWidget(self.lb_icon, 0, Qt.AlignTop)
 
+        # AI 来源徽标：用户反馈「AI 帮忙下载的不知道去哪看进度」，
+        # 入队来源要能一眼分清（徽标只在 AI 触发时出现）
+        self.lb_src = QLabel(T("AI"))
+        self.lb_src.setStyleSheet(
+            f"color:{_C_AI}; background:#1b2836; border:1px solid #2b3d52;"
+            " border-radius:4px; font-size:10px; padding:0 4px;")
+        self.lb_src.setAlignment(Qt.AlignCenter)
+        self.lb_src.setFixedHeight(16)
+        self.lb_src.setVisible(source == "ai")
+        h1.addWidget(self.lb_src, 0, Qt.AlignTop)
+
         self.lb_name = QLabel(fname)
         self.lb_name.setWordWrap(True)
         self.lb_name.setToolTip(fname)
         self.lb_name.setStyleSheet(f"color:{_C_TEXT}; font-size:13px;")
+        # 长文件名不能反过来撑宽布局（Ignored 让布局可以压到比 sizeHint 更窄，
+        # 配合 wordWrap 折行；否则 QLabel 的 minimumSizeHint=全文宽，会把
+        # 面板顶宽、超出屏幕后被裁——正是「显示不全」的根因之一）
+        self.lb_name.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         # 最多两行高，再长就截断（行高稳定，面板各行不会高矮不齐）
         fm = QFontMetrics(self.lb_name.font())
         self.lb_name.setMaximumHeight(fm.lineSpacing() * 2 + 6)
         h1.addWidget(self.lb_name, 1)
 
         self.b_action = QPushButton(T("取消"))
-        self.b_action.setFixedSize(46, 22)
+        self.b_action.setFixedHeight(22)
+        self.b_action.setMinimumWidth(46)
         self.b_action.setCursor(Qt.PointingHandCursor)
         self.b_action.setStyleSheet(
             "QPushButton { background:#232b36; color:%s; border:none;"
-            " border-radius:6px; font-size:11px; }"
+            " border-radius:6px; font-size:11px; padding:0 8px; }"
             "QPushButton:hover { background:#2c3542; color:%s; }" % (_C_SUB, _C_TEXT))
         self.b_action.clicked.connect(self._on_action)
         h1.addWidget(self.b_action, 0, Qt.AlignTop)
@@ -196,10 +237,15 @@ class _TaskRow(QWidget):
         h3.setSpacing(6)
         self.lb_state = QLabel(T("排队中"))
         self.lb_state.setStyleSheet(f"color:{_C_MUTED}; font-size:11px;")
+        # 失败原因可能是长句（「✕ 连接超时（网络不通或镜像站无响应）」）：
+        # 允许折行 + 允许被压窄，绝不把面板顶宽
+        self.lb_state.setWordWrap(True)
+        self.lb_state.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         h3.addWidget(self.lb_state, 1)
 
         self.lb_num = QLabel("")
         self.lb_num.setStyleSheet(f"color:{_C_MUTED}; font-size:11px;")
+        self.lb_num.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
         h3.addWidget(self.lb_num, 0, Qt.AlignRight)
 
         self.b_copy = QPushButton(T("复制详情"))
@@ -207,7 +253,7 @@ class _TaskRow(QWidget):
         self.b_copy.setCursor(Qt.PointingHandCursor)
         self.b_copy.setStyleSheet(
             "QPushButton { background:transparent; color:%s; border:none;"
-            " font-size:11px; text-decoration:underline; }"
+            " font-size:11px; text-decoration:underline; padding:0 2px; }"
             "QPushButton:hover { color:#ff8f98; }" % _C_ERR)
         self.b_copy.clicked.connect(self._copy_error)
         self.b_copy.setVisible(False)
@@ -319,9 +365,15 @@ class _TaskRow(QWidget):
 
 
 class DownloadCenter(QToolButton):
-    """右上角下载指示器按钮 + 下拉任务面板 + 全局下载队列"""
+    """右上角下载指示器按钮 + 下拉任务面板 + 全局下载队列
+
+    线程约定（2026-11-12）：UI 侧一律在主线程操作；AI 助手在 _AgentWorker
+    线程里要入队必须走 request_download()（信号编组），绝不能直接 enqueue()。
+    """
 
     sig_queue_done = Signal(int, int)             # 转发：队列结束（页面刷新列表）
+    sig_request = Signal(object)                  # 跨线程入队请求：(items, source)
+    sig_ai_queued = Signal(int)                   # AI 触发了 N 个下载（主窗口提示用）
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -329,15 +381,18 @@ class DownloadCenter(QToolButton):
         self.setToolTip(T("下载任务"))
         self.setPopupMode(QToolButton.InstantPopup)
         self.setFixedHeight(30)
+        # 文字是「⬇ 3」这类短计数：给个下限，别让高 DPI 的大字号挤成一坨
+        self.setMinimumWidth(64)
+        self._w = panel_width(self.font())
 
         self._menu = QMenu(self)
         self._menu.setStyleSheet(
             "QMenu { background:#14181e; border:1px solid #2a3340;"
             " border-radius:10px; padding:6px; }")
         self._panel = QWidget()
-        self._panel_v = QVBoxLayout(self._panel)
-        self._panel_v.setContentsMargins(4, 2, 4, 4)
-        self._panel_v.setSpacing(0)
+        self._root_v = QVBoxLayout(self._panel)
+        self._root_v.setContentsMargins(4, 2, 4, 4)
+        self._root_v.setSpacing(0)
 
         # ---- 标题栏：计数 + 清空已完成 ----
         self._head = QWidget()
@@ -353,19 +408,44 @@ class DownloadCenter(QToolButton):
         self.b_clear.setCursor(Qt.PointingHandCursor)
         self.b_clear.setStyleSheet(
             "QPushButton { background:transparent; color:%s; border:none;"
-            " font-size:11px; }"
+            " font-size:11px; padding:0 2px; }"
             "QPushButton:hover { color:%s; }" % (_C_MUTED, _C_TEXT))
         self.b_clear.setToolTip(T("清掉完成 / 已取消 / 失败的任务记录"))
         self.b_clear.clicked.connect(self.clear_finished)
         head_h.addWidget(self.b_clear)
-        self._panel_v.addWidget(self._head)
+        self._root_v.addWidget(self._head)
+
+        # ---- 任务行容器（限高滚动：任务多时不再把菜单顶出屏幕被裁）----
+        self._rows_host = QWidget()
+        self._rows_v = QVBoxLayout(self._rows_host)
+        self._rows_v.setContentsMargins(0, 0, 0, 0)
+        self._rows_v.setSpacing(0)
+        self._rows_v.addStretch(1)
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._scroll.setMaximumHeight(panel_max_height())
+        self._scroll.setStyleSheet(
+            "QScrollArea { background:transparent; border:none; }"
+            "QScrollBar:vertical { background:transparent; width:8px; margin:0; }"
+            "QScrollBar::handle:vertical { background:#39424f; border-radius:4px;"
+            " min-height:24px; }"
+            "QScrollBar::handle:vertical:hover { background:#4a5565; }"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical"
+            " { height:0; }")
+        self._scroll.setWidget(self._rows_host)
+        self._scroll.setVisible(False)
+        self._root_v.addWidget(self._scroll)
 
         self._empty = QLabel(T("暂无下载任务"))
         self._empty.setStyleSheet(
             f"color:{_C_MUTED}; padding:10px 8px; font-size:12px;")
-        self._panel_v.addWidget(self._empty)
+        self._root_v.addWidget(self._empty)
 
-        self._menu.setMinimumWidth(_PANEL_W)
+        self._menu.setMinimumWidth(self._w)
+        self._menu.setMaximumWidth(self._w)
         act = QWidgetAction(self._menu)
         act.setDefaultWidget(self._panel)     # QMenu 嵌入自定义面板（QWidgetAction）
         self._menu.addAction(act)
@@ -376,23 +456,59 @@ class DownloadCenter(QToolButton):
         self._worker = None
         self._pending = []                        # 等入队的任务
         self._head.setVisible(False)
+        # 跨线程入队：emit 自任意线程 → 排队投递回本对象所属（GUI）线程
+        self.sig_request.connect(self._on_request, Qt.QueuedConnection)
         self._refresh_head()
 
     # -------------------------------------------------- 入队
-    def enqueue(self, items):
-        """items = [(repo_id, file_path, dest_dir), ...]"""
+    def request_download(self, items, source="ai"):
+        """**线程安全**入队入口：AI 助手等后台线程必须走这里。
+
+        直接在线程里调 enqueue() 会在非 GUI 线程 new 出 _TaskRow（QWidget），
+        Qt 允许但对象归属该线程，layout 不会真正接管 → 任务行永远不显示
+        （用户反馈 2026-11-12「AI 帮忙下载看不到进度」的根因）。
+        """
+        items = [tuple(x) for x in (items or []) if x]
+        if not items:
+            return 0
+        self.sig_request.emit((items, source))
+        return len(items)
+
+    def _on_request(self, payload):
+        """GUI 线程侧：把请求落地成任务行"""
+        try:
+            items, source = payload
+        except Exception:
+            return
+        self.enqueue(items, source=source)
+        if source == "ai":
+            # AI 触发的下载用户容易「不知道去哪看」：按钮脉冲一下 + 通知主窗口
+            self._pulse()
+            self.sig_ai_queued.emit(len(items))
+
+    def _pulse(self):
+        """按钮短暂高亮（AI 刚入队时把视线引到右上角 ⬇）"""
+        self.setStyleSheet(
+            "QToolButton { border:1px solid %s; border-radius:8px;"
+            " color:%s; padding:0 6px; }" % (_C_AI, _C_TEXT))
+        QTimer.singleShot(1800, lambda: self.setStyleSheet(""))
+
+    def enqueue(self, items, source="ui"):
+        """items = [(repo_id, file_path, dest_dir), ...]（仅限 GUI 线程调用）"""
         for repo_id, file_path, dest_dir in items:
             task_id = f"t{next(self._ids)}"
             fname = os.path.basename(file_path)
-            row = _TaskRow(task_id, fname)
+            row = _TaskRow(task_id, fname, source=source)
             row.sig_cancel.connect(self._cancel_one)
             row.sig_retry.connect(self._retry)
-            self._panel_v.addWidget(row)
+            self._rows_v.insertWidget(self._rows_v.count() - 1, row)
             self._rows[task_id] = row
             self._tasks[task_id] = {"repo_id": repo_id, "file_path": file_path,
-                                    "dest_dir": dest_dir}
+                                    "dest_dir": dest_dir, "source": source}
             self._pending.append((repo_id, file_path, dest_dir, task_id))
         self._empty.setVisible(False)
+        self._scroll.setVisible(bool(self._rows))
+        self._fit_scroll()
         self._refresh_head()
         self._pump()
 
@@ -435,6 +551,13 @@ class DownloadCenter(QToolButton):
         self._refresh_head()
         self._pump()
 
+    def _fit_scroll(self):
+        """滚动区高度 = 内容实际高度（封顶到限高）：任务少时不留大片空白。"""
+        if not self._rows:
+            return
+        need = self._rows_v.sizeHint().height()
+        self._scroll.setFixedHeight(min(max(need, 60), panel_max_height()))
+
     def clear_finished(self):
         """清掉所有终态行（完成 / 已取消 / 失败）"""
         for tid, row in list(self._rows.items()):
@@ -444,6 +567,7 @@ class DownloadCenter(QToolButton):
                 self._rows.pop(tid, None)
                 self._tasks.pop(tid, None)
         self._empty.setVisible(not self._rows)
+        self._scroll.setVisible(bool(self._rows))
         self._refresh_head()
 
     # -------------------------------------------------- 队列驱动
@@ -496,6 +620,7 @@ class DownloadCenter(QToolButton):
                 self._rows.pop(tid, None)
                 self._tasks.pop(tid, None)
         self._empty.setVisible(not self._rows)
+        self._scroll.setVisible(bool(self._rows))
         self._refresh_head()
 
     def _refresh_head(self):
@@ -519,3 +644,4 @@ class DownloadCenter(QToolButton):
         if failed:
             tip += f" · {T('失败')} {failed}"
         self.setToolTip(tip)
+        self._fit_scroll()

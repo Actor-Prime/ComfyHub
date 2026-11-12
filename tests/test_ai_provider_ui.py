@@ -56,9 +56,11 @@ def main():
     check("所有预设 base 经 _v1_base 后保持不变", not mutated, str(mutated[:3]))
     check("每项都有 hint（动态文案已在 i18n 词表）",
           all(p.get("hint") for p in prov.all_providers()))
-    # 分组：国内 / 国际 / 自定义 三段
+    # 分组：国内 / 国际 / Token·编程套餐 / 自定义 四段
+    # （套餐是订阅制、多数有专属端点，套餐 Key 打按量端点会 401，必须单列）
     grouped = prov.grouped()
-    check("分组为 国内 + 国际 + 自定义", [g for g, _ in grouped] == ["国内", "国际", ""],
+    check("分组为 国内 + 国际 + 套餐 + 自定义",
+          [g for g, _ in grouped] == ["国内", "国际", "Token/编程套餐", ""],
           str([g for g, _ in grouped]))
     dom = dict((g, len(v)) for g, v in grouped)
     check("国内 ≥ 12 家、国际 ≥ 15 家（大全要求）",
@@ -163,9 +165,9 @@ def main():
               if combo.itemData(i) is None and combo.itemText(i)]
     seps = [i for i in range(combo.count())
             if combo.itemData(i) is None and not combo.itemText(i)]
-    check("两个分组标题（国内/国际）", len(titles) == 2, str(titles))
+    check("三个分组标题（国内/国际/套餐）", len(titles) == 3, str(titles))
     check("标题带分隔样式", all(t.startswith("——") for t in titles), str(titles))
-    check("两条分隔线（国际前 + 自定义前）", len(seps) == 2, str(len(seps)))
+    check("三条分隔线（国际/套餐/自定义前）", len(seps) == 3, str(len(seps)))
     check("标题项不可选（否则能选中没有 base 的假项）",
           all(not combo.model().item(i).isEnabled()
               for i in range(combo.count())

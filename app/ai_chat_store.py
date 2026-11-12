@@ -45,6 +45,26 @@ def _clip(msgs: list) -> list:
     return out
 
 
+MAX_ARTIFACTS = 120
+
+
+def _clip_artifacts(items) -> list:
+    """规整产物清单：只留 kind/path/label/ts，路径去重，最多 MAX_ARTIFACTS 条"""
+    out, seen = [], set()
+    for a in (items or []):
+        if not isinstance(a, dict):
+            continue
+        p = str(a.get("path") or "").strip()
+        if not p or p in seen:
+            continue
+        seen.add(p)
+        out.append({"kind": str(a.get("kind") or "file"),
+                    "path": p,
+                    "label": str(a.get("label") or os.path.basename(p))[:80],
+                    "ts": float(a.get("ts") or 0)})
+    return out[-MAX_ARTIFACTS:]
+
+
 def title_of(msgs: list, fallback: str = "新对话") -> str:
     for m in msgs or []:
         if m.get("role") == "user" and str(m.get("content") or "").strip():
@@ -55,7 +75,7 @@ def title_of(msgs: list, fallback: str = "新对话") -> str:
 
 def save(cid: str, messages: list, title: str = "",
          summary: str = None, upto: int = None, skills=None,
-         profile=None) -> None:
+         profile=None, artifacts=None) -> None:
     """写一个会话；messages 只保留 role/content。
 
     summary / upto 为「上下文压缩」产物（2026-11-06）：
@@ -63,6 +83,8 @@ def save(cid: str, messages: list, title: str = "",
     skills 为本会话勾选的技能 id 列表（2026-11-11）：None 同样沿用旧值。
     profile 为本会话的「工作台设定」（2026-11-11）：主题 / 绑定实例 /
     默认工作流 / 默认模型。None 同样沿用旧值，{} 表示清空。
+    artifacts 为本会话的「产物」清单（2026-11-12 右侧概要栏）：
+    [{kind:"image"|"file", path, label, ts}]；None 沿用旧值，[] 清空。
     """
     try:
         msgs = _clip(messages)
@@ -71,6 +93,7 @@ def save(cid: str, messages: list, title: str = "",
         created = now
         old_summary, old_upto, old_skills, old_profile = "", 0, [], {}
         old_title, old_renamed = "", False
+        old_artifacts = []
         if os.path.isfile(path):
             try:
                 with open(path, encoding="utf-8") as f:
@@ -82,6 +105,7 @@ def save(cid: str, messages: list, title: str = "",
                 old_profile = dict(prev.get("profile") or {})
                 old_title = prev.get("title") or ""
                 old_renamed = bool(prev.get("renamed"))
+                old_artifacts = list(prev.get("artifacts") or [])
             except Exception:
                 pass
         # 用户手动改过的名字优先（2026-11-11）：多会话并排时，
@@ -94,6 +118,8 @@ def save(cid: str, messages: list, title: str = "",
                 "summary_upto": old_upto if upto is None else max(0, int(upto)),
                 "skills": old_skills if skills is None else list(skills),
                 "profile": old_profile if profile is None else dict(profile or {}),
+                "artifacts": (old_artifacts if artifacts is None
+                              else _clip_artifacts(artifacts)),
                 "renamed": old_renamed}
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
@@ -115,12 +141,13 @@ def load(cid: str) -> dict:
             d.setdefault("summary_upto", 0)
             d.setdefault("skills", [])
             d.setdefault("profile", {})
+            d.setdefault("artifacts", [])
             return d
     except Exception:
         pass
     return {"id": cid, "title": "新对话", "messages": [],
             "summary": "", "summary_upto": 0, "skills": [],
-            "profile": {}, "updated": 0}
+            "profile": {}, "artifacts": [], "updated": 0}
 
 
 def delete(cid: str) -> None:
