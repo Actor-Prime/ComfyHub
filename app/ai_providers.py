@@ -19,7 +19,7 @@
 
 CUSTOM_ID = "custom"
 
-GROUPS = ["国内", "国际"]
+GROUPS = ["国内", "国际", "Token/编程套餐"]
 
 # group: 分组；id: 稳定标识（存配置用，勿改）；base: OpenAI 兼容端点；
 # models: 候选（空 = 靠「测试接口」拉清单）；hint: 申请入口/注意事项
@@ -36,19 +36,19 @@ PROVIDERS = [
     {"id": "qwen", "group": "国内", "name": "阿里百炼（通义千问）",
      "base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
      "models": ["qwen3.8-max", "qwen3.8-plus", "qwen3.8-flash"],
-     "hint": "bailian.console.aliyun.com 申请 Key。用「兼容模式」地址，不是原生 DashScope"},
+     "hint": "bailian.console.aliyun.com 申请 Key。按量付费用「兼容模式」地址；买了 Coding Plan / Token Plan 请选下面套餐组里的条目"},
     {"id": "zhipu", "group": "国内", "name": "智谱 GLM",
      "base": "https://open.bigmodel.cn/api/paas/v4",
      "models": ["glm-4.7", "glm-4.7-flash", "glm-5"],
-     "hint": "bigmodel.cn 申请 Key。GLM-4.5 起支持 thinking.type 开关"},
+     "hint": "bigmodel.cn 申请 Key。这是按量付费端点；买了 GLM Coding Plan 请选套餐组里的条目"},
     {"id": "kimi", "group": "国内", "name": "月之暗面 Kimi",
      "base": "https://api.moonshot.cn/v1",
      "models": ["kimi-k2.6", "kimi-k2-turbo-preview"],
-     "hint": "platform.moonshot.cn 申请 Key。在境外可用「Kimi 国际版」"},
+     "hint": "platform.moonshot.cn 申请 Key（开放平台按量付费）。Kimi Code 会员请选套餐组里的「Kimi Code 会员」"},
     {"id": "minimax", "group": "国内", "name": "MiniMax",
      "base": "https://api.minimaxi.com/v1",
      "models": ["MiniMax-M3", "MiniMax-M2.7"],
-     "hint": "platform.minimaxi.com 申请 Key（海外站是 api.minimax.io，Key 不通用）"},
+     "hint": "platform.minimaxi.com 申请 Key（海外站 api.minimax.io，Key 不通用）。Token Plan 订阅 Key（sk-cp-…）与按量 Key（sk-api-…）共用这个 /v1 地址，别配到别家端点，否则 401"},
     {"id": "siliconflow", "group": "国内", "name": "硅基流动 SiliconFlow",
      "base": "https://api.siliconflow.cn/v1",
      "models": ["deepseek-ai/DeepSeek-V4-Flash", "deepseek-ai/DeepSeek-V3",
@@ -57,11 +57,11 @@ PROVIDERS = [
     {"id": "ark", "group": "国内", "name": "火山方舟（豆包）",
      "base": "https://ark.cn-beijing.volces.com/api/v3",
      "models": ["doubao-seed-2-0-pro"],
-     "hint": "console.volcengine.com/ark 创建「推理接入点」后用其 ID 作模型名"},
+     "hint": "console.volcengine.com/ark 创建「推理接入点」后用其 ID 作模型名。买了方舟 Coding Plan 请选套餐组里的条目"},
     {"id": "hunyuan", "group": "国内", "name": "腾讯混元 Hunyuan",
      "base": "https://api.hunyuan.cloud.tencent.com/v1",
      "models": ["hunyuan-turbos-latest"],
-     "hint": "console.cloud.tencent.com/hunyuan 开通后申请 Key（OpenAI 兼容模式）"},
+     "hint": "console.cloud.tencent.com/hunyuan 开通后申请 Key（OpenAI 兼容模式）。腾讯云 Coding Plan 请选套餐组里的条目"},
     {"id": "qianfan", "group": "国内", "name": "百度千帆（文心）",
      "base": "https://qianfan.baidubce.com/v2",
      "models": ["ernie-5.0"],
@@ -145,8 +145,7 @@ PROVIDERS = [
     {"id": "kimi_intl", "group": "国际", "name": "Kimi 国际版",
      "base": "https://api.moonshot.ai/v1",
      "models": ["kimi-k2.6"],
-     "hint": "platform.moonshot.ai 申请 Key（与国内 platform.moonshot.cn 账号不通用）"},
-    {"id": "zhipu_intl", "group": "国际", "name": "智谱 GLM 国际版（z.ai）",
+     "hint": "platform.moonshot.ai 申请 Key（与国内 platform.moonshot.cn 账号不通用）"},    {"id": "zhipu_intl", "group": "国际", "name": "智谱 GLM 国际版（z.ai）",
      "base": "https://api.z.ai/api/paas/v4",
      "models": ["glm-4.7", "glm-5"],
      "hint": "z.ai 申请 Key（与国内 bigmodel.cn 账号不通用）"},
@@ -163,6 +162,61 @@ PROVIDERS = [
      "models": ["deepseek-ai/DeepSeek-V3"],
      "hint": "siliconflow.com 申请 Key（与国内 .cn 账号不通用）"},
 
+    # ---------------- Token / 编程套餐（2026-11-12 用户反馈：买了套餐却选不到）----------------
+    # 背景：智谱 / Kimi / 阿里 / 火山 / 腾讯 的「Coding Plan」「Token Plan」是**订阅制**，
+    # 多数另发一套**专属端点**，而且套餐 Key 打到按量端点会直接 401（官方 FAQ 明确写了）。
+    # 所以套餐必须单独成条；只收**提供 OpenAI 兼容端点**的——本程序的 AI 接入只走
+    # /chat/completions，纯 Anthropic 端点（…/anthropic）在这里用不了。
+    {"id": "zhipu_plan", "group": "Token/编程套餐", "name": "智谱 GLM · 编程套餐",
+     "base": "https://open.bigmodel.cn/api/coding/paas/v4",
+     "models": ["glm-5.2", "glm-5", "glm-4.7"],
+     "hint": "bigmodel.cn 的 GLM Coding Plan 专属端点。套餐 Key 打按量端点会 401，"
+             "按量 Key 打这里也会 401 —— 两个 Key 不能混用"},
+    {"id": "zhipu_plan_intl", "group": "Token/编程套餐",
+     "name": "智谱 GLM 国际 · 编程套餐",
+     "base": "https://api.z.ai/api/coding/paas/v4",
+     "models": ["glm-5.2", "glm-5"],
+     "hint": "z.ai 订阅的 Coding Plan 专用端点（与国内 bigmodel.cn 套餐不通用）"},
+    {"id": "kimi_plan", "group": "Token/编程套餐", "name": "Kimi Code 会员",
+     "base": "https://api.kimi.com/coding/v1",
+     "models": ["kimi-for-coding", "k3"],
+     "hint": "Kimi Code 会员在 Kimi Code 控制台建 Key。会员 Key 只能配这个地址，"
+             "打到开放平台 api.moonshot.cn 会 401"},
+    {"id": "kimi_plan_intl", "group": "Token/编程套餐",
+     "name": "Kimi Code 会员 · 海外",
+     "base": "https://api.kimi.ai/coding/v1",
+     "models": ["kimi-for-coding", "k3"],
+     "hint": "海外会员端点（api.kimi.ai/coding/v1），与国内 api.kimi.com 账号不通用"},
+    {"id": "qwen_plan", "group": "Token/编程套餐", "name": "阿里百炼 · Coding Plan",
+     "base": "https://coding.dashscope.aliyuncs.com/v1",
+     "models": ["qwen3.7-plus", "qwen3-coder-plus"],
+     "hint": "百炼 Coding Plan 专属端点。注意不是按量付费的兼容模式地址"},
+    {"id": "qwen_plan_intl", "group": "Token/编程套餐",
+     "name": "阿里百炼 · Coding Plan 国际",
+     "base": "https://coding-intl.dashscope.aliyuncs.com/v1",
+     "models": ["qwen3.7-plus"],
+     "hint": "新加坡地域的 Coding Plan 端点（coding-intl.dashscope…），与国内套餐不通用"},
+    {"id": "qwen_token_plan", "group": "Token/编程套餐",
+     "name": "阿里百炼 · Token Plan",
+     "base": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+     "models": [],
+     "hint": "Token Plan 订阅（北京地域）端点；新加坡账号把域名换成 "
+             "token-plan.ap-southeast-1.maas.aliyuncs.com。模型名可填 auto 或点「测试接口」拉清单"},
+    {"id": "minimax_plan", "group": "Token/编程套餐", "name": "MiniMax · Token Plan",
+     "base": "https://api.minimaxi.com/v1",
+     "models": ["MiniMax-M3", "MiniMax-M2.7"],
+     "hint": "Token Plan 订阅 Key（sk-cp-…）在 platform.minimaxi.com 的 Token Plan 页建；"
+             "与按量 Key 共用这个 /v1 地址，区别只是计费资源（先扣套餐额度，再走余额）。"
+             "不是套餐用户选上面的「MiniMax」即可"},
+    {"id": "ark_plan", "group": "Token/编程套餐", "name": "火山方舟 · Coding Plan",
+     "base": "https://ark.cn-beijing.volces.com/api/coding/v3",
+     "models": [],
+     "hint": "方舟 Coding Plan 端点（/api/coding/v3）。按量付费的是 /api/v3，两者 Key 不通用"},
+    {"id": "hunyuan_plan", "group": "Token/编程套餐", "name": "腾讯云 · Coding Plan",
+     "base": "https://api.lkeap.cloud.tencent.com/coding/v3",
+     "models": ["hunyuan-2.0-instruct", "hunyuan-2.0-thinking"],
+     "hint": "腾讯云 LKEAP Coding Plan 端点（/coding/v3）；按量付费走 /v1，Key 不同"},
+
     # ---------------- 自定义 ----------------
     {"id": CUSTOM_ID, "group": "", "name": "自定义（手动填写）",
      "base": "", "models": [],
@@ -175,6 +229,18 @@ _BY_ID = {p["id"]: p for p in PROVIDERS}
 # dashscope 抢走、api.moonshot.ai 会被 moonshot 抢走
 _HOST_KEYS = [
     ("openai.azure.com", CUSTOM_ID),    # 要填资源名/部署名，只能自定义
+    # ---- 套餐端点：必须排在按量泛域名之前，否则会被厂商主域名抢走 ----
+    # （套餐 Key 打到按量端点会 401，认错等于配好也用不了）
+    ("token-plan", "qwen_token_plan"),          # 阿里 Token Plan（北京/新加坡）
+    ("coding-intl.dashscope", "qwen_plan_intl"),
+    ("coding.dashscope", "qwen_plan"),
+    ("api.z.ai/api/coding", "zhipu_plan_intl"),   # 必须早于下面的 api/coding/paas
+    ("api/coding/paas", "zhipu_plan"),          # open.bigmodel.cn/api/coding/paas/v4
+    ("api.kimi.com/coding", "kimi_plan"),
+    ("api.kimi.ai/coding", "kimi_plan_intl"),
+    ("api/coding/v3", "ark_plan"),              # ark…/api/coding/v3
+    ("lkeap.cloud.tencent.com", "hunyuan_plan"),
+    # ---- 按量付费（原顺序，勿动）----
     ("dashscope-intl", "qwen_intl"),
     ("dashscope", "qwen"),
     ("api.z.ai", "zhipu_intl"),

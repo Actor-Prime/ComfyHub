@@ -91,6 +91,7 @@ st.save(c1, [{"role": "user", "content": "重启前的问题"},
 # ---- 6. 界面能恢复（离屏构造 AiPage）----
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtCore import Qt  # noqa: E402
 app = QApplication.instance() or QApplication([])
 from app.ui.pages.ai_page import AiPage  # noqa: E402
 
@@ -103,7 +104,11 @@ class _FakeWin:
 page = AiPage({}, _FakeWin())
 check("6a 启动时选中上次会话", page._chat_id == c1, page._chat_id)
 check("6b 历史被恢复到内存", len(page._history) == 2, str(page._history))
-check("6c 会话下拉列出历史", page.cb_chat.count() >= 1 and page.cb_chat.itemData(0) == c1)
+check("6c 左侧会话栏列出历史",
+      page.lst_chat.count() >= 1
+      and any(page.lst_chat.item(i).data(Qt.UserRole) == c1
+              for i in range(page.lst_chat.count())),
+      [page.lst_chat.item(i).text() for i in range(page.lst_chat.count())])
 page._new_chat()
 check("6d 新建对话清空上下文", page._history == [] and page._chat_id != c1)
 page._history.append({"role": "user", "content": "新对话内容"})

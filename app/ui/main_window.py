@@ -261,6 +261,13 @@ class MainWindow(QMainWindow):
                   self.ai_page, self.console_page, self.settings_page):
             self.stack.addWidget(w)
 
+        # AI 触发的模型下载：状态栏提示一句去哪看进度
+        # （2026-11-12 用户反馈「AI 帮忙下载不知道下载进度」）
+        try:
+            self.models_page.dl_center.sig_ai_queued.connect(self._on_ai_download)
+        except Exception:
+            pass
+
         # 表格行高统一 32px：QSS item 有 4px padding，默认行高会把字上下裁掉
         # （2026-10-27 插件页报障「字体显示不全」）；扫全部页面，新表自动覆盖
         from app.ui.theme import fit_all_tables
@@ -486,6 +493,19 @@ class MainWindow(QMainWindow):
                 self.tray.showMessage(title, msg, icon, 6000)
             else:
                 self.statusBar().showMessage(f"{title} — {msg}", 8000)
+        except Exception:
+            pass
+
+    def _on_ai_download(self, count: int):
+        """AI 助手把模型下载丢进队列了：状态栏告诉用户进度在哪看
+
+        注意别自动切页——用户可能正在 AI 对话里等结果，强制跳走更烦人。
+        """
+        from app.i18n import T
+        try:
+            self.statusBar().showMessage(
+                T("AI 已加入下载队列") + f" ×{count} · " + T("进度见模型库右上角 ⬇"),
+                8000)
         except Exception:
             pass
 

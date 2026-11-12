@@ -35,8 +35,9 @@ class _AiTestWorker(QThread):
         try:
             res = ai_assist.test_connection(*self._args)
         except Exception as e:      # 兜底：任何异常都变成可展示的结果
+            from app import ai_assist as _as
             res = {"ok": False, "models": [], "model": "", "latency_ms": 0,
-                   "reply": "", "msg": "%s: %s" % (type(e).__name__, e)}
+                   "reply": "", "msg": _as.describe_error(e, one_line=True)}
         self.sig_done.emit(res)
 
 

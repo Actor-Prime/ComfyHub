@@ -1023,24 +1023,29 @@ EN_DICT = {
         "Get a key at platform.deepseek.com. Chat models have no thinking switch.",
     "platform.xiaomimimo.com 申请 Key。thinking.type 开关实测有效":
         "Get a key at platform.xiaomimimo.com. The thinking.type switch works.",
-    "bailian.console.aliyun.com 申请 Key。用「兼容模式」地址，不是原生 DashScope":
-        "Get a key at bailian.console.aliyun.com. Use the compatible-mode "
-        "endpoint, not native DashScope.",
-    "bigmodel.cn 申请 Key。GLM-4.5 起支持 thinking.type 开关":
-        "Get a key at bigmodel.cn. GLM-4.5+ supports the thinking.type switch.",
-    "platform.moonshot.cn 申请 Key。在境外可用「Kimi 国际版」":
-        "Get a key at platform.moonshot.cn. Outside China, use \"Kimi (international)\".",
-    "platform.minimaxi.com 申请 Key（海外站是 api.minimax.io，Key 不通用）":
-        "Get a key at platform.minimaxi.com (overseas site api.minimax.io uses "
-        "a different key).",
+    "bailian.console.aliyun.com 申请 Key。按量付费用「兼容模式」地址；买了 Coding Plan / Token Plan 请选下面套餐组里的条目":
+        "Get a key at bailian.console.aliyun.com. Compatible-mode endpoint is for "
+        "pay-as-you-go; for a Coding Plan / Token Plan pick the plan entry below.",
+    "bigmodel.cn 申请 Key。这是按量付费端点；买了 GLM Coding Plan 请选套餐组里的条目":
+        "Get a key at bigmodel.cn. This is the pay-as-you-go endpoint; for a GLM "
+        "Coding Plan pick the plan entry in the group below.",
+    "platform.moonshot.cn 申请 Key（开放平台按量付费）。Kimi Code 会员请选套餐组里的「Kimi Code 会员」":
+        "Get a key at platform.moonshot.cn (pay-as-you-go). For a Kimi Code "
+        "membership pick \"Kimi Code membership\" in the plan group.",
+    "platform.minimaxi.com 申请 Key（海外站 api.minimax.io，Key 不通用）。Token Plan 订阅 Key（sk-cp-…）与按量 Key（sk-api-…）共用这个 /v1 地址，别配到别家端点，否则 401":
+        "Get a key at platform.minimaxi.com (overseas site api.minimax.io uses a "
+        "different key). Token Plan keys (sk-cp-…) and pay-as-you-go keys "
+        "(sk-api-…) share this /v1 base; a key sent to another vendor's endpoint "
+        "returns 401.",
     "cloud.siliconflow.cn 申请 Key。模型名带「厂商/」前缀":
         "Get a key at cloud.siliconflow.cn. Model names carry a \"vendor/\" prefix.",
-    "console.volcengine.com/ark 创建「推理接入点」后用其 ID 作模型名":
-        "Create an inference endpoint at console.volcengine.com/ark and use its "
-        "ID as the model name.",
-    "console.cloud.tencent.com/hunyuan 开通后申请 Key（OpenAI 兼容模式）":
+    "console.volcengine.com/ark 创建「推理接入点」后用其 ID 作模型名。买了方舟 Coding Plan 请选套餐组里的条目":
+        "Create an inference endpoint at console.volcengine.com/ark and use its ID "
+        "as the model name. For an Ark Coding Plan pick the plan entry below.",
+    "console.cloud.tencent.com/hunyuan 开通后申请 Key（OpenAI 兼容模式）。腾讯云 Coding Plan 请选套餐组里的条目":
         "Enable Hunyuan at console.cloud.tencent.com and request a key "
-        "(OpenAI-compatible mode).",
+        "(OpenAI-compatible mode). For a Tencent Cloud Coding Plan pick the plan "
+        "entry below.",
     "console.bce.baidu.com/qianfan 申请 Key（v2 接口是 OpenAI 兼容的）":
         "Get a key at console.bce.baidu.com/qianfan (the v2 API is "
         "OpenAI-compatible).",
@@ -1096,5 +1101,115 @@ EN_DICT = {
         "Get a key at siliconflow.com (separate from the .cn site).",
     "填任意 OpenAI 兼容端点：中转站、Azure（…/openai/v1 + 部署名）、自建 vLLM / Ollama":
         "Any OpenAI-compatible endpoint: relays, Azure (…/openai/v1 + deployment), "
-        "self-hosted vLLM / Ollama."
+        "self-hosted vLLM / Ollama.",
+    # ================= 下载中心（2026-11-12 AI 触发下载）=================
+    "AI 已加入下载队列": "AI queued a model download",
+    "进度见模型库右上角 ⬇": "Progress: Models page → ⬇ at top right",
+    # ================= AI 页右侧概要抽屉（2026-11-12）=================
+    "对话概要": "Chat overview",
+    "对话概要：简介 / 产物 / 技能（点击展开）":
+        "Chat overview: brief / artifacts / skills (click to open)",
+    "收起面板": "Collapse panel",
+    "简介": "Brief",
+    "产物": "Artifacts",
+    "技能": "Skills",
+    "用途": "Purpose",
+    "消息": "Messages",
+    "压缩摘要": "Compressed summary",
+    "对话变长后会自动把早期内容压缩成摘要":
+        "Long chats get their early turns compressed into a summary.",
+    "这条对话还没有产物": "No artifacts in this chat yet",
+    "生成的图 / 写出的工作流 / 下载的模型都会列在这里":
+        "Generated images, written workflows and downloaded models show up here.",
+    "所在文件夹": "Folder",
+    "这条对话还没挂技能": "No skills attached to this chat",
+    "点输入框旁「⚙ 会话设定」添加": "Add some via ⚙ Session next to the input box.",
+    "选一个技能查看正文": "Pick a skill to read its prompt body.",
+    "未设定": "Not set",
+    "跟随当前实例": "Follows current instance",
+    "未指定": "Not specified",
+    "打不开：": "Cannot open: ",
+    # ---- Coding / Token 套餐（2026-11-12）----
+    "Token/编程套餐": "Token / Coding plans",
+    "智谱 GLM · 编程套餐": "Zhipu GLM · Coding Plan",
+    "智谱 GLM 国际 · 编程套餐": "Zhipu GLM Intl · Coding Plan",
+    "Kimi Code 会员": "Kimi Code membership",
+    "Kimi Code 会员 · 海外": "Kimi Code membership · overseas",
+    "阿里百炼 · Coding Plan": "Alibaba Bailian · Coding Plan",
+    "阿里百炼 · Coding Plan 国际": "Alibaba Bailian · Coding Plan Intl",
+    "阿里百炼 · Token Plan": "Alibaba Bailian · Token Plan",
+    "火山方舟 · Coding Plan": "Volcengine Ark · Coding Plan",
+    "腾讯云 · Coding Plan": "Tencent Cloud · Coding Plan",
+    "MiniMax · Token Plan": "MiniMax · Token Plan",
+    "Token Plan 订阅 Key（sk-cp-…）在 platform.minimaxi.com 的 Token Plan 页建；与按量 Key 共用这个 /v1 地址，区别只是计费资源（先扣套餐额度，再走余额）。不是套餐用户选上面的「MiniMax」即可":
+        "Create the Token Plan subscription key (sk-cp-…) on the Token Plan page at "
+        "platform.minimaxi.com. It shares this /v1 base with pay-as-you-go keys — "
+        "only the billing resource differs (plan quota first, then balance). If you "
+        "are not on a plan, just pick the plain \"MiniMax\" entry above.",
+    "bigmodel.cn 的 GLM Coding Plan 专属端点。套餐 Key 打按量端点会 401，按量 Key 打这里也会 401 —— 两个 Key 不能混用":
+        "Dedicated GLM Coding Plan endpoint. A plan key against the pay-as-you-go "
+        "endpoint (or vice versa) returns 401 — the two key types are not "
+        "interchangeable.",
+    "z.ai 订阅的 Coding Plan 专用端点（与国内 bigmodel.cn 套餐不通用）":
+        "Coding Plan endpoint for z.ai subscriptions (not interchangeable with "
+        "the mainland bigmodel.cn plan).",
+    "Kimi Code 会员在 Kimi Code 控制台建 Key。会员 Key 只能配这个地址，打到开放平台 api.moonshot.cn 会 401":
+        "Create the key in the Kimi Code console. A membership key only works here; "
+        "against the open platform (api.moonshot.cn) it returns 401.",
+    "海外会员端点（api.kimi.ai/coding/v1），与国内 api.kimi.com 账号不通用":
+        "Overseas membership endpoint (api.kimi.ai/coding/v1); not interchangeable "
+        "with mainland api.kimi.com accounts.",
+    "百炼 Coding Plan 专属端点。注意不是按量付费的兼容模式地址":
+        "Dedicated Bailian Coding Plan endpoint — not the pay-as-you-go "
+        "compatible-mode address.",
+    "新加坡地域的 Coding Plan 端点（coding-intl.dashscope…），与国内套餐不通用":
+        "Coding Plan endpoint for the Singapore region (coding-intl.dashscope…), "
+        "not interchangeable with the mainland plan.",
+    "Token Plan 订阅（北京地域）端点；新加坡账号把域名换成 token-plan.ap-southeast-1.maas.aliyuncs.com。模型名可填 auto 或点「测试接口」拉清单":
+        "Token Plan subscription endpoint (Beijing region); for Singapore replace "
+        "the host with token-plan.ap-southeast-1.maas.aliyuncs.com. Model name can "
+        "be \"auto\", or hit \"Test connection\" to fetch the real list.",
+    "方舟 Coding Plan 端点（/api/coding/v3）。按量付费的是 /api/v3，两者 Key 不通用":
+        "Ark Coding Plan endpoint (/api/coding/v3). Pay-as-you-go uses /api/v3; the "
+        "keys are not interchangeable.",
+    "腾讯云 LKEAP Coding Plan 端点（/coding/v3）；按量付费走 /v1，Key 不同":
+        "Tencent Cloud LKEAP Coding Plan endpoint (/coding/v3); pay-as-you-go uses "
+        "/v1 with a different key.",
+    # ---- AI 报错人话化（2026-11-12）----
+    "请求超时：网络慢，或者接口一直没响应。\n境外服务需要能走代理（把「直连」取消勾选）；国内接口一般勾上「直连」更快更稳。":
+        "Request timed out: the network is slow or the endpoint isn't responding.\nOverseas services need a working proxy (uncheck \"Direct\"); mainland endpoints are usually faster and steadier with \"Direct\" enabled.",
+    "证书校验失败：网络中间有拦截（公司网关 / 代理），换个网络或关掉代理再试。":
+        "Certificate verification failed: something on the network is intercepting (corporate gateway / proxy). Try another network or disable the proxy.",
+    "连接被重置：代理或网络中途断开，重试一次；反复出现请换网络或关闭代理。":
+        "Connection was reset: the proxy or network dropped mid-request. Retry once; if it keeps happening, change network or disable the proxy.",
+    "连不上服务器：{r}\n检查接口地址是否写错、网络能否访问该站点；境外服务请确认代理已开启。":
+        "Cannot reach the server: {r}\nCheck the base URL and whether this site is reachable; for overseas services make sure the proxy is on.",
+    "连接被拒绝：目标端口没开（{r}）。检查接口地址和端口。":
+        "Connection refused: the target port is closed ({r}). Check the base URL and port.",
+    "服务端原文：":
+        "Server said: ",
+    "服务端出错（{s}）：厂商侧故障，不是你的配置问题。稍后重试；持续出现就换个模型或联系厂商。":
+        "Server error ({s}): vendor-side failure, not your configuration. Retry later; if it persists, switch models or contact the vendor.",
+    "请求失败（HTTP {s}）。":
+        "Request failed (HTTP {s}).",
+    "（当前接口可能不支持 function calling，请换支持工具调用的模型，如 deepseek-chat / glm-4.7 等）":
+        "(This endpoint may not support function calling. Switch to a model with tool-calling support, e.g. deepseek-chat / glm-4.7.)",
+    "认证失败（401）：API Key 无效，或与所选服务商/套餐对不上。\n常见原因：① Key 没复制完整；② 套餐 Key 与按量 Key 不能混用（Coding Plan / Token Plan 的 Key 打到按量端点必 401，反之亦然）；③ Key 已停用或欠费。\n到「系统设置 → AI 接入」核对条目后点「测试接口」验证一次。":
+        "Authentication failed (401): the API key is invalid, or it doesn't match the selected provider/plan.\nCommon causes: (1) the key was copied incompletely; (2) plan keys and pay-as-you-go keys are not interchangeable (a Coding Plan / Token Plan key against the pay-as-you-go endpoint always returns 401, and vice versa); (3) the key is disabled or out of credit.\nCheck the provider entry under Settings → AI access, then hit \"Test connection\".",
+    "拒绝访问（403）：这个 Key 没有该模型或套餐的权限。\n确认模型在当前套餐内、套餐没过期，或者换一个模型名再试。":
+        "Access denied (403): this key has no permission for that model or plan.\nMake sure the model is in your plan and the plan hasn't expired, or try another model.",
+    "地址不对（404）：接口地址或模型名不存在。\n套餐端点和按量端点是两个不同地址（如 GLM 的 /api/coding/paas/v4 与 /api/paas/v4），确认服务商条目没选错；模型名可点「测试接口」自动拉取。":
+        "Wrong endpoint (404): the base URL or model name doesn't exist.\nPlan endpoints and pay-as-you-go endpoints are different addresses (e.g. GLM's /api/coding/paas/v4 vs /api/paas/v4) — check the provider entry; for the model name, hit \"Test connection\" to fetch the real list.",
+    "请求被限流（429）：调用太频繁，或套餐额度 / 账户余额已用尽。\n稍等一会儿再试，或去厂商控制台看额度与频率限制。":
+        "Rate limited (429): too many calls, or the plan quota / account balance is used up.\nWait a moment and retry, or check quota and rate limits in the vendor console.",
+    "余额不足（402）：账户欠费或本期额度已用完，去厂商控制台充值/续订。":
+        "Insufficient balance (402): the account is out of credit or this period's quota is used up. Top up or renew in the vendor console.",
+    "请求被拒绝（400）：参数或模型名有问题。\n"
+    "多数是模型名不存在，或该模型不支持工具调用（本助手需要 function calling）。"
+    "到「系统设置 → AI 接入」核对模型名，或换一个支持工具调用的模型。":
+        "Request rejected (400): bad parameter or model name.\n"
+        "Usually the model doesn't exist, or it doesn't support tool "
+        "calling (this assistant needs function calling). Check the model "
+        "name under Settings → AI access, or switch to a model with "
+        "tool-calling support.",
 }

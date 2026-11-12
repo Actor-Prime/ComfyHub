@@ -321,10 +321,14 @@ def _t_model_download(args, ctx: ToolCtx):
     if ctx.mainwin is not None:
         dl = getattr(getattr(ctx.mainwin, "models_page", None), "dl_center", None)
         if dl is not None:
-            dl.enqueue([(rid, fp, dest)])
+            # 2026-11-12 修：本工具跑在 _AgentWorker 线程里，直接 dl.enqueue()
+            # 会在非 GUI 线程 new QWidget，行挂不上界面（用户看不到进度）。
+            # request_download() 用信号排队回 UI 线程，任何线程都能安全调用。
+            dl.request_download([(rid, fp, dest)], source="ai")
             return ctx.ok(queued=True, dest=dest,
-                          note="已加入下载中心后台队列（右上角 ⬇ 可看进度），稍后用 get_health/文件确认")
-    model_store.download_file(rid, fp, dest, log=ctx.log)
+                          note="已加入模型库下载中心（模型库页面右上角 ⬇ 可看进度/取消），"
+                               "下载完成后会刷新模型列表；如需确认完成可再查文件")
+    model_store.download_file(rid, fp, dest)
     return ctx.ok(queued=False, dest=os.path.join(dest, os.path.basename(fp)),
                   note="同步下载完成")
 

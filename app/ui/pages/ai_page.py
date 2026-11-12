@@ -15,18 +15,35 @@ import threading
 
 import json
 import os
+import time
 
-from PySide6.QtCore import (QBuffer, QEvent, QRect, QSize, Qt, QThread,
+from PySide6.QtCore import (QBuffer, QEvent, QRect, QSettings, QSize, Qt, QThread,
                             QTime, QTimer, Signal)
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog,
                                QDialogButtonBox, QFormLayout, QFrame,
                                QHBoxLayout, QInputDialog, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem, QMenu,
-                               QPushButton, QScrollArea, QSizePolicy, QStyle,
-                               QTextEdit, QToolButton, QVBoxLayout, QWidget)
+                               QPlainTextEdit, QPushButton, QScrollArea,
+                               QSizePolicy, QStyle, QTabWidget, QTextEdit,
+                               QToolButton, QVBoxLayout, QWidget)
 
 from app import ai_agent, ai_chat_store, ai_skills
+from app.i18n import T
+
+
+def _refresh_right_safe(page):
+    """刷新右侧概要栏（页面替身 / 早期构造阶段调用也不炸）
+
+    测试里常用 SimpleNamespace 假页面直接调 AiPage 的未绑定方法，
+    这里统一兜一层，别让「右侧栏刷新」把老测试带崩。
+    """
+    fn = getattr(page, "_refresh_right", None)
+    if callable(fn):
+        try:
+            fn()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------- 图片预览
@@ -224,6 +241,12 @@ class AiPage(QWidget):
         self._chat_skills = []      # 本会话勾选的技能 id（2026-11-11）
         self._profile = {}          # 本会话工作台设定（2026-11-11：用途/实例/工作流/模型）
         self._pending_options = []  # ask_user 工具待渲染的选项按钮（2026-11-11）
+        self._artifacts = []        # 本会话产物：[{kind,path,label,ts}]（2026-11-12）
+        try:
+            self._right_open = bool(QSettings("LeiMengStudio", "ComfyHub")
+                                    .value("ai_right_open", False, type=bool))
+        except Exception:
+            self._right_open = False
         self._build()
         self._boot_chats()
 
@@ -366,10 +389,297 @@ class AiPage(QWidget):
         outer.addStretch(1)
         outer.addWidget(self.side)
         outer.addWidget(body, 50)
+        # ---- 右侧概要抽屉（2026-11-12 用户建议）：贴边把手 + 可收起面板 ----
+        self._build_right_drawer()
+        outer.addWidget(self.right_handle)
+        outer.addWidget(self.side_r)
         outer.addStretch(1)
 
-        self._greet()
+        # 首屏欢迎语由 _boot_chats 负责（_open_chat / 新建会话都会渲染）；
+        # 这里别再 _greet()——否则空会话会叠出两张一模一样的欢迎卡（2026-11-12 实测）
         self.refresh_backdrop()
+        self._apply_right_open(getattr(self, "_right_open", False), remember=False)
+
+    # -------------------------------------------------- 右侧抽屉（2026-11-12）
+    def _build_right_drawer(self):
+        """右侧「简介 / 产物 / 技能」抽屉 + 贴边把手
+
+        用户建议（2026-11-12）：右边来一个隐藏按钮，点开能看当前对话的简介，
+        还能看到这条对话产出的文件、以及挂了哪些 skill 的内容。
+        """
+        self.right_handle = QToolButton()
+        self.right_handle.setObjectName("AiDrawHandle")
+        self.right_handle.setCursor(Qt.PointingHandCursor)
+        self.right_handle.setFixedWidth(18)
+        self.right_handle.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+        self.right_handle.clicked.connect(self._toggle_right)
+        self.right_handle.setStyleSheet(
+            "QToolButton#AiDrawHandle { background: rgba(27,32,41,0.92);"
+            " color:#8a93a3; border:none; border-radius:9px; font-size:14px; }"
+            "QToolButton#AiDrawHandle:hover { background:#262e3a; color:#e6edf7; }")
+
+        self.side_r = QWidget()
+        self.side_r.setObjectName("AiRight")
+        self.side_r.setAttribute(Qt.WA_StyledBackground, True)
+        self.side_r.setFixedWidth(304)
+        self.side_r.setStyleSheet(
+            "QWidget#AiRight { background: rgba(27,32,41,0.92);"
+            " border-radius: 12px; }"
+            "QTabWidget#AiRightTab::pane { border:none; }"
+            "QTabWidget#AiRightTab QTabBar::tab { background:transparent;"
+            "  color:#8a93a3; padding:6px 10px; border:none; font-size:12px; }"
+            "QTabWidget#AiRightTab QTabBar::tab:selected { color:#e6edf7;"
+            "  border-bottom:2px solid #4c8dff; }"
+            "QListWidget#RArt, QListWidget#RSkill { background:transparent;"
+            "  border:none; color:#c9d3e0; font-size:12px; outline:none; }"
+            "QListWidget#RArt::item, QListWidget#RSkill::item { padding:7px 8px;"
+            "  border-radius:7px; margin:2px 0; }"
+            "QListWidget#RArt::item:hover, QListWidget#RSkill::item:hover"
+            " { background:#262e3a; }"
+            "QListWidget#RArt::item:selected, QListWidget#RSkill::item:selected"
+            " { background:#2f3a4a; color:#e6edf7; }"
+            "QPlainTextEdit#RSkillBody, QPlainTextEdit#RSummary"
+            " { background:#14181e; border:1px solid #232b36; border-radius:8px;"
+            "   color:#a9b7c8; font-size:11px; padding:6px; }")
+        v = QVBoxLayout(self.side_r)
+        v.setContentsMargins(12, 10, 12, 12)
+        v.setSpacing(8)
+
+        head = QHBoxLayout()
+        head.setSpacing(6)
+        lb = QLabel(T("对话概要"))
+        lb.setStyleSheet("color:#e6edf7; font-size:13px; font-weight:600;")
+        head.addWidget(lb)
+        head.addStretch(1)
+        b_close = QPushButton("›")
+        b_close.setCursor(Qt.PointingHandCursor)
+        b_close.setFixedSize(20, 20)
+        b_close.setToolTip(T("收起面板"))
+        b_close.setStyleSheet(self.ST_LINK)
+        b_close.clicked.connect(self._toggle_right)
+        head.addWidget(b_close)
+        v.addLayout(head)
+
+        self.tabs_r = QTabWidget()
+        self.tabs_r.setObjectName("AiRightTab")
+        self.tabs_r.addTab(self._page_brief(), T("简介"))
+        self.tabs_r.addTab(self._page_artifacts(), T("产物"))
+        self.tabs_r.addTab(self._page_skills(), T("技能"))
+        v.addWidget(self.tabs_r, 1)
+        self.side_r.setVisible(False)
+
+    def _page_brief(self) -> QWidget:
+        """简介页：用途 / 实例 / 工作流 / 模型 / 消息数 + 上下文压缩摘要"""
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(2, 8, 2, 4)
+        lay.setSpacing(7)
+
+        def _kv(key):
+            row = QHBoxLayout()
+            row.setSpacing(6)
+            lk = QLabel(key)
+            # 48px 才放得下「工作流」三个 11px 汉字；42 会被挤成两行
+            lk.setFixedWidth(48)
+            lk.setWordWrap(False)
+            lk.setStyleSheet("color:#6c7a8c; font-size:11px;")
+            lv = QLabel("—")
+            lv.setWordWrap(True)
+            lv.setStyleSheet("color:#c9d3e0; font-size:12px;")
+            row.addWidget(lk, 0, Qt.AlignTop)
+            row.addWidget(lv, 1)
+            lay.addLayout(row)
+            return lv
+
+        self.r_topic = _kv(T("用途"))
+        self.r_inst = _kv(T("实例"))
+        self.r_wf = _kv(T("工作流"))
+        self.r_model = _kv(T("模型"))
+        self.r_count = _kv(T("消息"))
+
+        lb = QLabel(T("压缩摘要"))
+        lb.setStyleSheet("color:#6c7a8c; font-size:11px; padding-top:2px;")
+        lay.addWidget(lb)
+        self.r_summary = QPlainTextEdit()
+        self.r_summary.setObjectName("RSummary")
+        self.r_summary.setReadOnly(True)
+        self.r_summary.setPlaceholderText(T("对话变长后会自动把早期内容压缩成摘要"))
+        lay.addWidget(self.r_summary, 1)
+        return w
+
+    def _page_artifacts(self) -> QWidget:
+        """产物页：这条对话落盘的东西（图 / 工作流 / 模型 / 日志）"""
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(2, 8, 2, 4)
+        lay.setSpacing(6)
+        self.lst_art = QListWidget()
+        self.lst_art.setObjectName("RArt")
+        self.lst_art.setFrameShape(QFrame.NoFrame)
+        self.lst_art.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.lst_art.itemDoubleClicked.connect(lambda it: self._open_artifact(it))
+        lay.addWidget(self.lst_art, 1)
+        self.lb_art_empty = QLabel(
+            T("这条对话还没有产物") + "\n"
+            + T("生成的图 / 写出的工作流 / 下载的模型都会列在这里"))
+        self.lb_art_empty.setWordWrap(True)
+        self.lb_art_empty.setStyleSheet(
+            "color:#6c7a8c; font-size:11px; padding:6px 2px;")
+        lay.addWidget(self.lb_art_empty)
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        self.b_art_open = QPushButton(T("打开"))
+        self.b_art_open.setCursor(Qt.PointingHandCursor)
+        self.b_art_open.setStyleSheet(self.ST_CHIP)
+        self.b_art_open.clicked.connect(
+            lambda: self._open_artifact(self.lst_art.currentItem()))
+        row.addWidget(self.b_art_open)
+        self.b_art_dir = QPushButton(T("所在文件夹"))
+        self.b_art_dir.setCursor(Qt.PointingHandCursor)
+        self.b_art_dir.setStyleSheet(self.ST_CHIP)
+        self.b_art_dir.clicked.connect(
+            lambda: self._open_artifact(self.lst_art.currentItem(), folder=True))
+        row.addWidget(self.b_art_dir)
+        row.addStretch(1)
+        lay.addLayout(row)
+        return w
+
+    def _page_skills(self) -> QWidget:
+        """技能页：本会话挂的 skill 及正文（想看它到底给模型灌了什么）"""
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(2, 8, 2, 4)
+        lay.setSpacing(6)
+        self.lst_skill = QListWidget()
+        self.lst_skill.setObjectName("RSkill")
+        self.lst_skill.setFrameShape(QFrame.NoFrame)
+        self.lst_skill.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.lst_skill.setMaximumHeight(132)
+        self.lst_skill.currentItemChanged.connect(self._show_skill_body)
+        lay.addWidget(self.lst_skill)
+        self.lb_skill_empty = QLabel(
+            T("这条对话还没挂技能") + "\n"
+            + T("点输入框旁「⚙ 会话设定」添加"))
+        self.lb_skill_empty.setWordWrap(True)
+        self.lb_skill_empty.setStyleSheet(
+            "color:#6c7a8c; font-size:11px; padding:2px;")
+        lay.addWidget(self.lb_skill_empty)
+        self.txt_skill = QPlainTextEdit()
+        self.txt_skill.setObjectName("RSkillBody")
+        self.txt_skill.setReadOnly(True)
+        self.txt_skill.setPlaceholderText(T("选一个技能查看正文"))
+        lay.addWidget(self.txt_skill, 1)
+        return w
+
+    def _toggle_right(self):
+        self._apply_right_open(not self.side_r.isVisible())
+
+    def _apply_right_open(self, on: bool, remember: bool = True):
+        """展开/收起右侧抽屉；状态记进 QSettings（下次开程序还是老样子）"""
+        self._right_open = bool(on)
+        self.side_r.setVisible(self._right_open)
+        self.right_handle.setText("›" if self._right_open else "‹")
+        self.right_handle.setToolTip(
+            T("收起面板") if self._right_open
+            else T("对话概要：简介 / 产物 / 技能（点击展开）"))
+        if self._right_open:
+            _refresh_right_safe(self)
+        # 抽屉一开一合会改变聊天区宽度，但 AiPage 自身尺寸没变、resizeEvent 不会来，
+        # 历史气泡用的是 setFixedWidth → 不重排就会被右边裁掉字（2026-11-12 实测）。
+        QTimer.singleShot(0, self._relayout_messages)
+        if remember:
+            try:
+                QSettings("LeiMengStudio", "ComfyHub").setValue(
+                    "ai_right_open", self._right_open)
+            except Exception:
+                pass
+
+    def _refresh_right(self):
+        """按当前会话刷新三页内容（幂等，随时可调）"""
+        if not hasattr(self, "r_topic"):
+            return
+        p = self._profile or {}
+        self.r_topic.setText(p.get("topic") or T("未设定"))
+        self.r_inst.setText(self._inst_name(p.get("inst_id"))
+                            if p.get("inst_id") else T("跟随当前实例"))
+        self.r_wf.setText(p.get("workflow") or T("未指定"))
+        self.r_model.setText(p.get("model") or T("未指定"))
+        upd = ""
+        try:
+            upd = next((c.get("updated") for c in ai_chat_store.list_chats()
+                        if c.get("id") == self._chat_id), 0) or 0
+        except Exception:
+            pass
+        stamp = (time.strftime("%m-%d %H:%M", time.localtime(upd)) if upd else "")
+        self.r_count.setText(f"{len(self._history)}" + (f" · {stamp}" if stamp else ""))
+        self.r_summary.setPlainText(self._summary or "")
+
+        # ---- 产物 ----
+        self.lst_art.clear()
+        ICON = {"image": "🖼", "model": "🧩", "workflow": "🧬", "log": "📄"}
+        for a in self._artifacts:
+            it = QListWidgetItem(ICON.get(a.get("kind"), "📄") + " " + a.get("label", ""))
+            it.setData(Qt.UserRole, a.get("path", ""))
+            it.setToolTip(a.get("path", ""))
+            self.lst_art.addItem(it)
+        has_art = bool(self._artifacts)
+        self.lst_art.setVisible(has_art)
+        self.lb_art_empty.setVisible(not has_art)
+        self.b_art_open.setEnabled(has_art)
+        self.b_art_dir.setEnabled(has_art)
+
+        # ---- 技能 ----
+        self.lst_skill.clear()
+        picked = []
+        for sid in (self._chat_skills or []):
+            sk = ai_skills.get_skill(sid)
+            if not sk:
+                continue
+            picked.append(sk)
+            it = QListWidgetItem("🧠 " + sk.get("name", sid))
+            it.setData(Qt.UserRole, sid)
+            it.setToolTip(sk.get("desc") or "")
+            self.lst_skill.addItem(it)
+        has_sk = bool(picked)
+        self.lst_skill.setVisible(has_sk)
+        self.lb_skill_empty.setVisible(not has_sk)
+        if has_sk:
+            self.lst_skill.setCurrentRow(0)
+        else:
+            self.txt_skill.clear()
+
+    def _show_skill_body(self, cur, _prev=None):
+        if not cur:
+            self.txt_skill.clear()
+            return
+        sk = ai_skills.get_skill(str(cur.data(Qt.UserRole) or ""))
+        # body 本身已包含「# 标题 + 描述段」，再前置一遍描述会重复两行
+        self.txt_skill.setPlainText(sk.get("body") or "")
+
+    def _add_artifact(self, a: dict):
+        """记录一条产物（按路径去重）；同一轮的 image 事件不会重复记两遍"""
+        path = str((a or {}).get("path") or "").strip()
+        if not path:
+            return
+        if any(x.get("path") == path for x in self._artifacts):
+            return
+        self._artifacts.append({
+            "kind": str(a.get("kind") or "file"),
+            "path": path,
+            "label": str(a.get("label") or os.path.basename(path.replace("\\", "/"))),
+            "ts": time.time()})
+        self._artifacts = ai_chat_store._clip_artifacts(self._artifacts)
+        _refresh_right_safe(self)
+
+    def _open_artifact(self, item, folder: bool = False):
+        path = (item.data(Qt.UserRole) if item is not None else "") or ""
+        if not path:
+            return
+        target = os.path.dirname(path) if folder else path
+        try:
+            os.startfile(target)          # noqa: S606 —— 打开用户自己的产物文件
+        except Exception as e:
+            self._notice(T("打不开：") + str(e)[:80])
 
     def refresh_backdrop(self, info: dict = None):
         """自定义背景图时给整页加一层半透明底板（2026-11-06 用户报障）
@@ -597,10 +907,22 @@ class AiPage(QWidget):
         return w
 
     def _fit_ai_body(self, body: QLabel, html: str):
-        """AI 卡片正文按当前聊天区宽度定型（窗口缩放后需重算）"""
-        cw = self._chat_width() - 28
+        """AI 卡片正文按当前聊天区宽度定型（窗口缩放后需重算）
+
+        注意：QLabel 内部富文本排版比 QTextDocument 按同宽算的要**略宽**一点
+        （字体舍入 + 段落 margin），按同宽算高度会差半行，末行被裁掉几个字
+        （2026-11-12 实测：1366 宽展开右栏后「…运行工作流。点上方快捷指令」
+        变成「…运行工作流」直接接「快捷指令」）。这里宽度留 8px、高度留 6px 兜住。
+        """
+        # 关键：先把 QSS 落到控件上再取字体（global QSS 会改字号）
+        body.ensurePolished()
+        # 宽度预算：viewport 宽 - 消息流内边距(2+10) - 卡片内边距(14+14)。
+        # 旧版只减了 28，把 flow 的 12px 也算进去扣了两次 → label 每行短 12px，
+        # 窗口一窄就有行尾文字放不下被裁（1366 展开右栏时每行少三四个字）。
+        cw = self._chat_width() - 16
         body.setFixedWidth(cw)
-        body.setFixedHeight(self._rich_height(html, cw, body.font()))
+        body.setFixedHeight(
+            self._rich_height(html, cw, body.font()) + 6)
 
     def _relayout_messages(self):
         """窗口尺寸变化后重排已有消息（2026-11-07 用户报障）
@@ -793,13 +1115,22 @@ class AiPage(QWidget):
         lb.setFixedWidth(cw)
         lb.setFixedHeight(self._wrap_height(lb, text, cw, 24, 16))
 
-    def _err_bubble(self, text: str):
+    def _err_bubble(self, text: str, raw: str = ""):
+        """错误气泡：主文案已经是人话；原始异常塞 tooltip（用户排查时才看）
+
+        2026-11-12 用户反馈「看不懂这是什么以上的报错」——原来这里直接显示
+        「HTTPError: HTTP Error 401: Unauthorized」。现在文本由
+        ai_assist.describe_error() 翻译过，raw 只作 tooltip。
+        """
         lb = QLabel(text)
+        lb.setTextFormat(Qt.PlainText)      # 错误里常含 <urlopen ...>，别被当 HTML 吃掉
         lb.setWordWrap(True)
         lb.setTextInteractionFlags(Qt.TextSelectableByMouse)
         lb.setStyleSheet(self.ST_ERR)
         lb.setProperty("chatKind", "err")
         lb.setProperty("chatText", text)
+        if raw:
+            lb.setToolTip(T("原始错误（排查用）：") + "\n" + raw[:800])
         self._fit_err_bubble(lb, text)
         w = self._row()
         h = QHBoxLayout(w)
@@ -945,6 +1276,7 @@ class AiPage(QWidget):
         self._summary = str(d.get("summary") or "")
         self._summary_upto = int(d.get("summary_upto") or 0)
         self._chat_skills = list(d.get("skills") or [])
+        self._artifacts = ai_chat_store._clip_artifacts(d.get("artifacts") or [])
         # 工作台设定随会话走：切过去就是另一套工作流/模型/技能，
         # 三个状态必须一起换（2026-11-11），漏一个就会「串台」
         self._profile = ai_skills.norm_profile(d.get("profile"))
@@ -965,6 +1297,7 @@ class AiPage(QWidget):
                  if m["role"] == "user"), "")
         else:
             self._greet()
+        _refresh_right_safe(self)
 
     def _save_chat(self):
         if not self._chat_id:
@@ -978,7 +1311,8 @@ class AiPage(QWidget):
             title = str((self._profile or {}).get("topic") or "") or "新对话"
         ai_chat_store.save(self._chat_id, self._history, title=title,
                            summary=self._summary, upto=self._summary_upto,
-                           skills=self._chat_skills, profile=self._profile)
+                           skills=self._chat_skills, profile=self._profile,
+                           artifacts=getattr(self, "_artifacts", None))
 
     def _on_chat_item_changed(self, cur, _prev):
         if self._worker is not None:      # 正在回答时不许切，免得串台
@@ -1003,6 +1337,7 @@ class AiPage(QWidget):
         self._summary_upto = 0
         self._chat_skills = []
         self._profile = {}
+        self._artifacts = []
         self._update_session_btn()
         self._pending_options = []
         self._last_user = ""
@@ -1011,6 +1346,7 @@ class AiPage(QWidget):
         self._clear_flow()
         self._greet()
         self._reload_chat_list()
+        _refresh_right_safe(self)
 
     def _rename_chat(self):
         if not self._chat_id or self._worker is not None:
@@ -1037,6 +1373,7 @@ class AiPage(QWidget):
         self._summary_upto = 0
         self._chat_skills = []
         self._profile = {}
+        self._artifacts = []
         self._update_session_btn()
         self._pending_options = []
         self._last_user = ""
@@ -1045,6 +1382,7 @@ class AiPage(QWidget):
         self._clear_flow()
         self._greet()
         self._reload_chat_list()
+        _refresh_right_safe(self)
 
     # ------------------------------------------ 会话栏折叠 / 右键菜单（2026-11-11）
     def _toggle_side(self):
@@ -1104,6 +1442,11 @@ class AiPage(QWidget):
         self.b_skills.setToolTip(
             ("本对话工作台：\n· " + "\n· ".join(bits) + "\n（点击修改）") if bits
             else "给这条对话固定一套工作台：用途 / 实例 / 工作流 / 模型 / 技能")
+        # 设定/技能一变，右侧概要页立刻跟着变（2026-11-12）
+        try:
+            _refresh_right_safe(self)
+        except Exception:
+            pass
 
     def _inst_name(self, iid: str) -> str:
         try:
@@ -1286,6 +1629,7 @@ class AiPage(QWidget):
             self._save_chat()
             self._notice(f"已把早期对话压缩为 {int(ev.get('chars') or 0)} 字摘要，"
                          f"后续问答会带着它继续")
+            _refresh_right_safe(self)
         elif kind == "assistant":
             self._stream_finalize(ev.get("text", ""))
             self._history.append({"role": "assistant", "content": ev.get("text", "")})
@@ -1300,6 +1644,9 @@ class AiPage(QWidget):
         elif kind == "tool_result":
             self._finish_tool_item(ev.get("name", "?"), ev.get("ok", False),
                                    ev.get("brief", ""), int(ev.get("ms") or 0))
+            # 产物：工具落盘的文件（图 / 工作流 / 模型 / 日志）→ 右侧概要栏
+            for a in (ev.get("artifacts") or []):
+                self._add_artifact(a)
             # 2026-11-07：AI 帮忙起/停实例后，顶部状态点还挂着旧结论
             # （用户截图里 AI 说"已就绪"、上面仍写"未启动"）→ 立刻重探一次，
             # 不等 5 秒轮询；再补一拍给刚监听的端口留点时间
@@ -1308,8 +1655,10 @@ class AiPage(QWidget):
                 QTimer.singleShot(2500, self.refresh_inst)
         elif kind == "image":
             self._show_images(ev.get("paths") or [])
+            for p in (ev.get("paths") or []):
+                self._add_artifact({"kind": "image", "path": p})
         elif kind == "error":
-            self._err_bubble(ev.get("text", "未知错误"))
+            self._err_bubble(ev.get("text", "未知错误"), ev.get("raw") or "")
 
     def _on_done(self):
         self._think_stop()
@@ -1319,6 +1668,7 @@ class AiPage(QWidget):
         self._save_chat()
         self._reload_chat_list(select=self._chat_id)   # 刷新标题/条数
         self._option_row()                             # ask_user 选项按钮（2026-11-11）
+        _refresh_right_safe(self)
 
     # ---------- ask_user 选项按钮（2026-11-11）----------
     def _option_row(self):

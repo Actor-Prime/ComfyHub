@@ -223,6 +223,9 @@ class ModelsPage(QWidget):
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setObjectName("LogConsole")
+        # 矮窗口（1366x768 / 高 DPI 缩放后逻辑高 ~600）下日志区会被 Qt 压到 0 高度，
+        # 多行日志叠在一起看着像「UI 显示不全」。给个下限，宁可让列表区让出空间。
+        self.log.setMinimumHeight(56)
         self.log.setMaximumHeight(110)
         root.addWidget(self.log, 0)
 
