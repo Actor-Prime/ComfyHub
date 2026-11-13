@@ -73,7 +73,7 @@ from app import ai_tools  # noqa: E402
 
 schemas = ai_tools.schemas()
 names = [s["function"]["name"] for s in schemas]
-check("2a 18 个工具 schema 齐全", len(schemas) == 18 and
+check("2a 19 个工具 schema 齐全", len(schemas) == 19 and
       all(s["function"]["parameters"].get("type") == "object" for s in schemas), str(names))
 check("2b 关键工具在列",
       all(n in names for n in ("get_health", "control_instance", "run_workflow", "get_job",
@@ -103,7 +103,7 @@ _cap = {}
 _orig_build = ai_tools.build_ctx
 
 
-def _fake_build(cfg, inst, mainwin=None, log=print, profile=None):
+def _fake_build(cfg, inst, mainwin=None, log=print, profile=None, chat_id=""):
     _cap["mainwin"] = mainwin
     raise RuntimeError("stop-here")          # 拿到参数就中断，别真发 HTTP
 
@@ -357,7 +357,13 @@ check("3b2 输出上限取用户设置", cap.get("max_tokens") == 1200, str(cap.
 check("3b3 上下文按条数截断（系统+6历史+新问题=8）", cap.get("n_first") == 8, str(cap.get("n_first")))
 ai_agent._round_chat = fake_chat
 kinds = [e["kind"] for e in events]
-check("3b 工具往返后给最终回答", kinds == ["tool", "tool_result", "assistant"], str(kinds))
+# usage 是旁路统计事件（2026-11-14），每轮都会发，不该干扰业务流程断言
+_biz = [k for k in kinds if k != "usage"]
+check("3b 工具往返后给最终回答", _biz == ["tool", "tool_result", "assistant"], str(kinds))
+check("3b4 每轮都上报位置量（无 usage 字段时走估算）",
+      kinds.count("usage") == 2 and all(
+          e.get("exact") is False for e in events if e["kind"] == "usage"),
+      str([(e.get("exact"), e.get("prompt")) for e in events if e["kind"] == "usage"]))
 check("3c 工具结果事件带摘要", any(e["kind"] == "tool_result" and e.get("brief")
                                   for e in events), str(events))
 ai_agent._round_chat = _orig_chat
@@ -742,14 +748,18 @@ finally:
 from app import ai_context as _ac  # noqa: E402
 
 check("9a 关闭档不压缩", _ac.params("off") is None and not _ac.needed([{}] * 99, 0, "off"))
-check("9b 三档参数正确",
-      _ac.params("mid")["trigger"] == 16 and _ac.params("mid")["keep"] == 9
-      and _ac.params("strong")["chars"] == 160, str(_ac.params("mid")))
-check("9c 未到阈值不触发", _ac.needed([{}] * 10, 0, "mid") is False)
-check("9d 超过阈值触发", _ac.needed([{}] * 17, 0, "mid") is True)
-check("9e 已摘要的部分不重复计数",
-      _ac.needed([{}] * 20, 15, "mid") is False and _ac.needed([{}] * 40, 15, "mid") is True)
-check("9f 切分点保留最近几条", _ac.split_point([{}] * 20, 0, "mid") == 11, str(_ac.split_point([{}] * 20, 0, "mid")))
+# 2026-11-14：触发条件改为「模型窗口占比」，不再按消息条数
+check("9b 三档按窗口比例",
+      _ac.params("mid")["trigger_ratio"] == 0.85
+      and _ac.params("mid")["keep_ratio"] == 0.12
+      and _ac.params("strong")["chars"] == 200, str(_ac.params("mid")))
+_lh = [{"role": "user", "content": "测试内容" * 50} for _ in range(20)]   # 每条 200 字
+check("9c 小窗口（2k）下触发", _ac.needed(_lh, 0, "mid", 2048) is True)
+check("9c2 同样条数在大窗口（128k）下不触发", _ac.needed(_lh, 0, "mid", 131072) is False)
+check("9d 已摘要部分不重复计数", _ac.needed(_lh, 20, "mid", 4096) is False)
+_cut9 = _ac.split_point(_lh, 0, "mid", 4096)
+check("9e 切分点至少留 2 条原文", len(_lh) - _cut9 >= 2, _cut9)
+check("9f 切分点不早于已摘要位置", _ac.split_point(_lh, 15, "mid", 4096) >= 15, "")
 
 _msgs = [{"role": "user", "content": "把耳朵改成老虎那种"},
          {"role": "assistant", "content": "好的，已生成 00003"}]
@@ -761,10 +771,12 @@ _long = _ac.compress("", _msgs, "mid", call=lambda m: "x" * 5000)
 check("9i 超长摘要被裁剪", len(_long) <= _ac.params("mid")["chars"] * 2, str(len(_long)))
 
 # 端到端：20 条历史 + 中度档 → 触发压缩，且摘要进入 system 消息
+# 每条 ~200 字，20 条约 3000 token：小窗口下必触发（按条数则永远测不出来）
 _hist20 = []
 for i in range(10):
-    _hist20.append({"role": "user", "content": f"问题{i}"})
-    _hist20.append({"role": "assistant", "content": f"回答{i}"})
+    _hist20.append({"role": "user", "content": f"问题{i}：" + "细节" * 100})
+    _hist20.append({"role": "assistant", "content": f"回答{i}：" + "内容" * 100})
+_small_win = (1024, _ac.split_point(_hist20, 0, "mid", 1024))
 _seen_msgs, _compress_ev = [], []
 _orig_round9 = _ag2._round_chat
 
@@ -777,6 +789,10 @@ def _fake_round9(_st, messages, tools, **kw):
 
 
 _ag2._round_chat = _fake_round9
+# 把模型画像窗口压小，否则 3000 token 的历史远不到 128k 的 85%，根本不会触发
+_orig_detect9 = _ag2.ai_models.detect
+_ag2.ai_models.detect = lambda m, b="": _ag2.ai_models.Profile(
+    "t", "测试模型", "none", _small_win[0], True, "off", 4000, "")
 try:
     _ag2.run_agent({"settings": {"ai_enabled": True, "ai_base_url": "http://x",
                                  "ai_api_key": "k", "ai_model": "t",
@@ -785,6 +801,7 @@ try:
                    emit=lambda k, **kw: _compress_ev.append((k, kw)))
 finally:
     _ag2._round_chat = _orig_round9
+    _ag2.ai_models.detect = _orig_detect9
 
 check("9j 触发压缩事件",
       any(k == "compress" for k, _ in _compress_ev)
@@ -792,7 +809,7 @@ check("9j 触发压缩事件",
       str([k for k, _ in _compress_ev]))
 _done = next((kw for k, kw in _compress_ev if k == "compress_done"), {})
 check("9k compress_done 带摘要与覆盖条数",
-      _done.get("summary") and _done.get("upto") == 11, str(_done)[:120])
+      _done.get("summary") and _done.get("upto") == _small_win[1], str(_done)[:120])
 _last_call = _seen_msgs[-1]
 check("9l 摘要以 system 消息注入",
       any(m.get("role") == "system" and "压缩摘要" in str(m.get("content"))

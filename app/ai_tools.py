@@ -11,13 +11,26 @@ Python 直接调当前实例的 ComfyUI HTTP API，不经过任何中间进程�
 每个工具 = dict(name, desc, schema, fn)；fn(args, ctx) 返回可 JSON 序列化的 dict。
 ctx 携带 cfg / 实例信息 / 可选 UI 钩子（下载中心），保证 MCP 模式（无 Qt）同样可用。
 """
+import copy
 import json
 import os
 import time
 import urllib.request
 
+from app import ai_skills
 from app import model_store
 from app import workflow_scan
+
+# 只读工具：同一参数在短时间内重复调用可以直接复用结果（2026-11-14）
+# 模型经常会「忘了刚查过」再查一遍 get_health / list_models，两次都真去打接口。
+# 注意 wait_job / ask_user 虽然不写盘，但语义是「等」和「问」，不能缓存。
+READONLY_TOOLS = frozenset({
+    "get_health", "get_logs", "queue_list", "list_models", "search_models",
+    "list_repo_files", "list_workflows", "check_workflow", "inspect_workflow",
+    "get_job", "recall_history",
+})
+
+CACHE_TTL_S = 30.0      # 只读结果复用时长；窗口更短意义不大（一次提问就有几十秒）
 from app.ui2api import build as ui2api_build, fetch_obj_info
 
 
@@ -26,9 +39,10 @@ class ToolCtx:
     """工具执行上下文；MCP 模式下 mainwin=None"""
 
     def __init__(self, cfg: dict, inst: dict, mainwin=None, log=print,
-                 profile=None):
+                 profile=None, chat_id: str = ""):
         self.cfg = cfg or {}
         self.inst = inst or {}
+        self.chat_id = str(chat_id or "")   # 会话 id：recall_history 回查用
         self.mainwin = mainwin            # GUI 模式才有：用于后台下载队列
         self.log = log
         self.api = f"http://127.0.0.1:{int(self.inst.get('port') or 8188)}"
@@ -45,6 +59,10 @@ class ToolCtx:
         p = profile if isinstance(profile, dict) else {}
         self.default_workflow = str(p.get("workflow") or "").strip()
         self.default_model = str(p.get("model") or "").strip()
+        # 只读工具结果缓存（2026-11-14）：一次提问内同参数重复调用直接复用。
+        # 挂在 ctx 上而不是模块级，跨会话/跨提问天然隔离，不会串数据。
+        self._cache = {}                  # key -> (ts, result)
+        self.cache_hits = 0               # 供日志/统计
 
     def ok(self, **kw):
         kw.setdefault("ok", True)
@@ -168,7 +186,9 @@ def _t_control_instance(args, ctx: ToolCtx):
                             + str(r.get("error") or r.get("msg") or ""))
         time.sleep(1.0)                              # 给端口释放留点时间
 
-    _ui(lambda: procs.get(inst).start(inst))
+    # AI 触发的启动不要弹浏览器：就绪瞬间抢焦点会把正在对话的用户打断
+    # （2026-11-14 实测，Windows 上直接顶掉 ComfyHub 前台）
+    _ui(lambda: procs.get(inst).start(inst, open_browser=False))
     for _ in range(20):                              # 最多 10s 等进程起来
         if procs.is_running(inst):
             break
@@ -224,6 +244,31 @@ def _t_logs(args, ctx: ToolCtx):
         return ctx.fail(f"日志文件不存在：{path}")
     arr = _log_tail(path, int(args.get("lines") or 50), str(args.get("keyword") or ""))
     return ctx.ok(log_file=path, lines=arr)
+
+
+def _t_recall_history(args, ctx: ToolCtx):
+    """在被压缩掉的早期对话里按关键词回查原文（2026-11-14）
+
+    摘要必然丢细节。压完之后用户问「刚才那个报错具体怎么说」，
+    模型可以来这里捞原文，而不是重新问一遍用户。
+    """
+    kw = str(args.get("keyword") or "").strip()
+    if not kw:
+        return ctx.fail("keyword 必填：要回查什么（模型名 / 文件名 / 报错关键词都行）")
+    cid = str(getattr(ctx, "chat_id", "") or "")
+    if not cid:
+        return ctx.fail("当前会话没有可回查的历史片段（只有对话被压缩过才会有）")
+    try:
+        limit = max(1, min(20, int(args.get("limit") or 6)))
+    except (TypeError, ValueError):
+        limit = 6
+    from app import ai_chat_store
+    rows = ai_chat_store.search_parts(cid, kw, limit=limit)
+    if not rows:
+        return ctx.fail(f"已压缩的早期对话里没有包含「{kw}」的内容；"
+                        "换个更短的关键词，或直接问用户")
+    return ctx.ok(matches=len(rows), items=rows,
+                  note="这些是摘要之前的原文片段，可据此回答，不必再问用户")
 
 
 def _t_queue_list(args, ctx: ToolCtx):
@@ -543,9 +588,17 @@ def _t_inspect_workflow(args, ctx: ToolCtx):
         if isinstance(wv, list):
             vals = [(str(v)[:120] + "…") if isinstance(v, str) and len(str(v)) > 120 else v
                     for v in wv]
-        nodes.append({"key": key, "type": n.get("type"),
-                      "title": n.get("title") or "", "hint": _node_hint(n.get("type")),
-                      "widgets": vals})
+        # 空字段不写（2026-11-14）：33 个节点里 title 大多为空，
+        # 每条都带 "title": "" 纯浪费预算，导致真内容被裁掉
+        item = {"key": key, "type": n.get("type")}
+        if n.get("title"):
+            item["title"] = n.get("title")
+        hint = _node_hint(n.get("type"))
+        if hint:
+            item["hint"] = hint
+        if vals:
+            item["widgets"] = vals
+        nodes.append(item)
     has_sub = bool((wf.get("definitions") or {}).get("subgraphs"))
     return ctx.ok(
         name=os.path.basename(path), node_count=len(nodes), nodes=nodes,
@@ -787,6 +840,14 @@ TOOLS = [
     {"name": "get_job", "desc": "按 prompt_id 查任务状态：排队/执行中/完成/报错，完成时给出成图绝对路径。",
      "schema": {"type": "object", "properties": {
          "prompt_id": {"type": "string"}}, "required": ["prompt_id"]}, "fn": _t_job_status},
+    {"name": "recall_history",
+     "desc": "在**已被压缩的早期对话**里按关键词回查原文片段。摘要提到某事但细节不够时用它；"
+             "会话没压缩过会返回失败（那就说明后面的历史都在上下文里）。",
+     "schema": {"type": "object", "properties": {
+         "keyword": {"type": "string",
+                     "description": "关键词，越短命中率越高（模型名/文件名/报错词）"},
+         "limit": {"type": "integer", "description": "最多返回几条，默认 6"}},
+         "required": ["keyword"]}, "fn": _t_recall_history},
     {"name": "ask_user", "desc": "需要用户在 2~4 个明确选项里做选择或确认时使用"
                                 "（如「要不要启动实例」「用哪个工作流」）；选项会渲染成可点按钮，"
                                 "用户点了自动作为回复。开放性问题不要用它，直接文字提问。",
@@ -799,18 +860,66 @@ TOOLS = [
 
 
 def build_ctx(cfg: dict, inst: dict, mainwin=None, log=print,
-              profile=None) -> ToolCtx:
-    return ToolCtx(cfg, inst, mainwin=mainwin, log=log, profile=profile)
+              profile=None, chat_id: str = "") -> ToolCtx:
+    return ToolCtx(cfg, inst, mainwin=mainwin, log=log, profile=profile,
+                   chat_id=chat_id)
 
 
-def schemas() -> list:
-    """OpenAI function-calling 格式的 tools 参数"""
+def schemas(only=None) -> list:
+    """OpenAI function-calling 格式的 tools 参数
+
+    only：允许的业务工具名集合（None = 不限制）。
+    按会话勾选的技能收窄工具表（2026-11-14）：19 个工具的 schema 约 2800 token，
+    每轮都得带；收窄后既省这些固定开销，也让模型少在不相干的工具里选错。
+    元能力（get_health / ask_user / recall_history）永远保留。
+    """
+    pool = TOOLS
+    if only is not None:
+        keep = set(only) | set(ai_skills.BASE_TOOLS)
+        pool = [t for t in TOOLS if t["name"] in keep]
     return [{"type": "function", "function": {
         "name": t["name"], "description": t["desc"], "parameters": t["schema"]}}
-        for t in TOOLS]
+        for t in pool]
+
+
+def _cache_key(name: str, args: dict) -> str:
+    try:
+        return name + "\x00" + json.dumps(args or {}, sort_keys=True,
+                                          ensure_ascii=False)
+    except Exception:
+        return ""
 
 
 def execute(name: str, args: dict, ctx: ToolCtx) -> dict:
+    """执行工具。只读工具同参数 30 秒内复用结果；任何写操作清空缓存。
+
+    为什么要复用：模型常有「忘了刚查过」的行为，同一轮问答里把 get_health
+    调两遍。第二次真打接口既慢又刷日志，还可能因为两次时间点不同给出矛盾的
+    数字（队列深度变了），反而干扰判断。
+    """
+    key = ""
+    if name in READONLY_TOOLS and isinstance(ctx, ToolCtx):
+        key = _cache_key(name, args)
+        if key:
+            got = ctx._cache.get(key)
+            if got and (time.time() - got[0]) < CACHE_TTL_S:
+                ctx.cache_hits += 1
+                res = copy.deepcopy(got[1])
+                if isinstance(res, dict):
+                    res["_cached"] = True
+                return res
+    result = _execute_uncached(name, args, ctx)
+    if isinstance(ctx, ToolCtx):
+        if name in READONLY_TOOLS:
+            if key and isinstance(result, dict) and result.get("ok"):
+                ctx._cache[key] = (time.time(), copy.deepcopy(result))
+        elif name != "ask_user":
+            # 写过东西了（启动/停止/下载/跑工作流/改工作流…）→ 之前读的全可能过期
+            ctx._cache.clear()
+    return result
+
+
+def _execute_uncached(name: str, args: dict, ctx: ToolCtx) -> dict:
     for t in TOOLS:
         if t["name"] == name:
             try:

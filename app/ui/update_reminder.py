@@ -48,7 +48,8 @@ class UpdateReminderDialog(QDialog):
             ed.setFixedHeight(110)
             v.addWidget(ed)
 
-        tip = QLabel(T("现在更新会关闭正在运行的实例；也可以稍后提醒或跳过这个版本。"))
+        tip = QLabel(T("现在更新会关闭正在运行的实例。延后到点会立刻再提醒一次；"
+                       "选「不再提醒」只在本次运行内静音，下次启动还会提示。"))
         tip.setWordWrap(True)
         tip.setStyleSheet("color:#8a93a3; font-size:11px;")
         v.addWidget(tip)

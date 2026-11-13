@@ -32,7 +32,8 @@ PROVIDERS = [
     {"id": "mimo", "group": "国内", "name": "小米 MiMo",
      "base": "https://api.xiaomimimo.com/v1",
      "models": ["mimo-v2.6-pro", "mimo-v2.6-flash"],
-     "hint": "platform.xiaomimimo.com 申请 Key。thinking.type 开关实测有效"},
+     "hint": "platform.xiaomimimo.com 申请 Key。thinking.type 开关实测有效。"
+             "这是按量付费端点（Key 形如 sk-…）；买了 Token Plan 请选套餐组里的条目"},
     {"id": "qwen", "group": "国内", "name": "阿里百炼（通义千问）",
      "base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
      "models": ["qwen3.8-max", "qwen3.8-plus", "qwen3.8-flash"],
@@ -208,6 +209,23 @@ PROVIDERS = [
      "hint": "Token Plan 订阅 Key（sk-cp-…）在 platform.minimaxi.com 的 Token Plan 页建；"
              "与按量 Key 共用这个 /v1 地址，区别只是计费资源（先扣套餐额度，再走余额）。"
              "不是套餐用户选上面的「MiniMax」即可"},
+    {"id": "mimo_plan_cn", "group": "Token/编程套餐",
+     "name": "小米 MiMo · Token Plan（中国）",
+     "base": "https://token-plan-cn.xiaomimimo.com/v1",
+     "models": ["mimo-v2.6-pro", "mimo-v2.6-flash"],
+     "hint": "Token Plan 专属端点，Key 形如 tp-…（个人）/ ttp-…（团队）。"
+             "按量付费 Key（sk-…）打这里会 401，反之亦然。"
+             "区域要和控制台一致：中国 / 新加坡 / 欧洲各一个域名"},
+    {"id": "mimo_plan_sgp", "group": "Token/编程套餐",
+     "name": "小米 MiMo · Token Plan（新加坡）",
+     "base": "https://token-plan-sgp.xiaomimimo.com/v1",
+     "models": ["mimo-v2.6-pro", "mimo-v2.6-flash"],
+     "hint": "新加坡区域的 Token Plan 端点，与中国区 Key 不通用"},
+    {"id": "mimo_plan_ams", "group": "Token/编程套餐",
+     "name": "小米 MiMo · Token Plan（欧洲）",
+     "base": "https://token-plan-ams.xiaomimimo.com/v1",
+     "models": ["mimo-v2.6-pro", "mimo-v2.6-flash"],
+     "hint": "欧洲区域的 Token Plan 端点，与中国区 Key 不通用"},
     {"id": "ark_plan", "group": "Token/编程套餐", "name": "火山方舟 · Coding Plan",
      "base": "https://ark.cn-beijing.volces.com/api/coding/v3",
      "models": [],
@@ -231,7 +249,9 @@ _HOST_KEYS = [
     ("openai.azure.com", CUSTOM_ID),    # 要填资源名/部署名，只能自定义
     # ---- 套餐端点：必须排在按量泛域名之前，否则会被厂商主域名抢走 ----
     # （套餐 Key 打到按量端点会 401，认错等于配好也用不了）
-    ("token-plan", "qwen_token_plan"),          # 阿里 Token Plan（北京/新加坡）
+    # 阿里 Token Plan（北京/新加坡）。键必须是 maas.aliyuncs 而不是笼统的
+    # "token-plan"——后者会把小米 MiMo 的 token-plan-cn/sgp/ams 一并吃掉（2026-11-14 实测踩到）
+    ("maas.aliyuncs", "qwen_token_plan"),
     ("coding-intl.dashscope", "qwen_plan_intl"),
     ("coding.dashscope", "qwen_plan"),
     ("api.z.ai/api/coding", "zhipu_plan_intl"),   # 必须早于下面的 api/coding/paas
@@ -240,6 +260,11 @@ _HOST_KEYS = [
     ("api.kimi.ai/coding", "kimi_plan_intl"),
     ("api/coding/v3", "ark_plan"),              # ark…/api/coding/v3
     ("lkeap.cloud.tencent.com", "hunyuan_plan"),
+    # 小米 MiMo 的套餐端点必须排在 ("xiaomimimo", "mimo") 之前——
+    # token-plan-cn.xiaomimimo.com 也含 xiaomimimo，反过来会被判成按量（2026-11-14 实测 401 后补）
+    ("token-plan-cn.xiaomimimo", "mimo_plan_cn"),
+    ("token-plan-sgp", "mimo_plan_sgp"),
+    ("token-plan-ams", "mimo_plan_ams"),
     # ---- 按量付费（原顺序，勿动）----
     ("dashscope-intl", "qwen_intl"),
     ("dashscope", "qwen"),

@@ -59,6 +59,8 @@ class _MW:
 
 _SET = QSettings("LeiMengStudio", "ComfyHub")
 _OLD_OPEN = _SET.value("ai_right_open", False, type=bool)
+# 断言从「收起」开始：用户自己的真实设置可能是展开的，不重置会假红（2026-11-14）
+_SET.setValue("ai_right_open", False)
 
 try:
     page = AiPage({"instances": []}, _MW())

@@ -526,7 +526,12 @@ class ComfyProcess(QObject):
         return self._pid
 
     # ---------- 启动 ----------
-    def start(self, inst: dict):
+    def start(self, inst: dict, open_browser=None):
+        """启动实例。open_browser=None 走实例配置；False 强制不弹浏览器
+
+        为什么需要这个开关（2026-11-14 实测）：AI 助手调 control_instance 启动
+        实例时，浏览器会在就绪瞬间抢到前台，用户正在跟 AI 对话就被打断了。
+        """
         if self.is_running:
             self.log_line.emit("[ComfyHub] 已在运行中，请先停止。")
             return
@@ -592,7 +597,8 @@ class ComfyProcess(QObject):
                 f"已自动顺延到 {port}；打开网页将按实际端口 {port} 走。")
         self._port = port
         self._ready_announced = False
-        self._browser_on_ready = bool(inst.get("auto_open_browser", True))
+        self._browser_on_ready = (bool(inst.get("auto_open_browser", True))
+                                  if open_browser is None else bool(open_browser))
         cmd = build_command(inst, port=port)
 
         workdir = inst["comfyui_path"]

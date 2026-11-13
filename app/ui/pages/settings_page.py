@@ -518,16 +518,17 @@ class SettingsPage(QWidget):
         # ---- 上下文压缩（2026-11-06）----
         self.cb_ai_compress = QComboBox()
         for label, val in (("关闭（只保留最近几条）", "off"),
-                           ("轻度（24 条触发，保留 14 条）", "light"),
-                           ("中度（16 条触发，保留 9 条，推荐）", "mid"),
-                           ("激进（10 条触发，保留 5 条）", "strong")):
+                           ("轻度（窗口 90% 触发，保留 20% 原文）", "light"),
+                           ("中度（窗口 85% 触发，保留 12% 原文，推荐）", "mid"),
+                           ("激进（窗口 70% 触发，保留 6% 原文）", "strong")):
             self.cb_ai_compress.addItem(label, val)
         _cur_cp = str(st.get("ai_compress") or "mid")
         _ic = self.cb_ai_compress.findData(_cur_cp)
         self.cb_ai_compress.setCurrentIndex(_ic if _ic >= 0 else 2)
         self.cb_ai_compress.setToolTip(
-            "对话变长时自动把较早内容压成摘要，之后只带摘要+最近几条原文；"
-            "档位越高保留的原文越少、省得越多")
+            "按**模型上下文窗口**的比例判断，不是按消息条数——8k 和 128k 的模型"
+            "同一个阈值没有意义。\n压缩掉的原文会另存一份，AI 能用 recall_history "
+            "按关键词回查，所以档位越高越省，但细节不会真丢。")
         f_ai.addRow("上下文压缩:", self.cb_ai_compress)
 
         # ---- 助手设定 / 直连（2026-11-06）----
@@ -656,15 +657,13 @@ class SettingsPage(QWidget):
         self.ck_upd_auto.setChecked(bool(st.get("update_auto_check", True)))
         self.ck_upd_auto.toggled.connect(self._save_update_prefs)
         row_up.addWidget(self.ck_upd_auto)
-        # 延迟提醒（2026-11-12 用户需求）：启动满 1 小时仍有新版就弹一次，可延后/不再提醒
-        self.ck_upd_delayed = QCheckBox("启动一小时后提醒")
+        # 周期检查（2026-11-12 建，2026-11-13 用户要求改成每小时一次）：
+        # 长挂机也能及时知道新版本，不是只在启动那一小时查一次
+        self.ck_upd_delayed = QCheckBox("每小时检查一次更新")
         self.ck_upd_delayed.setChecked(bool(st.get("update_delayed_check", True)))
-        self.ck_upd_delayed.setToolTip(
-            "启动满 1 小时后，如果发现新版本会弹窗提醒一次。\n"
-            "弹窗里可以选择「延后提醒」（1 小时 / 4 小时 / 1 天 / 3 天 / 1 周）"
-            "或「不再提醒此版本」。这项与上面「启动时自动检查」互不影响")
         self.ck_upd_delayed.toggled.connect(self._save_update_prefs)
         row_up.addWidget(self.ck_upd_delayed)
+        self._sync_update_dependent()      # 主从联动（2026-11-13）
         self.b_upd_skip = QPushButton("清除「跳过版本」")
         self.b_upd_skip.setVisible(bool(st.get("update_skipped_version")))
         self.b_upd_skip.clicked.connect(self._clear_skipped_version)
@@ -831,6 +830,22 @@ class SettingsPage(QWidget):
         st["update_auto_check"] = bool(self.ck_upd_auto.isChecked())
         st["update_delayed_check"] = bool(self.ck_upd_delayed.isChecked())
         save_config(self.cfg)
+        self._sync_update_dependent()       # 主开关一变，从属勾选框跟着可用/禁用
+
+    def _sync_update_dependent(self):
+        """主从联动：总开关关掉后，「每小时检查」变灰（值保留，重开即恢复）"""
+        cb = getattr(self, "ck_upd_delayed", None)
+        if cb is None:
+            return
+        master = bool(self.ck_upd_auto.isChecked())
+        cb.setEnabled(master)
+        cb.setToolTip(
+            ("启动满 1 小时后，每隔 1 小时自动查一次更新；检测到新版本就弹窗提醒。\n"
+             "弹窗里可选「延后提醒」（1 小时 / 4 小时 / 1 天 / 3 天 / 1 周，到点立刻再弹）"
+             "或「不再提醒」——选不再提醒只在本次运行内静音，下次启动还会提示。\n"
+             "这项依赖上面的「启动时自动检查」：总开关关掉，这里也一并停用。")
+            if master else
+            "已随「启动时自动检查」一并停用（重新勾选上面的总开关即可恢复）")
 
     def _clear_skipped_version(self):
         st = self.cfg.setdefault("settings", {})

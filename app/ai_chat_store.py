@@ -75,7 +75,7 @@ def title_of(msgs: list, fallback: str = "新对话") -> str:
 
 def save(cid: str, messages: list, title: str = "",
          summary: str = None, upto: int = None, skills=None,
-         profile=None, artifacts=None) -> None:
+         profile=None, artifacts=None, summary_inst=None) -> None:
     """写一个会话；messages 只保留 role/content。
 
     summary / upto 为「上下文压缩」产物（2026-11-06）：
@@ -85,6 +85,8 @@ def save(cid: str, messages: list, title: str = "",
     默认工作流 / 默认模型。None 同样沿用旧值，{} 表示清空。
     artifacts 为本会话的「产物」清单（2026-11-12 右侧概要栏）：
     [{kind:"image"|"file", path, label, ts}]；None 沿用旧值，[] 清空。
+    summary_inst 为摘要对应的实例 id（2026-11-14）：换实例后旧摘要里的
+    端口/路径全错，读取时比对不一致就直接丢弃。None 沿用旧值。
     """
     try:
         msgs = _clip(messages)
@@ -94,6 +96,7 @@ def save(cid: str, messages: list, title: str = "",
         old_summary, old_upto, old_skills, old_profile = "", 0, [], {}
         old_title, old_renamed = "", False
         old_artifacts = []
+        old_sinst = ""
         if os.path.isfile(path):
             try:
                 with open(path, encoding="utf-8") as f:
@@ -106,6 +109,7 @@ def save(cid: str, messages: list, title: str = "",
                 old_title = prev.get("title") or ""
                 old_renamed = bool(prev.get("renamed"))
                 old_artifacts = list(prev.get("artifacts") or [])
+                old_sinst = str(prev.get("summary_inst") or "")
             except Exception:
                 pass
         # 用户手动改过的名字优先（2026-11-11）：多会话并排时，
@@ -120,6 +124,8 @@ def save(cid: str, messages: list, title: str = "",
                 "profile": old_profile if profile is None else dict(profile or {}),
                 "artifacts": (old_artifacts if artifacts is None
                               else _clip_artifacts(artifacts)),
+                "summary_inst": (old_sinst if summary_inst is None
+                                 else str(summary_inst or "")),
                 "renamed": old_renamed}
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
@@ -142,12 +148,14 @@ def load(cid: str) -> dict:
             d.setdefault("skills", [])
             d.setdefault("profile", {})
             d.setdefault("artifacts", [])
+            d.setdefault("summary_inst", "")
             return d
     except Exception:
         pass
     return {"id": cid, "title": "新对话", "messages": [],
             "summary": "", "summary_upto": 0, "skills": [],
-            "profile": {}, "artifacts": [], "updated": 0}
+            "profile": {}, "artifacts": [], "summary_inst": "",
+            "updated": 0}
 
 
 def delete(cid: str) -> None:
@@ -155,6 +163,65 @@ def delete(cid: str) -> None:
         os.remove(_path(cid))
     except Exception:
         pass
+    try:                                   # 压缩原文副本一起清掉
+        import shutil
+        shutil.rmtree(parts_dir(cid), ignore_errors=True)
+    except Exception:
+        pass
+
+
+def parts_dir(cid: str) -> str:
+    """被压缩原文的落盘目录（2026-11-14「压缩后可回查」）"""
+    return os.path.join(_dir(), f"{cid}.parts")
+
+
+def save_part(cid: str, upto: int, chunk: list) -> str:
+    """压缩时把原文存下来：摘要会丢细节，模型还能用 recall_history 查回来
+
+    存的是**压缩前**的原文（每条截 4000 字），文件名用压缩覆盖到的条数，
+    便于按时间顺序检索。
+    """
+    try:
+        if not cid or not chunk:
+            return ""
+        d = parts_dir(cid)
+        os.makedirs(d, exist_ok=True)
+        path = os.path.join(d, f"{int(upto):06d}.json")
+        rows = [{"role": m.get("role"),
+                 "content": str(m.get("content") or "")[:4000]}
+                for m in chunk]
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(rows, f, ensure_ascii=False)
+        return path
+    except Exception:
+        return ""
+
+
+def search_parts(cid: str, keyword: str, limit: int = 6) -> list:
+    """在已压缩掉的早期原文里按关键词回查，返回 [{batch,idx,role,text}]"""
+    kw = (keyword or "").strip().lower()
+    root = parts_dir(cid)
+    if not kw or not os.path.isdir(root):
+        return []
+    hits = []
+    for fn in sorted(os.listdir(root)):
+        if not fn.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(root, fn), encoding="utf-8") as f:
+                rows = json.load(f)
+        except Exception:
+            continue
+        for i, m in enumerate(rows or []):
+            text = str(m.get("content") or "")
+            if kw not in text.lower():
+                continue
+            hits.append({"batch": fn[:-5], "idx": i,
+                         "role": m.get("role") or "?",
+                         "text": " ".join(text.split())[:400]})
+            if len(hits) >= limit:
+                return hits
+    return hits
 
 
 def rename(cid: str, title: str) -> None:
@@ -168,8 +235,16 @@ def rename(cid: str, title: str) -> None:
         pass
 
 
+def _first_user_text(msgs: list, limit: int = 200) -> str:
+    """首条用户消息（会话检索用：标题只截 24 字，搜后面的内容得靠它）"""
+    for m in msgs or []:
+        if m.get("role") == "user" and str(m.get("content") or "").strip():
+            return " ".join(str(m["content"]).split())[:limit]
+    return ""
+
+
 def list_chats() -> list:
-    """[{id,title,updated,count,profile}]，按更新时间倒序"""
+    """[{id,title,updated,count,profile,first}]，按更新时间倒序"""
     out = []
     try:
         for fn in os.listdir(_dir()):
@@ -182,7 +257,8 @@ def list_chats() -> list:
                             "title": d.get("title") or "新对话",
                             "updated": float(d.get("updated") or 0),
                             "count": len(d.get("messages") or []),
-                            "profile": dict(d.get("profile") or {})})
+                            "profile": dict(d.get("profile") or {}),
+                            "first": _first_user_text(d.get("messages") or [])})
             except Exception:
                 continue
     except Exception:
