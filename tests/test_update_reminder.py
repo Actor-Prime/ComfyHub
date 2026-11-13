@@ -20,6 +20,12 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+# 数据目录隔离（2026-11-13）：MainWindow 会读写 config.json，真实跑会把
+# update_next_check 写进用户配置、还会让下一次测试一开局就被「周期点未到」挡住
+# （表现为第二次跑必红一项）。每次运行给一个全新的临时 APPDATA 即可。
+import tempfile  # noqa: E402
+os.environ["APPDATA"] = tempfile.mkdtemp(prefix="ch_upd_")
+
 PASS, FAIL = 0, 0
 
 
@@ -123,8 +129,11 @@ def main():
     # ---------- C. 主窗接线 ----------
     print("== C. 主窗接线 ==")
     from PySide6.QtWidgets import QMessageBox
+    # 全部模态都堵掉：无头环境下任何 exec() 都会永久挂住（question 尤其危险）
     QMessageBox.information = staticmethod(lambda *a, **k: None)
     QMessageBox.warning = staticmethod(lambda *a, **k: None)
+    QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.No)
+    QMessageBox.critical = staticmethod(lambda *a, **k: None)
     from PySide6.QtWidgets import QMainWindow
     from app.ui.main_window import MainWindow
     import app.ui.update_banner as ub
@@ -156,6 +165,8 @@ def main():
     win.cfg["settings"]["update_delayed_check"] = True
 
     # C4 已有新版本 → 直接弹窗（不再联网）
+    #（C2 那一 tick 已把周期点推到 +1h，这里手动清掉表示"又到点了"）
+    win.cfg["settings"].pop("update_next_check", None)
     win._update_info = {"has_update": True, "latest": "9.9.9", "current": "0.8.26"}
     win.cfg["settings"]["update_last_check"] = time.time()
     shown = []
@@ -177,36 +188,57 @@ def main():
     import app.ui.main_window as mw
     _orig_save = mw.save_config
     mw.save_config = lambda cfg: saved.append(dict(cfg["settings"]))
+    # 有新版时的 tick 不该真去发 HTTP：换成记录器（C8 会重新绑定真方法）
+    net_calls = []
+    win.check_updates = lambda manual=False, mode="": net_calls.append(mode)
+
     try:
         win._update_tick()
         check("有新版且未提醒 → 弹窗一次", shown == ["9.9.9"], str(shown))
         check("延后写入 snooze_until",
               float(win.cfg["settings"].get("update_snooze_until") or 0) > time.time())
         check("延后后已保存配置", bool(saved))
-        # 清掉延后，才能验证「记账拦重复」本身（否则延后窗口把 tick 挡住了，
-        # 删掉 _update_reminded 记账这条断言也照样能过 → 抓漏失效）
+        # 2026-11-13 用户要求：延后只是「别在这段时间弹」，不能把版本拉黑，
+        # 否则到期后永远不弹（旧实现就是这么错的）
+        check("延后不把版本记进已提醒", "9.9.9" not in win._update_reminded,
+              str(sorted(win._update_reminded)))
         win.cfg["settings"].pop("update_snooze_until", None)
-        check("同一版本不再重复弹（靠提醒记账，不靠延后窗口）",
-              win._update_tick() is None and len(shown) == 1, str(shown))
+        win.cfg["settings"].pop("update_next_check", None)
+        win._update_tick()
+        check("延后窗口清掉后同版本会再弹一次", len(shown) == 2, str(shown))
+        win.cfg["settings"].pop("update_snooze_until", None)
+        win.cfg["settings"].pop("update_next_check", None)
 
-        # C5 「不再提醒此版本」→ 写 skipped
+        # C5 「不再提醒」→ 仅本次运行静音，不落盘（下次启动照常提示）
         shown.clear()
         win._update_reminded.clear()
         win.cfg["settings"].pop("update_snooze_until", None)
+        win.cfg["settings"].pop("update_next_check", None)
+        win.cfg["settings"].pop("update_skipped_version", None)
 
         class NeverDlg(FakeDlg):
             action = "never"
 
         ur.UpdateReminderDialog = NeverDlg
         win._update_tick()
-        check("不再提醒写入 update_skipped_version",
-              win.cfg["settings"].get("update_skipped_version") == "9.9.9",
+        check("不再提醒：本会话记住该版本", "9.9.9" in win._update_reminded,
+              str(sorted(win._update_reminded)))
+        check("不再提醒不写 update_skipped_version",
+              "update_skipped_version" not in win.cfg["settings"],
               str(win.cfg["settings"].get("update_skipped_version")))
+        shown.clear()
+        net_calls.clear()
+        win.cfg["settings"].pop("update_next_check", None)
+        win._update_tick()
+        check("不再提醒后同版本不再弹", shown == [], str(shown))
+        check("不再提醒后仍继续检查（可能出新版本）", net_calls == ["delayed"],
+              str(net_calls))
 
         # C6 「立即更新」→ 走更新对话框入口
         shown.clear()
         win._update_reminded.clear()
         win.cfg["settings"].pop("update_snooze_until", None)
+        win.cfg["settings"].pop("update_next_check", None)
         win.cfg["settings"].pop("update_skipped_version", None)
         hit = []
         win._on_update_clicked = lambda: hit.append(1)
@@ -223,6 +255,7 @@ def main():
         shown.clear()
         win._update_reminded.clear()
         win.cfg["settings"].pop("update_snooze_until", None)
+        win.cfg["settings"].pop("update_next_check", None)
         win._update_tick()
         check("模态期间 tick 不重入", shown == [], str(shown))
         win._reminder_open = False
@@ -249,24 +282,124 @@ def main():
 
     ub.CheckWorker = FakeWorker
     win.cfg["settings"]["update_auto_check"] = False
-    win.check_updates(manual=False)                  # auto → 被开关拦住
+    win.check_updates(manual=False)                  # auto → 被总开关拦住
     check("auto 模式受「启动时自动检查」约束", real_calls == [], str(real_calls))
-    win.check_updates(mode="delayed")                # delayed 不受该开关约束
-    check("delayed 模式不受 auto 开关影响", real_calls == [False], str(real_calls))
+    # 2026-11-13 改主从：总开关关掉后，每小时那条也必须停
+    win.check_updates(mode="delayed")
+    check("总开关关掉 → delayed 也停（主从）", real_calls == [], str(real_calls))
+    win.cfg["settings"]["update_auto_check"] = True
+    win.cfg["settings"]["update_delayed_check"] = True
+    win.check_updates(mode="delayed")
+    check("总开关开着 → delayed 正常跑", real_calls == [False], str(real_calls))
     win.cfg["settings"]["update_delayed_check"] = False
     win.check_updates(mode="delayed")
-    check("delayed 开关关闭后不检查", real_calls == [False], str(real_calls))
+    check("只关「每小时检查」→ delayed 不跑", real_calls == [False], str(real_calls))
+    win.check_updates(manual=False)
+    check("只关「每小时检查」→ 启动检查照跑", real_calls == [False, False],
+          str(real_calls))
+    win.cfg["settings"]["update_delayed_check"] = True
 
+    # C9 延后到期立刻弹（2026-11-13 用户要求：到点即弹，不等下一次 tick）
+    print("== C9. 延后到期立刻弹 ==")
+    net_calls = []
+    win.check_updates = lambda manual=False, mode="": net_calls.append(mode)
+    win._update_info = {"has_update": True, "latest": "9.9.9", "current": "0.8.26"}
+    win._update_reminded.clear()
+    shown.clear()
+    ur.UpdateReminderDialog = NeverDlg
+
+    win.cfg["settings"]["update_snooze_until"] = time.time() + 3600
+    win._on_snooze_due()
+    check("延后未到期不弹", shown == [], str(shown))
+    check("未到期时重排定时器", win._snooze_timer.isActive())
+    check("未到期不清 snooze",
+          float(win.cfg["settings"].get("update_snooze_until") or 0) > time.time())
+
+    win.cfg["settings"]["update_snooze_until"] = time.time() - 1
+    win._update_reminded.clear()
+    win._on_snooze_due()
+    check("延后到期立刻弹窗", shown == ["9.9.9"], str(shown))
+    check("到期后清掉 snooze_until",
+          not float(win.cfg["settings"].get("update_snooze_until") or 0),
+          str(win.cfg["settings"].get("update_snooze_until")))
+
+    # 重启过 → 内存里没有版本信息，先补查，结果回来直接弹
+    win._update_info = None
+    win._update_reminded.clear()
+    shown.clear()
+    net_calls.clear()
+    win.cfg["settings"]["update_snooze_until"] = time.time() - 1
+    win._on_snooze_due()
+    check("到期无内存版本 → 补查一次", net_calls == ["delayed"], str(net_calls))
+    check("补查带上强制弹窗标记", win._force_remind is True, str(win._force_remind))
+
+    # 总开关关掉 → 到点也不打扰
+    win._force_remind = False
+    win._update_info = {"has_update": True, "latest": "9.9.9", "current": "0.8.26"}
+    shown.clear()
+    win.cfg["settings"]["update_auto_check"] = False
+    win.cfg["settings"]["update_snooze_until"] = time.time() - 1
+    win._on_snooze_due()
+    check("总开关关掉后到期也不弹", shown == [], str(shown))
+    win.cfg["settings"]["update_auto_check"] = True
+
+    # 关窗前必须直通退出：空配置下 close_behavior 默认 ask，会弹 CloseChoiceDialog
+    # 等用户点选——无头环境直接挂死（tempfile 隔离 APPDATA 后必踩）
+    win._quit_direct = True
+    win._snooze_timer.stop()        # 别把 1 小时定时器带进退出阶段
+    win._update_timer.stop()
     win.close()
 
     # ---------- D. 设置页开关 ----------
+    print("== C2. 每小时检查节奏（2026-11-13 用户要求）==")
+    now0 = 1_700_000_000.0
+    # 未满 1 小时：不查
+    check("启动未满 1 小时不检查", not un.should_check({}, now0, now0 + 3599))
+    check("启动满 1 小时开始检查", un.should_check({}, now0, now0 + 3600))
+    # 记账后进入下一个小时
+    st_c = {}
+    un.mark_checked(st_c, now0 + 3600)
+    check("记账写 update_next_check", abs(st_c.get("update_next_check", 0) - (now0 + 7200)) < 1,
+          str(st_c.get("update_next_check")))
+    check("刚查完 1 分钟内不再查", not un.should_check(st_c, now0, now0 + 3660))
+    check("距上次 59 分钟仍不查", not un.should_check(st_c, now0, now0 + 7200 - 60))
+    check("满 1 小时再查一次", un.should_check(st_c, now0, now0 + 7200))
+    # 延后只压弹窗，不拦检查
+    st_s = dict(st_c)
+    un.snooze(st_s, 4, now=now0 + 3600)
+    check("延后期内仍每小时检查", un.should_check(st_s, now0, now0 + 7200))
+    check("延后期内不弹窗", not un.should_remind(st_s, now0, now0 + 7200))
+    check("延后结束后恢复弹窗", un.should_remind(st_s, now0, now0 + 7200 + 4 * 3600 + 1))
+    # 跨重启：上次的周期点在未来 → 不提前查
+    st_r = {"update_next_check": now0 + 10_000}
+    check("跨重启不早于上次周期点",
+          not un.should_check(st_r, now0, now0 + 3600))
+    check("到点后照常检查",
+          un.should_check(st_r, now0, now0 + 10_000))
+    # 跨重启：上次周期点已过期 → 本次启动满 1 小时再查（不因重启扎堆）
+    st_o = {"update_next_check": now0 - 10_000}
+    new_start = now0
+    check("过期周期点等本次启动满 1 小时",
+          not un.should_check(st_o, new_start, new_start + 1800))
+    check("满 1 小时后才补查",
+          un.should_check(st_o, new_start, new_start + 3600))
+    # 开关关掉全停
+    check("关「每小时检查」时不检查",
+          not un.should_check({"update_delayed_check": False}, now0, now0 + 7200))
+    check("总开关关掉时不检查（主从）",
+          not un.should_check({"update_auto_check": False}, now0, now0 + 7200))
+    check("总开关关掉时 enabled 为假",
+          not un.enabled({"update_auto_check": False}))
+    check("只关每小时时 enabled 为假",
+          not un.enabled({"update_delayed_check": False}))
+
     print("== D. 设置页 ==")
     from app.ui.pages.settings_page import SettingsPage
     import app.ui.pages.settings_page as sp
     sp.save_config = lambda cfg: None
     cfg = {"settings": {}}
     pg = SettingsPage(cfg, None)
-    check("设置页有「启动一小时后提醒」开关", hasattr(pg, "ck_upd_delayed"))
+    check("设置页有「每小时检查一次更新」开关", hasattr(pg, "ck_upd_delayed"))
     check("默认勾选（用户要的是默认开启）", pg.ck_upd_delayed.isChecked())
     pg.ck_upd_delayed.setChecked(False)
     check("取消勾选立即落盘 update_delayed_check=False",

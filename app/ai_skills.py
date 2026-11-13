@@ -18,6 +18,7 @@ skill = 一个 markdown 文件，放进技能目录即生效：
 每轮生效。选几个技能由用户自己控制 token 开销。
 """
 import os
+import re
 
 from app.paths import data_root
 
@@ -25,6 +26,15 @@ SKILL_HEADER = "【技能】"
 PROFILE_HEADER = "【本会话工作台】"
 
 PROFILE_KEYS = ("topic", "inst_id", "workflow", "model")
+
+# 技能可声明的工具清单（2026-11-14）：
+#   <!-- tools: get_logs, check_workflow -->
+# 声明后本会话的工具表就只带这些 + 基础元能力，工具定义能短一半以上，
+# 模型也不会在十几个不相干的工具里选错。不写 = 不限制（向后兼容）。
+_TOOLS_RE = re.compile(r"<!--\s*tools\s*:\s*(.*?)\s*-->", re.I)
+
+# 恒定保留的「元能力」工具：不是业务动作，任何用途都该有
+BASE_TOOLS = ("get_health", "ask_user", "recall_history")
 
 
 def norm_profile(p) -> dict:
@@ -94,13 +104,27 @@ def user_dir() -> str:
 
 
 def _parse(path: str) -> dict:
-    """解析一个 skill markdown：标题=名，首段=描述，全文=正文"""
+    """解析一个 skill markdown：标题=名，首段=描述，全文=正文
+
+    可选元信息（写在任意位置，解析后从正文里剔除，不会注入提示）：
+      <!-- tools: get_logs, check_workflow -->
+    """
     try:
         text = open(path, encoding="utf-8").read()
     except OSError:
         return {}
+    # 先摘掉 tools 元信息，剩下的才是真正要注入的正文
+    declared, body_lines = None, []
+    for ln in text.splitlines():
+        m = _TOOLS_RE.search(ln)
+        if m:
+            declared = [x.strip() for x in m.group(1).split(",") if x.strip()]
+            continue
+        body_lines.append(ln)
+    body = "\n".join(body_lines).strip()
+
     name, desc = os.path.splitext(os.path.basename(path))[0], ""
-    lines = text.splitlines()
+    lines = body.splitlines()
     body_start = 0
     for i, ln in enumerate(lines):
         s = ln.strip()
@@ -123,8 +147,8 @@ def _parse(path: str) -> dict:
         desc = " ".join(para)[:120]
         break
     return {"id": os.path.splitext(os.path.basename(path))[0],
-            "name": name, "desc": desc, "body": text.strip(),
-            "source": path}
+            "name": name, "desc": desc, "body": body,
+            "tools": declared, "source": path}
 
 
 def list_skills() -> list:
@@ -160,3 +184,43 @@ def render(skill_ids: list) -> str:
         if s:
             parts.append(f"【技能：{s['name']}】\n{s['body']}")
     return "\n\n".join(parts)
+
+
+def tools_for(skill_ids: list):
+    """会话勾选的技能需要哪些工具；None = 不限制
+
+    为什么 None 而不是空集：用户自定义技能不写 tools 声明是常态，
+    默认把它收紧成「什么都不能干」会莫名其妙。所以只要有一条技能
+    没声明，就退回全集 —— 保守但不出错。
+    勾了技能且都声明了 → 取并集（只读业务工具），元能力由 BASE_TOOLS 兜。
+    """
+    if not skill_ids:
+        return None
+    have = {s["id"]: s for s in list_skills()}
+    allowed, open_ended, hit = set(), False, 0
+    for sid in (skill_ids or []):
+        s = have.get(sid)
+        if not s:
+            continue                      # 技能被删了 → 当没勾
+        hit += 1
+        got = s.get("tools")
+        if got is None:
+            open_ended = True             # 有技能没声明 → 不限
+        else:
+            allowed.update(got)
+    if not hit or open_ended:
+        return None
+    return allowed
+
+
+def tool_note(skill_ids: list) -> str:
+    """给 system 提示用的一句话：本会话启用了哪些工具（不限制时返回空串）"""
+    only = tools_for(skill_ids)
+    if only is None:
+        return ""
+    names = sorted(set(only) | set(BASE_TOOLS))
+    return ("【本会话启用工具】" + "、".join(names)
+            + f"（共 {len(names)} 个，按此会话勾选的技能自动收窄）\n"
+              "下面「注意事项」和剧本里提到的工具如果不在上面这份清单里，说明当前技能"
+              "不覆盖那个动作 —— 用清单内的工具等价完成，或直接告诉用户还需要勾哪个技能，"
+              "**不要调用清单外的工具**（会直接报未知工具，白费一轮）。")

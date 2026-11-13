@@ -32,6 +32,28 @@ from app import ai_agent, ai_chat_store, ai_skills
 from app.i18n import T
 
 
+def _fmt_usage(u) -> str:
+    """把用量渲染成一行（服务商没返回 usage 时按估算值并标注）"""
+    if not isinstance(u, dict) or not (u.get("prompt") or u.get("completion")):
+        return "—"
+
+    def _k(n):
+        n = int(n or 0)
+        return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
+
+    parts = [f"{T('输入')} {_k(u.get('prompt'))}",
+             f"{T('输出')} {_k(u.get('completion'))}"]
+    p, c = int(u.get("prompt") or 0), int(u.get("cached") or 0)
+    if p > 0 and c > 0:
+        parts.append(f"{T('缓存命中')} {round(c * 100.0 / p)}%")
+    line = " · ".join(parts)
+    if u.get("exact") is False:
+        # 面板只有 ~250px 可用宽，长说明会折成两行且断在词中间；
+        # 详细原因放 tooltip（_refresh_right 里设）
+        line = "≈ " + line + "（" + T("估算") + "）"
+    return line
+
+
 def _refresh_right_safe(page):
     """刷新右侧概要栏（页面替身 / 早期构造阶段调用也不炸）
 
@@ -170,7 +192,8 @@ class _AgentWorker(QThread):
     sig_done = Signal()
 
     def __init__(self, cfg, inst, text, history, attachments=None, mainwin=None,
-                 summary="", summary_upto=0, skills=None, profile=None):
+                 summary="", summary_upto=0, skills=None, profile=None,
+                 chat_id=""):
         super().__init__()
         self.cfg, self.inst, self.text, self.history = cfg, inst, text, history
         self.attachments = attachments or []
@@ -179,6 +202,7 @@ class _AgentWorker(QThread):
         self.summary_upto = summary_upto
         self.skills = list(skills or [])  # 本会话勾选的技能（2026-11-11）
         self.profile = dict(profile or {})  # 本会话工作台设定（2026-11-11）
+        self.chat_id = str(chat_id or "")   # 会话 id：压缩原文落盘 + recall_history
         self.stop_flag = threading.Event()
 
     def run(self):
@@ -192,7 +216,8 @@ class _AgentWorker(QThread):
                                summary=self.summary,
                                summary_upto=self.summary_upto,
                                skills=self.skills,
-                               profile=self.profile)
+                               profile=self.profile,
+                               chat_id=self.chat_id)
         finally:
             self.sig_done.emit()
 
@@ -237,11 +262,16 @@ class AiPage(QWidget):
         self._stream_timer = None
         self._chat_id = ""          # 当前会话 id（2026-11-06 多会话持久化）
         self._summary = ""          # 早期对话压缩摘要（2026-11-06）
+        self._summary_inst = ""     # 摘要对应的实例 id（2026-11-14：换实例后作废）
         self._summary_upto = 0
         self._chat_skills = []      # 本会话勾选的技能 id（2026-11-11）
         self._profile = {}          # 本会话工作台设定（2026-11-11：用途/实例/工作流/模型）
+        self._chats_all = []        # 会话列表缓存（2026-11-13 搜索用，避免边打字边读盘）
         self._pending_options = []  # ask_user 工具待渲染的选项按钮（2026-11-11）
         self._artifacts = []        # 本会话产物：[{kind,path,label,ts}]（2026-11-12）
+        # token 用量（2026-11-14）：按会话存内存，不落盘——重启后重新计。
+        # 服务商不一定返回 usage，所以存 exact 标记决定界面怎么写。
+        self._usage_map = {}        # chat_id -> {prompt,completion,cached,exact,rounds}
         try:
             self._right_open = bool(QSettings("LeiMengStudio", "ComfyHub")
                                     .value("ai_right_open", False, type=bool))
@@ -273,6 +303,27 @@ class AiPage(QWidget):
         b_new.setToolTip("开一个新对话（当前对话自动保存）")
         b_new.clicked.connect(self._new_chat)
         side_root.addWidget(b_new)
+
+        # 会话检索（2026-11-13）：列表只显示标题前 24 字，长对话靠首条消息检索回来。
+        # 只重渲染不过滤磁盘：list_chats 每次要读全部 json，输入时不能反复读。
+        self.ed_chat_search = QLineEdit()
+        self.ed_chat_search.setPlaceholderText(T("搜索对话内容"))
+        self.ed_chat_search.setClearButtonEnabled(True)
+        self.ed_chat_search.setFixedHeight(26)
+        self.ed_chat_search.setStyleSheet(
+            "QLineEdit { background:#1a1f27; border:1px solid #2a3340;"
+            " border-radius:7px; padding:2px 8px; color:#c9d3e0; font-size:12px; }"
+            "QLineEdit:focus { border-color:#4c8dff; }")
+        self.ed_chat_search.textChanged.connect(lambda *_: self._fill_chat_list())
+        side_root.addWidget(self.ed_chat_search)
+
+        self.ck_chat_only_cur = QCheckBox(T("仅当前实例"))
+        self.ck_chat_only_cur.setStyleSheet(
+            "QCheckBox { color:#8a93a3; font-size:11px; }")
+        self.ck_chat_only_cur.setToolTip(
+            T("只看绑定到当前实例的对话；没设过「实例」的对话仍然显示"))
+        self.ck_chat_only_cur.toggled.connect(lambda *_: self._fill_chat_list())
+        side_root.addWidget(self.ck_chat_only_cur)
         self.lst_chat = QListWidget()
         self.lst_chat.setObjectName("ChatList")
         self.lst_chat.setFrameShape(QFrame.NoFrame)
@@ -496,6 +547,7 @@ class AiPage(QWidget):
         self.r_wf = _kv(T("工作流"))
         self.r_model = _kv(T("模型"))
         self.r_count = _kv(T("消息"))
+        self.r_usage = _kv(T("用量"))
 
         lb = QLabel(T("压缩摘要"))
         lb.setStyleSheet("color:#6c7a8c; font-size:11px; padding-top:2px;")
@@ -594,6 +646,16 @@ class AiPage(QWidget):
             except Exception:
                 pass
 
+    def _set_usage_label(self, u):
+        """刷新「用量」那一行（文案 + tooltip）"""
+        if not hasattr(self, "r_usage"):
+            return
+        self.r_usage.setText(_fmt_usage(u))
+        self.r_usage.setToolTip(
+            T("服务商未返回用量，为估算值")
+            if (u and u.get("exact") is False) else
+            T("本会话累计输入/输出 token（含缓存命中比例）"))
+
     def _refresh_right(self):
         """按当前会话刷新三页内容（幂等，随时可调）"""
         if not hasattr(self, "r_topic"):
@@ -612,6 +674,11 @@ class AiPage(QWidget):
             pass
         stamp = (time.strftime("%m-%d %H:%M", time.localtime(upd)) if upd else "")
         self.r_count.setText(f"{len(self._history)}" + (f" · {stamp}" if stamp else ""))
+        try:
+            self._set_usage_label((getattr(self, "_usage_map", {}) or {})
+                                  .get(self._chat_id))
+        except Exception:
+            pass
         self.r_summary.setPlainText(self._summary or "")
 
         # ---- 产物 ----
@@ -638,7 +705,10 @@ class AiPage(QWidget):
             picked.append(sk)
             it = QListWidgetItem("🧠 " + sk.get("name", sid))
             it.setData(Qt.UserRole, sid)
-            it.setToolTip(sk.get("desc") or "")
+            _tip = sk.get("desc") or ""
+            if sk.get("tools") is not None:
+                _tip += "\n" + T("本技能的声明会收窄本对话的工具表")
+            it.setToolTip(_tip)
             self.lst_skill.addItem(it)
         has_sk = bool(picked)
         self.lst_skill.setVisible(has_sk)
@@ -1208,7 +1278,8 @@ class AiPage(QWidget):
                                     summary=self._summary,
                                     summary_upto=self._summary_upto,
                                     skills=self._chat_skills,
-                                    profile=self._profile)
+                                    profile=self._profile,
+                                    chat_id=self._chat_id)
         self._worker.sig_event.connect(self._on_event)
         self._worker.sig_done.connect(self._on_done)
         self.b_send.setEnabled(False)
@@ -1243,26 +1314,61 @@ class AiPage(QWidget):
             self._greet()
 
     def _reload_chat_list(self, select: str = ""):
+        """读盘 + 渲染；搜索/筛选只走 _fill_chat_list，不重复读磁盘"""
+        self._chats_all = ai_chat_store.list_chats()
+        self._fill_chat_list(select)
+
+    def _fill_chat_list(self, select: str = ""):
+        kw = (self.ed_chat_search.text() or "").strip().lower()
+        only_cur = bool(self.ck_chat_only_cur.isChecked())
+        cur_id = ""
+        if only_cur:
+            # 必须用**主窗口当前实例**，不能用 self._inst()——后者是「当前会话
+            # 自己绑的实例」，拿它当筛选项会永远只剩一条
+            try:
+                cur_id = str((self.mainwin.current_inst() or {}).get("id") or "")
+            except Exception:
+                cur_id = ""
+        target = select or self._chat_id
+
+        rows = []
+        for c in (getattr(self, "_chats_all", None) or []):
+            prof = ai_skills.norm_profile(c.get("profile"))
+            # 「仅当前实例」只排除明确绑到别的实例的对话；没绑定的照常显示，
+            # 否则大量「通用」对话会被一起藏起来，反而更难找
+            if only_cur and cur_id and prof.get("inst_id") \
+                    and str(prof["inst_id"]) != cur_id:
+                continue
+            if kw:
+                hay = " ".join(str(x or "") for x in (
+                    c.get("title"), c.get("first"), prof.get("topic"),
+                    prof.get("workflow"), prof.get("model"))).lower()
+                if kw not in hay:
+                    continue
+            rows.append((c, prof))
+
         self.lst_chat.blockSignals(True)
         self.lst_chat.clear()
-        chats = ai_chat_store.list_chats()
-        for c in chats:
+        for c, prof in rows:
             label = chat_label(c)
-            prof = ai_skills.norm_profile(c.get("profile"))
             it = QListWidgetItem(label)
             it.setData(Qt.UserRole, c["id"])
             tips = [label]
+            if c.get("first") and c["first"] != label:
+                tips.append(c["first"][:140])
             if prof.get("workflow"):
                 tips.append("工作流：" + prof["workflow"])
             if prof.get("model"):
                 tips.append("模型：" + prof["model"])
             it.setToolTip("\n".join(tips))
             self.lst_chat.addItem(it)
-        if select:
+        if target:
             for i in range(self.lst_chat.count()):
-                if self.lst_chat.item(i).data(Qt.UserRole) == select:
+                if self.lst_chat.item(i).data(Qt.UserRole) == target:
                     self.lst_chat.setCurrentRow(i)
                     break
+        # 搜索时当前会话可能被过滤掉：只丢高亮，**不改 self._chat_id**，
+        # 否则用户一边打字一边被强制切会话
         self.lst_chat.blockSignals(False)
 
     def _open_chat(self, cid: str):
@@ -1275,6 +1381,12 @@ class AiPage(QWidget):
                          if m.get("role") in ("user", "assistant")]
         self._summary = str(d.get("summary") or "")
         self._summary_upto = int(d.get("summary_upto") or 0)
+        self._summary_inst = str(d.get("summary_inst") or "")
+        # 换了实例 → 旧摘要里的端口/路径/模型全是错的，直接作废（2026-11-14）
+        _iid = str((self._inst() or {}).get("id") or "")
+        if self._summary and _iid and self._summary_inst \
+                and self._summary_inst != _iid:
+            self._summary, self._summary_upto, self._summary_inst = "", 0, ""
         self._chat_skills = list(d.get("skills") or [])
         self._artifacts = ai_chat_store._clip_artifacts(d.get("artifacts") or [])
         # 工作台设定随会话走：切过去就是另一套工作流/模型/技能，
@@ -1312,7 +1424,8 @@ class AiPage(QWidget):
         ai_chat_store.save(self._chat_id, self._history, title=title,
                            summary=self._summary, upto=self._summary_upto,
                            skills=self._chat_skills, profile=self._profile,
-                           artifacts=getattr(self, "_artifacts", None))
+                           artifacts=getattr(self, "_artifacts", None),
+                           summary_inst=self._summary_inst)
 
     def _on_chat_item_changed(self, cur, _prev):
         if self._worker is not None:      # 正在回答时不许切，免得串台
@@ -1335,6 +1448,7 @@ class AiPage(QWidget):
         self._history = []
         self._summary = ""
         self._summary_upto = 0
+        self._summary_inst = ""
         self._chat_skills = []
         self._profile = {}
         self._artifacts = []
@@ -1371,6 +1485,7 @@ class AiPage(QWidget):
         self._history = []
         self._summary = ""
         self._summary_upto = 0
+        self._summary_inst = ""
         self._chat_skills = []
         self._profile = {}
         self._artifacts = []
@@ -1557,8 +1672,20 @@ class AiPage(QWidget):
         if skills:
             v.addWidget(QLabel("本对话启用的技能："))
             for s in skills:
-                cbx = QCheckBox(s["name"])
-                cbx.setToolTip((s["desc"] or "") + "\n\n" + (s["body"] or "")[:300])
+                # 声明了 tools 的技能会收窄本对话的工具表（2026-11-14）。
+                # 直接标在名字后面 + tooltip 说明，用户才知道勾了会少哪些能力。
+                declared = s.get("tools")
+                label = s["name"]
+                tip = (s["desc"] or "") + "\n\n" + (s["body"] or "")[:300]
+                if declared is not None:
+                    # 用固定词而不是「只带 N 个工具」：计数是动态值，
+                    # 拼进标签就翻译不了（i18n 只做精确匹配）
+                    label += "（" + T("工具收窄") + "）"
+                    tip += ("\n\n" + T("勾选后本对话只保留该技能声明的工具，"
+                                       "外加 get_health / ask_user / recall_history "
+                                       "三个基础能力；工具表更短，模型更不容易选错。"))
+                cbx = QCheckBox(label)
+                cbx.setToolTip(tip)
                 cbx.setChecked(s["id"] in self._chat_skills)
                 v.addWidget(cbx)
                 boxes.append((s["id"], cbx))
@@ -1621,11 +1748,20 @@ class AiPage(QWidget):
             self._stream_append(ev.get("text", ""))
         elif kind == "notice":
             self._notice(ev.get("text", ""))
+        elif kind == "usage":
+            # 只更新这一行，不调 _refresh_right（那里会 list_chats 读盘，
+            # 每轮调一次等于每轮遍历所有会话文件）
+            u = {k: ev.get(k) for k in ("prompt", "completion", "cached",
+                                        "exact", "rounds")}
+            self._usage_map[self._chat_id] = u
+            self._set_usage_label(u)
         elif kind == "compress":
             self._notice(f"上下文较长，正在压缩较早的 {int(ev.get('count') or 0)} 条对话…")
         elif kind == "compress_done":
             self._summary = str(ev.get("summary") or "")
             self._summary_upto = int(ev.get("upto") or 0)
+            # 记下这份摘要属于哪个实例：换实例后要作废（2026-11-14）
+            self._summary_inst = str((self._inst() or {}).get("id") or "")
             self._save_chat()
             self._notice(f"已把早期对话压缩为 {int(ev.get('chars') or 0)} 字摘要，"
                          f"后续问答会带着它继续")

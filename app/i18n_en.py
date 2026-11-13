@@ -653,15 +653,27 @@ EN_DICT = {
     "立即更新": "Update now",
     "跳过此版本": "Skip this version",
     # ---------- 延迟更新提醒（2026-11-12）----------
-    "启动一小时后提醒": "Remind me one hour after launch",
-    "启动满 1 小时后，如果发现新版本会弹窗提醒一次。\n"
-    "弹窗里可以选择「延后提醒」（1 小时 / 4 小时 / 1 天 / 3 天 / 1 周）"
-    "或「不再提醒此版本」。这项与上面「启动时自动检查」互不影响":
-        "One hour after launch, if a new version is found, a reminder pops up once.\n"
-        "There you can snooze (1 hour / 4 hours / 1 day / 3 days / 1 week) or "
-        "stop reminders for that version. Independent of \"Check on startup\" above.",
+    "每小时检查一次更新": "Check for updates every hour",
+    "启动满 1 小时后，每隔 1 小时自动查一次更新；检测到新版本就弹窗提醒。\n"
+    "弹窗里可选「延后提醒」（1 小时 / 4 小时 / 1 天 / 3 天 / 1 周，到点立刻再弹）"
+    "或「不再提醒」——选不再提醒只在本次运行内静音，下次启动还会提示。\n"
+    "这项依赖上面的「启动时自动检查」：总开关关掉，这里也一并停用。":
+        "After the first hour, check for updates once every hour; a new version "
+        "triggers a reminder dialog.\nThere you can snooze (1 hour / 4 hours / "
+        "1 day / 3 days / 1 week — it pops again the moment the delay ends) or "
+        "choose \"Don't remind me\" — that only mutes it for the current run, it "
+        "comes back on next launch.\nThis depends on \"Check on startup\" above: "
+        "turn the master switch off and this stops too.",
+    "已随「启动时自动检查」一并停用（重新勾选上面的总开关即可恢复）":
+        "Disabled together with \"Check on startup\" (re-tick the master switch "
+        "above to restore).",
     "发现新版本": "New version found",
     "有新版本可用": "A new version is available",
+    "现在更新会关闭正在运行的实例。延后到点会立刻再提醒一次；"
+    "选「不再提醒」只在本次运行内静音，下次启动还会提示。":
+        "Updating now will close the running instance. A snooze pops up again the "
+        "moment it expires; \"Don't remind me\" only mutes it for this run — it "
+        "comes back on next launch.",
     "现在更新会关闭正在运行的实例；也可以稍后提醒或跳过这个版本。":
         "Updating now closes running instances. You can also snooze the reminder "
         "or skip this version.",
@@ -1212,4 +1224,45 @@ EN_DICT = {
         "calling (this assistant needs function calling). Check the model "
         "name under Settings → AI access, or switch to a model with "
         "tool-calling support.",
+    # ---- 会话检索 + 环境画像（2026-11-13）----
+    "搜索对话内容": "Search chats",
+    "仅当前实例": "Current instance only",
+    "只看绑定到当前实例的对话；没设过「实例」的对话仍然显示":
+        "Show only chats bound to the current instance; chats without an "
+        "instance setting still appear.",
+    # ---- token 用量（2026-11-14）----
+    "用量": "Usage",
+    "输入": "In",
+    "输出": "Out",
+    "缓存命中": "cache hit",
+    "服务商未返回用量，为估算值": "provider returned no usage; estimated",
+    "估算": "est.",
+    "本会话累计输入/输出 token（含缓存命中比例）":
+        "Cumulative input/output tokens for this chat (with cache-hit ratio).",
+    # ---- 技能收窄工具表（2026-11-14）----
+    "工具收窄": "narrow tools",
+    "勾选后本对话只保留该技能声明的工具，外加 get_health / ask_user / recall_history 三个基础能力；工具表更短，模型更不容易选错。":
+        "When checked, this chat keeps only the tools declared by the skill plus "
+        "get_health / ask_user / recall_history. A shorter tool list means fewer "
+        "wrong tool picks.",
+    "本技能的声明会收窄本对话的工具表": "This skill narrows the tool list for this chat",
+    # ---- 小米 MiMo Token Plan（2026-11-14 实测套餐 Key 打按量端点 401 后补）----
+    "小米 MiMo · Token Plan（中国）": "Xiaomi MiMo · Token Plan (China)",
+    "小米 MiMo · Token Plan（新加坡）": "Xiaomi MiMo · Token Plan (Singapore)",
+    "小米 MiMo · Token Plan（欧洲）": "Xiaomi MiMo · Token Plan (Europe)",
+    "Token Plan 专属端点，Key 形如 tp-…（个人）/ ttp-…（团队）。按量付费 Key（sk-…）打这里会 401，反之亦然。区域要和控制台一致：中国 / 新加坡 / 欧洲各一个域名":
+        "Dedicated Token Plan endpoint. Keys look like tp-… (individual) or ttp-… "
+        "(team); a pay-as-you-go key (sk-…) returns 401 here, and vice versa. Match "
+        "the region shown in your console: China / Singapore / Europe each have "
+        "their own host.",
+    "新加坡区域的 Token Plan 端点，与中国区 Key 不通用":
+        "Token Plan endpoint for the Singapore region; not interchangeable with "
+        "China-region keys.",
+    "欧洲区域的 Token Plan 端点，与中国区 Key 不通用":
+        "Token Plan endpoint for the Europe region; not interchangeable with "
+        "China-region keys.",
+    "platform.xiaomimimo.com 申请 Key。thinking.type 开关实测有效。这是按量付费端点（Key 形如 sk-…）；买了 Token Plan 请选套餐组里的条目":
+        "Get a key at platform.xiaomimimo.com. The thinking.type switch works here. "
+        "This is the pay-as-you-go endpoint (keys look like sk-…); for a Token Plan "
+        "pick the plan entry in the group below.",
 }

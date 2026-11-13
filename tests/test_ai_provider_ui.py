@@ -118,6 +118,22 @@ def main():
         ("https://x.openai.azure.com/openai/v1", "custom"),   # Azure 需资源名，只能自定义
         ("", "custom"),
         (None, "custom"),
+        # ---- 顺序敏感组（2026-11-14 实测踩到才补的回归）----
+        # 小米 MiMo 的套餐域名也含 "xiaomimimo"，必须排在按量键之前
+        ("https://token-plan-cn.xiaomimimo.com/v1", "mimo_plan_cn"),
+        ("https://token-plan-sgp.xiaomimimo.com/v1", "mimo_plan_sgp"),
+        ("https://token-plan-ams.xiaomimimo.com/v1", "mimo_plan_ams"),
+        ("https://api.xiaomimimo.com/v1", "mimo"),
+        # 阿里 Token Plan 的键不能用笼统的 "token-plan"，
+        # 否则会把上面三个 MiMo 域名全吃掉（实测就是这里错的）
+        ("https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+         "qwen_token_plan"),
+        ("https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+         "qwen_token_plan"),
+        # 智谱：z.ai 的 coding 路径必须早于国内的 api/coding/paas
+        ("https://open.bigmodel.cn/api/coding/paas/v4", "zhipu_plan"),
+        ("https://api.z.ai/api/coding/paas/v4", "zhipu_plan_intl"),
+        ("https://open.bigmodel.cn/api/paas/v4", "zhipu"),
     ]
     for url, want in cases:
         got = prov.match(url)

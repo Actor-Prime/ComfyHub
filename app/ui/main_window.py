@@ -295,6 +295,13 @@ class MainWindow(QMainWindow):
         self._update_timer.setInterval(60 * 1000)
         self._update_timer.timeout.connect(self._update_tick)
         self._update_timer.start()
+        # 延后到期立刻弹（2026-11-13 用户要求）：不计在 60s tick 里等，
+        # 单次定时器精确到期；跨重启靠 update_snooze_until 恢复倒计时。
+        self._snooze_timer = QTimer(self)
+        self._snooze_timer.setSingleShot(True)
+        self._snooze_timer.timeout.connect(self._on_snooze_due)
+        self._force_remind = False        # 到期触发时绕过「启动满 1 小时」判断
+        _QT.singleShot(800, self._arm_snooze)
 
         # ---------- 主题与语言（2026-11-01）----------
         self._apply_theme()
@@ -617,9 +624,17 @@ class MainWindow(QMainWindow):
         from app.ui.update_banner import CheckWorker
         st = self.cfg.get("settings") or {}
         mode = mode or ("manual" if manual else "auto")
-        if mode == "auto" and not bool(st.get("update_auto_check", True)):
+        # 主从开关（2026-11-13）：总开关关 → 启动与每小时都不查；只关每小时 → 启动照查
+        try:
+            from app import update_notify
+            auto_on = update_notify.master_enabled(st)
+            periodic_on = update_notify.enabled(st)
+        except Exception:
+            auto_on = bool(st.get("update_auto_check", True))
+            periodic_on = auto_on and bool(st.get("update_delayed_check", True))
+        if mode == "auto" and not auto_on:
             return
-        if mode == "delayed" and not bool(st.get("update_delayed_check", True)):
+        if mode == "delayed" and not periodic_on:
             return
         if self._check_worker is not None and self._check_worker.isRunning():
             return
@@ -633,6 +648,8 @@ class MainWindow(QMainWindow):
         from PySide6.QtWidgets import QMessageBox
         from app import updater
         self._check_worker = None
+        force_remind = bool(getattr(self, "_force_remind", False))
+        self._force_remind = False        # 用完即清，别污染后续检查
         mode = self._update_mode or ("manual" if getattr(self, "_update_manual", False)
                                      else "auto")
         manual = mode == "manual"
@@ -651,12 +668,25 @@ class MainWindow(QMainWindow):
         self._update_info = info
         self.update_banner.show_update(info)
         if mode == "delayed":
-            # 主动提醒：弹一次；「已提醒过该版本」由 _show_update_reminder 记账
-            self._show_update_reminder(info)
+            # 主动提醒：延后期内只更新顶部横幅、不弹窗（检查节奏独立于延后）
+            # force_remind：延后到期由定时器补查的那一次，不算打扰——用户自己约的时间
+            try:
+                from app import update_notify
+                st2 = self.cfg.get("settings") or {}
+                ok = force_remind or update_notify.should_remind(
+                    st2, self._update_started)
+            except Exception:
+                ok = True
+            if ok:
+                self._show_update_reminder(info)
 
-    # ---------- 延迟提醒（启动满 1 小时）----------
+    # ---------- 每小时检查更新（2026-11-12 建，2026-11-13 改节奏）----------
     def _update_tick(self):
-        """每分钟一次的时间判断；真联网受 30 分钟节流（update_last_check）"""
+        """每分钟一次的时间判断：启动满 1 小时后，**每隔 1 小时**联网查一次
+
+        延后（snooze）只压弹窗不拦检查：用户延后 4 小时里仍每小时静默查，
+        真出了新版本，顶部横幅会更新，只是不弹窗打扰。
+        """
         try:
             from app import update_notify
         except Exception:
@@ -665,16 +695,22 @@ class MainWindow(QMainWindow):
             return
         st = self.cfg.get("settings") or {}
         now = _time.time()
-        if not update_notify.should_remind(st, self._update_started, now):
+        if not update_notify.should_check(st, self._update_started, now):
             return
-        info = self._update_info
-        if info and info.get("has_update"):
-            if info.get("latest") in self._update_reminded:
-                return
-            self._show_update_reminder(info)
+        # 先记账再干活：本轮无论如何只算一次，避免同一分钟反复进这里
+        update_notify.mark_checked(st, now)
+        try:
+            save_config(self.cfg)     # 走模块级引用，测试可 patch（别在函数里重新 import）
+        except Exception:
+            pass
+        info = self._update_info or {}
+        latest = str(info.get("latest") or "")
+        # 已经知道有新版本、且这个版本还没提醒过 → 直接弹，不再白跑一次网络
+        if info.get("has_update") and latest and latest not in self._update_reminded:
+            if update_notify.should_remind(st, self._update_started, now):
+                self._show_update_reminder(info)
             return
-        if not update_notify.can_recheck(st, now):
-            return
+        # 其余情况（无更新 / 这个版本已提醒过 / 延后期）继续联网，可能有更新版本
         self.check_updates(mode="delayed")
 
     def _show_update_reminder(self, info: dict):
@@ -694,10 +730,12 @@ class MainWindow(QMainWindow):
         if act == "update":
             self._on_update_clicked()
             return
-        self._update_reminded.add(ver)      # 同一会话不再对同一版本重复弹
         if act == "later":
+            # 延后：只记时间点，**不**把这个版本记进「已提醒」——
+            # 到期那次还要再弹一次（2026-11-13 用户要求）。
             until = update_notify.snooze(st, dlg.delay_hours)
             save_config(self.cfg)
+            self._arm_snooze()              # 到点立刻弹，不等下一次每小时检查
             import datetime as _dt
             try:
                 when = _dt.datetime.fromtimestamp(until).strftime("%m-%d %H:%M")
@@ -705,11 +743,62 @@ class MainWindow(QMainWindow):
                 when = ""
             self.statusBar().showMessage(f"已延后提醒：{when}" if when else "已延后提醒",
                                          6000)
-        elif act == "never":
-            # 复用「跳过此版本」语义：之后的自动检查一律不再提示该版本
-            st["update_skipped_version"] = ver
-            save_config(self.cfg)
+            return
+        # 「不再提醒」/ 直接关窗：只在本次运行内静音这个版本，
+        # 不写 update_skipped_version —— 下次启动照常弹（用户要求 2026-11-13）
+        self._update_reminded.add(ver)
+        if act == "never":
             self.update_banner.hide()
+
+    # ---------- 延后到期立刻弹（2026-11-13）----------
+    _SNOOZE_MS_MAX = 2_000_000_000      # QTimer 单次毫秒上限（约 23 天）
+
+    def _arm_snooze(self):
+        """把「延后到期」排进定时器：到点立刻弹，不等下一次每小时检查"""
+        try:
+            from app import update_notify
+        except Exception:
+            return
+        tm = getattr(self, "_snooze_timer", None)
+        if tm is None:
+            return
+        tm.stop()
+        st = self.cfg.get("settings") or {}
+        until = update_notify.snooze_until(st)
+        if until <= 0:
+            return
+        delay_ms = int((until - _time.time()) * 1000)
+        tm.start(max(0, min(delay_ms, self._SNOOZE_MS_MAX)))
+
+    def _on_snooze_due(self):
+        """延后到期：立刻弹一次，不再等每小时检查
+
+        这一路是用户自己约的时间，所以绕过「启动满 1 小时」的限制。
+        """
+        try:
+            from app import update_notify
+        except Exception:
+            return
+        st = self.cfg.get("settings") or {}
+        if not update_notify.enabled(st):        # 开关被关掉 → 不打扰
+            return
+        until = update_notify.snooze_until(st)
+        now = _time.time()
+        if until > now:                          # 超长延后分块续期的中间段
+            self._arm_snooze()
+            return
+        update_notify.clear_snooze(st)
+        try:
+            save_config(self.cfg)
+        except Exception:
+            pass
+        info = self._update_info or {}
+        latest = str(info.get("latest") or "")
+        if info.get("has_update") and latest and latest not in self._update_reminded:
+            self._show_update_reminder(info)
+            return
+        self._force_remind = True                # 补齐查回来的结果直接弹
+        self.check_updates(mode="delayed")
 
     def _on_update_clicked(self):
         from PySide6.QtWidgets import QDialog
