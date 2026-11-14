@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.config import save_config, APP_VERSION
+from app.ui import theme
 from app.bootstrap import PYPI_MIRRORS
 from app.i18n import T
 
@@ -360,6 +361,10 @@ class SettingsPage(QWidget):
         fc = QFormLayout(self.box_custom)
         fc.setContentsMargins(0, 4, 0, 0)
         self._bg_value = str(st.get("bg_image", "") or "")
+        # 背景图位置/缩放（2026-11-14）：选图后可拖动/滚轮调整，随图保存
+        self._bg_zoom = max(1.0, min(4.0, float(st.get("bg_zoom", 1.0) or 1.0)))
+        self._bg_off_x = max(-0.5, min(0.5, float(st.get("bg_off_x", 0.0) or 0.0)))
+        self._bg_off_y = max(-0.5, min(0.5, float(st.get("bg_off_y", 0.0) or 0.0)))
         row_bg = QHBoxLayout()
         self.lb_bg = QLabel()
         self.lb_bg.setWordWrap(True)
@@ -367,6 +372,9 @@ class SettingsPage(QWidget):
         btn_pick = QPushButton("选择图片…")
         btn_pick.clicked.connect(self._pick_bg)
         row_bg.addWidget(btn_pick)
+        self.btn_bg_adjust = QPushButton("调整位置…")
+        self.btn_bg_adjust.clicked.connect(self._adjust_bg)
+        row_bg.addWidget(self.btn_bg_adjust)
         btn_clear = QPushButton("清除")
         btn_clear.clicked.connect(self._clear_bg)
         row_bg.addWidget(btn_clear)
@@ -383,6 +391,20 @@ class SettingsPage(QWidget):
         row_alpha.addWidget(self.sl_alpha, 1)
         row_alpha.addWidget(self.lb_alpha)
         fc.addRow("面板不透明度:", row_alpha)
+
+        # 背景模糊（2026-11-14 方案 B）：抹平图片局部明暗差，深浅字都不怕花图；
+        # 0 = 不模糊。和「面板不透明度」配合：先模糊再谈浓度，浓度可以开低点。
+        row_blur = QHBoxLayout()
+        self.sl_blur = QSlider(Qt.Horizontal)
+        self.sl_blur.setRange(0, 24)
+        self.sl_blur.setValue(int(st.get("bg_blur", 0) or 0))
+        self.lb_blur = QLabel("%dpx" % self.sl_blur.value())
+        self.lb_blur.setFixedWidth(44)
+        self.sl_blur.valueChanged.connect(
+            lambda v: self.lb_blur.setText("%dpx" % v))
+        row_blur.addWidget(self.sl_blur, 1)
+        row_blur.addWidget(self.lb_blur)
+        fc.addRow("背景模糊:", row_blur)
         f2.addRow("", self.box_custom)
 
         # 关闭行为（2026-10-31）：与关闭询问框的「记住我的选择」共用同一设置
@@ -437,7 +459,7 @@ class SettingsPage(QWidget):
                     _f = _it.font()            # 加粗 + 强调色：分组一眼可辨
                     _f.setBold(True)
                     _it.setFont(_f)
-                    _it.setForeground(QColor("#7aa2d0"))
+                    _it.setForeground(QColor(theme.fg("#7aa2d0")))
             for _p in _items:
                 self.cb_ai_provider.addItem(T(_p["name"]), _p["id"])
         _i_pid = self.cb_ai_provider.findData(_pid)
@@ -779,9 +801,23 @@ class SettingsPage(QWidget):
             return
         self._bg_value = dst
         self._refresh_bg_label()
+        # 换了新图，旧的位置/缩放作废 → 重置后直接弹调整窗让用户摆位
+        self._bg_zoom, self._bg_off_x, self._bg_off_y = 1.0, 0.0, 0.0
+        self._adjust_bg(first=True)
+
+    def _adjust_bg(self, first=False):
+        """弹出背景图调整窗（拖动/滚轮缩放），确认后记住位置参数。"""
+        if not (self._bg_value and os.path.isfile(self._bg_value)):
+            return
+        from app.ui.bg_adjust import BgAdjustDialog
+        dlg = BgAdjustDialog(self._bg_value, self._bg_zoom,
+                             self._bg_off_x, self._bg_off_y, self)
+        if dlg.exec() == QDialog.Accepted:
+            self._bg_zoom, self._bg_off_x, self._bg_off_y = dlg.values()
 
     def _clear_bg(self):
         self._bg_value = ""
+        self._bg_zoom, self._bg_off_x, self._bg_off_y = 1.0, 0.0, 0.0
         self._refresh_bg_label()
 
     # ------------------------------------------------------------ 显示同步
@@ -1016,7 +1052,8 @@ class SettingsPage(QWidget):
         "ai_model": "模型名", "ai_think": "思考强度", "ai_max_tokens": "最大输出",
         "ai_ctx_msgs": "上下文条数", "ai_compress": "上下文压缩", "ai_persona": "助手设定",
         "ai_direct": "AI 直连", "theme": "主题", "bg_image": "背景图",
-        "bg_opacity": "面板不透明度", "lang": "界面语言",
+        "bg_opacity": "面板不透明度", "bg_blur": "背景模糊", "lang": "界面语言",
+        "bg_zoom": "背景缩放", "bg_off_x": "背景横向位置", "bg_off_y": "背景纵向位置",
     }
 
     def _save(self):
@@ -1060,7 +1097,11 @@ class SettingsPage(QWidget):
             "ai_direct": bool(self.ck_ai_direct.isChecked()),
             "theme": self.cb_theme.currentData() or "dark",
             "bg_image": self._bg_value,
+            "bg_zoom": round(float(self._bg_zoom), 4),
+            "bg_off_x": round(float(self._bg_off_x), 4),
+            "bg_off_y": round(float(self._bg_off_y), 4),
             "bg_opacity": int(self.sl_alpha.value()),
+            "bg_blur": int(self.sl_blur.value()),
             "lang": self.cb_lang.currentData() or "zh",
         }
         changes = diff_changes(old, pending, self._SAVE_LABELS,

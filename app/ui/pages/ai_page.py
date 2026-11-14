@@ -233,10 +233,15 @@ class AiPage(QWidget):
                "border:1px solid rgba(127,127,127,0.18);"
                "border-radius:12px;}")
     ST_TL = "QFrame#tl{border:none; border-left:2px solid rgba(55,138,221,0.55);}"
-    ST_CHIP = ("QPushButton{background:rgba(127,127,127,0.12);"
-               "border:1px solid rgba(127,127,127,0.22); border-radius:12px;"
-               "padding:3px 10px; color:#a9b1bd; font-size:12px;}"
-               "QPushButton:hover{background:rgba(127,127,127,0.20);}")
+    # 快捷指令 chip：带一点强调蓝的底与描边（2026-11-14 用户反馈「按钮没色差、
+    # 看不出能点」）。中性灰底在浅色主题下几乎和卡片同色，等于没有按钮感；
+    # 蓝色淡底 + 蓝字在任何主题下都能读成「可点」。
+    ST_CHIP = ("QPushButton{background:rgba(76,141,255,0.12);"
+               "border:1px solid rgba(76,141,255,0.32); border-radius:12px;"
+               "padding:3px 10px; color:#6fa8ff; font-size:12px;}"
+               "QPushButton:hover{background:rgba(76,141,255,0.22);"
+               "border-color:rgba(76,141,255,0.55); color:#e6edf7;}"
+               "QPushButton:pressed{background:rgba(76,141,255,0.30);}")
     ST_LINK = ("QPushButton{background:transparent; border:none;"
                "color:#8a93a3; font-size:12px; padding:2px 6px;}"
                "QPushButton:hover{color:#c3c9d4;}")
@@ -374,12 +379,20 @@ class AiPage(QWidget):
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.NoFrame)
+        # 消息区永不横向滚动：正文一律按视口宽换行（2026-11-14 用户报障
+        # 「这里应该自动换行/调整宽度，而不是出现横向滑块」）。宽度由
+        # _msg_avail() 统一推算，这条策略只是兜底——真漏算了也宁可变窄，不横滚。
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.flow_host = QWidget()
         self.flow = QVBoxLayout(self.flow_host)
-        self.flow.setContentsMargins(2, 6, 10, 6)
+        self.flow.setContentsMargins(self.FLOW_PAD_L, 6, self.FLOW_PAD_R, 6)
         self.flow.setSpacing(12)
         self.flow.addStretch(1)
         self.scroll.setWidget(self.flow_host)
+        # 竖滚动条出现/消失会改视口宽度 → 已定型的气泡必须跟着重排，
+        # 否则右侧要么留白、要么被顶出视口（只在页面 resize 时算是不够的）
+        self._vp = self.scroll.viewport()
+        self._vp.installEventFilter(self)
         root.addWidget(self.scroll, 1)
 
         # ---- 快捷指令 ----
@@ -828,7 +841,12 @@ class AiPage(QWidget):
         · Enter          → 发送
         · Shift+Enter    → 换行
         · Ctrl+Enter     → 发送（兼容旧习惯）
-        中文输入法组字中的 Enter 由 IME 自己消费，不会走到这里。"""
+        中文输入法组字中的 Enter 由 IME 自己消费，不会走到这里。
+
+        另外盯着消息区视口：竖滚动条一出现视口就变窄，已定型的气泡要重排。
+        """
+        if obj is getattr(self, "_vp", None) and event.type() == QEvent.Resize:
+            self._schedule_relayout()
         if obj is getattr(self, "ed", None) and event.type() == QEvent.KeyPress:
             if (event.key() == Qt.Key_V and event.modifiers() & Qt.ControlModifier
                     and self._try_paste_attachment()):
@@ -961,8 +979,41 @@ class AiPage(QWidget):
                                Qt.TextWordWrap, text)
         return max(30, rect.height() + pad_v)
 
+    # ---- 消息区宽度预算（2026-11-14 用户报障：消息区冒出横向滚动条）----
+    # 宽度全从这里推，不再各写魔法数字。之前 AI 卡正文按「视口-40」定型，
+    # 而实际可用只有「视口-42」（flow 左右边距 12 + 卡片左右内边距 28 + 左右描边 2），
+    # 多出的 2px 把 flow_host 的最小宽度顶出视口 → 底部多一条横向滚动条。
+    FLOW_PAD_L, FLOW_PAD_R = 2, 10
+    CARD_PAD, CARD_BORDER = 14, 1
+    BUBBLE_PAD, BUBBLE_BORDER = 12, 1
+    WIDTH_SLACK = 2          # 像素对齐余量（Qt 取整可能进 1px，留 2px 保稳）
+
+    def _msg_avail(self) -> int:
+        """消息行可用宽度 = 视口宽 - flow 左右边距"""
+        vw = self.scroll.viewport().width()
+        return max(120, vw - self.FLOW_PAD_L - self.FLOW_PAD_R)
+
+    def _card_body_width(self) -> int:
+        """AI 卡正文宽 = 行宽 - 卡片左右内边距 - 左右描边 - 余量"""
+        return max(120, self._msg_avail() - 2 * self.CARD_PAD
+                   - 2 * self.CARD_BORDER - self.WIDTH_SLACK)
+
+    def _bubble_inner(self) -> int:
+        """气泡内部文本可用宽（气泡外宽 - 左右 padding - 左右描边）"""
+        return max(80, self._msg_avail() - 2 * self.BUBBLE_PAD
+                   - 2 * self.BUBBLE_BORDER)
+
+    def _img_max_width(self) -> int:
+        """出图最大宽度 = 行宽 - 行内缩进 16 - 图片 padding 4 - 描边 2
+
+        图片不会像文字那样换行，宽度算大了只能横向滚动；这里把图片自身
+        QSS 的 padding / border 一起扣掉，宁可缩图也不要出滚动条。
+        """
+        return max(120, self._msg_avail() - 16 - 2 * 2 - 2 * 1)
+
     def _chat_width(self) -> int:
-        return max(320, self.scroll.viewport().width() - 24)
+        """兼容旧调用：等同消息行可用宽度"""
+        return self._msg_avail()
 
     @staticmethod
     def _row() -> QWidget:
@@ -979,17 +1030,15 @@ class AiPage(QWidget):
     def _fit_ai_body(self, body: QLabel, html: str):
         """AI 卡片正文按当前聊天区宽度定型（窗口缩放后需重算）
 
-        注意：QLabel 内部富文本排版比 QTextDocument 按同宽算的要**略宽**一点
-        （字体舍入 + 段落 margin），按同宽算高度会差半行，末行被裁掉几个字
-        （2026-11-12 实测：1366 宽展开右栏后「…运行工作流。点上方快捷指令」
-        变成「…运行工作流」直接接「快捷指令」）。这里宽度留 8px、高度留 6px 兜住。
+        宽度只认 `_card_body_width()`：卡片内边距 / 描边 / 像素余量都在那算好，
+        这里若再自己减一遍就会像修之前那样「减多了短一截 / 减少了顶出横向滚动条」。
+
+        高度留 6px：QLabel 内部富文本排版比 QTextDocument 按同宽算的略高一点
+        （字体舍入 + 段落 margin），不留余量末行会被裁几个字（2026-11-12 实测）。
         """
         # 关键：先把 QSS 落到控件上再取字体（global QSS 会改字号）
         body.ensurePolished()
-        # 宽度预算：viewport 宽 - 消息流内边距(2+10) - 卡片内边距(14+14)。
-        # 旧版只减了 28，把 flow 的 12px 也算进去扣了两次 → label 每行短 12px，
-        # 窗口一窄就有行尾文字放不下被裁（1366 展开右栏时每行少三四个字）。
-        cw = self._chat_width() - 16
+        cw = self._card_body_width()
         body.setFixedWidth(cw)
         body.setFixedHeight(
             self._rich_height(html, cw, body.font()) + 6)
@@ -1023,20 +1072,35 @@ class AiPage(QWidget):
                     self._fit_err_bubble(lb, lb.property("chatText") or "")
                 elif kind == "ai":
                     self._fit_ai_body(lb, lb.text())
+                elif kind == "tl":
+                    self._fit_tl_label(lb)          # 时间线按新行宽重新省略
+                elif kind == "notice":
+                    self._fit_notice(lb, lb.property("chatText") or "")
+                elif kind == "img":
+                    pm = getattr(lb, "_orig_pm", None)
+                    if pm is not None and not pm.isNull():
+                        max_w = self._img_max_width()
+                        lb.setPixmap(pm.scaledToWidth(
+                            min(420, max_w, pm.width()), Qt.SmoothTransformation))
+
+    def _schedule_relayout(self, ms: int = 80):
+        """合并短时间内的多次尺寸变化，避免拖窗口时每帧重排卡顿"""
+        if getattr(self, "_stream", None):
+            return                              # 流式中别动，收尾会补一次
+        t = getattr(self, "_relayout_timer", None)
+        if t is None:
+            t = QTimer(self)
+            t.setSingleShot(True)
+            t.timeout.connect(self._relayout_messages)
+            self._relayout_timer = t
+        t.setInterval(ms)
+        t.start()
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
         if not hasattr(self, "flow"):
             return
-        # 拖窗口时每帧重排会卡：停手 80ms 再算一次
-        t = getattr(self, "_relayout_timer", None)
-        if t is None:
-            t = QTimer(self)
-            t.setSingleShot(True)
-            t.setInterval(80)
-            t.timeout.connect(self._relayout_messages)
-            self._relayout_timer = t
-        t.start()
+        self._schedule_relayout()
 
     # -------------------------------------------------- 消息组件
     def _greet(self):
@@ -1068,12 +1132,18 @@ class AiPage(QWidget):
             "绑好工作流和技能，之后它只在这套配置下干活，不同对话互不干扰。")
 
     def _fit_user_bubble(self, lb: QLabel, text: str):
-        """按当前聊天区宽度给气泡定型（2026-11-07：抽出以便窗口缩放后重排）"""
+        """按当前聊天区宽度给气泡定型（2026-11-07：抽出以便窗口缩放后重排）
+
+        外宽 = 文本宽 + 左右 padding + 左右描边，且永远不超过行宽；
+        长串（粘贴的 URL / 路径）不换行，只能靠上限截断，否则整行会被顶宽。
+        """
         fm = lb.fontMetrics()
-        cw = min(self._chat_width() - 140, fm.horizontalAdvance(text) + 6)
-        cw = max(80, cw)
-        lb.setFixedWidth(cw + 24)                       # +padding
-        lb.setFixedHeight(self._wrap_height(lb, text, cw + 24, 24, 16))
+        pad = 2 * self.BUBBLE_PAD + 2 * self.BUBBLE_BORDER
+        inner = min(max(80, self._bubble_inner()),
+                    max(80, fm.horizontalAdvance(text) + 6))
+        outer = inner + pad
+        lb.setFixedWidth(outer)                         # +padding +border
+        lb.setFixedHeight(self._wrap_height(lb, text, outer, pad, 16))
 
     def _user_bubble(self, text: str):
         lb = QLabel(text)
@@ -1122,6 +1192,13 @@ class AiPage(QWidget):
         cap = QLabel("AI 助手 · " + model + " · " +
                      ("生成中…" if streaming else QTime.currentTime().toString("HH:mm")))
         cap.setStyleSheet("color:#8a93a3; font-size:11px;")
+        # 这行是卡片最小宽度的最大来源：模型名一长就把整张卡顶宽 → 消息区冒
+        # 横向滚动条（2026-11-14 用户报障）。显式给最小宽度 1，布局就允许压缩它，
+        # 卡片宽度交回给正文决定；窗口够宽时照旧完整显示（用 Preferred 而不是
+        # Ignored——Ignored 会被旁边的 stretch 挤成 0 宽，标题直接消失）。
+        cap.setMinimumWidth(1)
+        cap.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        cap.setToolTip(cap.text())
         hd.addWidget(cap)
         hd.addStretch(1)
         b_copy = QPushButton("复制")
@@ -1164,7 +1241,11 @@ class AiPage(QWidget):
             if pm.isNull():
                 continue
             lb = _ClickableLabel()          # 2026-11-06：出图也能点开看原图
-            lb.setPixmap(pm.scaledToWidth(min(420, self._chat_width() - 60),
+            # 宽度上限跟着消息行走：写死 420 在窄窗口里会把整行顶宽 → 横向滚动条
+            lb._orig_pm = pm                             # 重排时按新宽度重新缩放
+            lb.setProperty("chatKind", "img")
+            max_w = self._img_max_width()
+            lb.setPixmap(pm.scaledToWidth(min(420, max_w, pm.width()),
                                           Qt.SmoothTransformation))
             lb.setToolTip(f"{path}\n点击查看原图")
             lb.clicked.connect(lambda p=pm: ImagePreviewDialog(p, self).exec())
@@ -1181,9 +1262,10 @@ class AiPage(QWidget):
             self._scroll_bottom()
 
     def _fit_err_bubble(self, lb: QLabel, text: str):
-        cw = self._chat_width() - 60
-        lb.setFixedWidth(cw)
-        lb.setFixedHeight(self._wrap_height(lb, text, cw, 24, 16))
+        pad = 2 * self.BUBBLE_PAD + 2 * self.BUBBLE_BORDER
+        outer = self._bubble_inner() + pad
+        lb.setFixedWidth(outer)
+        lb.setFixedHeight(self._wrap_height(lb, text, outer, pad, 16))
 
     def _err_bubble(self, text: str, raw: str = ""):
         """错误气泡：主文案已经是人话；原始异常塞 tooltip（用户排查时才看）
@@ -1209,6 +1291,26 @@ class AiPage(QWidget):
         self.flow.insertWidget(self.flow.count() - 1, w)
         self._scroll_bottom()
 
+    def _tl_text_width(self) -> int:
+        """时间线文字宽：行内缩进 16 + 竖线内边距 10 + 左侧竖线 2"""
+        return max(80, self._msg_avail() - 28)
+
+    def _fit_tl_label(self, lb: QLabel):
+        """工具时间线单行文本按行宽省略（2026-11-14 用户报障：横向滚动条）
+
+        不换行也不限宽时，`ask_user(options=[...])` 这种长参数会把整行顶到
+        视口外 → 消息区底部冒出一条横向滚动条。这里单行省略（全文仍在
+        tooltip 里），比折成三行更像"状态行"。
+        """
+        raw = lb.property("chatRaw")
+        if raw is None:
+            raw = lb.text()
+            lb.setProperty("chatRaw", raw)
+        lb.ensurePolished()                     # 取字体前先落 QSS（字号会变）
+        w = self._tl_text_width()
+        lb.setFixedWidth(w)
+        lb.setText(lb.fontMetrics().elidedText(str(raw), Qt.ElideRight, w))
+
     def _tool_item(self, name: str, args: dict):
         """时间线节点：左侧竖线 + 工具名 + 状态"""
         f = QFrame()
@@ -1217,10 +1319,14 @@ class AiPage(QWidget):
         h = QHBoxLayout(f)
         h.setContentsMargins(10, 2, 0, 2)
         arg_str = ", ".join(f"{k}={v}" for k, v in list((args or {}).items())[:2])
-        lb = QLabel(f"● {name}" + (f"（{arg_str}）" if arg_str else "") + " …")
+        lb = QLabel()
         lb.setObjectName("ChatBody")
         lb.setStyleSheet("color:#8a93a3; font-size:12px;")
         lb.setToolTip(str(args)[:500])
+        lb.setProperty("chatKind", "tl")
+        lb.setProperty("chatRaw",
+                       f"● {name}" + (f"（{arg_str}）" if arg_str else "") + " …")
+        self._fit_tl_label(lb)
         h.addWidget(lb)
         h.addStretch(1)
         wrap = self._row()
@@ -1240,9 +1346,10 @@ class AiPage(QWidget):
         lb = cur[1]
         mark = "✓" if ok else "✗"
         cost = f" · {ms}ms" if ms else ""
-        lb.setText(f"● {name} · {mark} {brief}{cost}")
         lb.setStyleSheet("color:#a9b1bd; font-size:12px;" if ok
                          else "color:#e2888a; font-size:12px;")
+        lb.setProperty("chatRaw", f"● {name} · {mark} {brief}{cost}")
+        self._fit_tl_label(lb)          # 结果摘要也要按行宽省略，别把行顶宽
         self._tl_widget = None
 
     # -------------------------------------------------- 交互
@@ -1410,6 +1517,7 @@ class AiPage(QWidget):
         else:
             self._greet()
         _refresh_right_safe(self)
+        self._pin_bottom()                # 打开即看最新一条（2026-11-14）
 
     def _save_chat(self):
         if not self._chat_id:
@@ -1859,9 +1967,7 @@ class AiPage(QWidget):
         card["text"] = st["buf"]
         html = _md_to_html(st["buf"])
         body.setText(html)
-        w = self._chat_width() - 28
-        body.setFixedWidth(w)
-        body.setFixedHeight(self._rich_height(html, w, body.font()))
+        self._fit_ai_body(body, html)      # 与历史卡同一套宽度预算（流式/收尾不跳宽）
         self._scroll_bottom()
 
     def _stream_finalize(self, full_text: str):
@@ -1880,7 +1986,10 @@ class AiPage(QWidget):
         card["copy"].setProperty("payload", text)
         card["re"].setEnabled(bool(self._last_user))
         model = str((self.cfg.get("settings") or {}).get("ai_model") or "") or "AI"
-        card["cap"].setText("AI 助手 · " + model + " · " + QTime.currentTime().toString("HH:mm"))
+        cap_txt = ("AI 助手 · " + model + " · "
+                   + QTime.currentTime().toString("HH:mm"))
+        card["cap"].setText(cap_txt)
+        card["cap"].setToolTip(cap_txt)
         self._relayout_messages()      # 流式期间 resize 被跳过，收尾补一次重排
 
     def _stream_flush_direct(self, text: str):
@@ -1892,10 +2001,14 @@ class AiPage(QWidget):
         card["copy"].setProperty("payload", text)
         html = _md_to_html(text)
         body.setText(html)
-        w = self._chat_width() - 28
-        body.setFixedWidth(w)
-        body.setFixedHeight(self._rich_height(html, w, body.font()))
+        self._fit_ai_body(body, html)      # 与历史卡同一套宽度预算（流式/收尾不跳宽）
         self._scroll_bottom()
+
+    def _fit_notice(self, lb: QLabel, text: str):
+        """提示行宽度跟行宽走（行内左缩进 2）"""
+        w = max(120, self._msg_avail() - 2)
+        lb.setFixedWidth(w)
+        lb.setFixedHeight(self._wrap_height(lb, text, w, 0, 2))
 
     def _notice(self, text: str):
         """灰色提示行（如：该模型不支持关闭思考）"""
@@ -1903,8 +2016,9 @@ class AiPage(QWidget):
         lb.setObjectName("ChatBody")
         lb.setWordWrap(True)
         lb.setStyleSheet("color:#7f8894; font-size:11px;")
-        lb.setFixedWidth(self._chat_width() - 40)
-        lb.setFixedHeight(self._wrap_height(lb, text, self._chat_width() - 40, 0, 2))
+        lb.setProperty("chatKind", "notice")
+        lb.setProperty("chatText", text)
+        self._fit_notice(lb, text)
         wrap = self._row()
         h = QHBoxLayout(wrap)
         h.setContentsMargins(2, 0, 0, 0)
@@ -1960,6 +2074,30 @@ class AiPage(QWidget):
     def _scroll_bottom(self):
         sb = self.scroll.verticalScrollBar()
         sb.setValue(sb.maximum())
+
+    # 切会话默认停在「最新一条」，而不是让用户自己拖到底（2026-11-14 用户报障）。
+    # 坑：气泡是 setFixedWidth + 自动换行，高度要等布局激活才算得出来，
+    # 渲染完立刻 setValue(maximum()) 拿到的还是旧值（经常是 0），
+    # 所以不能只滚一次 —— 在一个短窗口期内跟着 rangeChanged 贴底。
+    def _pin_bottom(self, ms: int = 800):
+        self._pin_until = time.monotonic() + max(0, int(ms)) / 1000.0
+        sb = self.scroll.verticalScrollBar()
+        if not getattr(self, "_pin_wired", False):
+            self._pin_wired = True
+            sb.rangeChanged.connect(self._on_scroll_range)
+            # 用户一动手就解除贴底，绝不跟用户抢滚动条
+            sb.sliderPressed.connect(self._unpin_bottom)
+            sb.actionTriggered.connect(lambda *_: self._unpin_bottom())
+        self._scroll_bottom()
+        QTimer.singleShot(0, self._scroll_bottom)
+        QTimer.singleShot(60, self._scroll_bottom)
+
+    def _unpin_bottom(self):
+        self._pin_until = 0.0
+
+    def _on_scroll_range(self, _lo, hi):
+        if time.monotonic() < getattr(self, "_pin_until", 0.0):
+            self.scroll.verticalScrollBar().setValue(hi)
 
     # -------------------------------------------------- 对外（兼容旧调用）
     def _add_bubble(self, role: str, text: str):
@@ -2022,6 +2160,8 @@ class AiPage(QWidget):
         if not getattr(self, "_relayout_done", False):
             self._relayout_done = True
             QTimer.singleShot(0, self._relayout_messages)
+            # 重排会改气泡高度 → 滚到底也要跟着重算一次
+            QTimer.singleShot(0, lambda: self._pin_bottom(800))
         if getattr(self, "_status_timer", None) is None:
             self._status_timer = QTimer(self)
             self._status_timer.setInterval(5000)

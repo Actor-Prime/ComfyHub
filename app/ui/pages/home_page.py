@@ -12,6 +12,8 @@ from PySide6.QtWidgets import (
 
 from app import sysinfo
 from app.i18n import T
+from app.ui import theme
+from app.ui.stat_icons import StatIcon
 from app.ui.nav import NAV
 
 ASSETS = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
@@ -99,7 +101,7 @@ class _Banner(QWidget):
                             float(self.RADIUS), float(self.RADIUS))
         p.setClipPath(path)
         if self._pix.isNull():
-            p.fillPath(path, QColor("#1b2029"))
+            p.fillPath(path, QColor(theme.fg("#1b2029")))
         else:
             # 按「cover」缩放后居中裁剪，而不是直接拉伸 —— 内容列宽度会随窗口变，
             # 直接拉伸会让 1024x340 的原图在不同宽度下被压扁/拉长
@@ -247,7 +249,7 @@ class HomePage(QWidget):
         self._dir_cards = []
         entries = [
             ("🗂️", "根目录", ""),
-            ("🧠", "模型 models", "models"),
+            ("📦", "模型 models", "models"),
             ("🧩", "插件 custom_nodes", "custom_nodes"),
             ("📥", "输入 input", "input"),
             ("📤", "输出 output", "output"),
@@ -343,10 +345,10 @@ class HomePage(QWidget):
         h.setContentsMargins(14, 12, 14, 12)
         h.setSpacing(12)
 
-        icon = QLabel("•")
+        # 2026-11-15 用户反馈 emoji 图标与内容不符，改矢量线稿，
+        # 颜色随主题（paintEvent 实时走 theme.fg，与顶部 logo 同机制）
+        icon = StatIcon("ram")
         icon.setObjectName("StatIcon")
-        icon.setFixedSize(30, 30)
-        icon.setAlignment(Qt.AlignCenter)
         h.addWidget(icon, 0, Qt.AlignTop)
 
         v = QVBoxLayout()
@@ -376,7 +378,7 @@ class HomePage(QWidget):
 
     def _set_card(self, w, title, value, sub="", icon=None, pct=None):
         if icon is not None:
-            w._icon.setText(icon)
+            w._icon.set_kind(icon)
         w._title.setText(T(title))
         w._value.setText(value)
         w._sub.setText(sub)
@@ -473,12 +475,12 @@ class HomePage(QWidget):
         self._set_card(self.card_ram, "内存",
                        f"{r['used_gb']:.1f} / {r['total_gb']:.0f} GB",
                        f"{T('占用')} {r['percent']:.0f}%",
-                       icon="🧠", pct=r['percent'])
+                       icon="ram", pct=r['percent'])
         c = sysinfo.cpu_info()
         self._set_card(self.card_cpu, "处理器",
                        f"{c['cores_physical']}{T('核')}/{c['cores_logical']}{T('线程')}",
                        f"{T('占用')} {c['usage']:.0f}%",
-                       icon="⚙", pct=c['usage'])
+                       icon="cpu", pct=c['usage'])
         g = sysinfo.gpu_info_display()
         self._refresh_gpu_card(g)
         self._refresh_disk_card()
@@ -492,7 +494,7 @@ class HomePage(QWidget):
             gpu = detect_gpu()
         except Exception:
             self._set_card(self.card_gpu, "显卡", fallback_label.split("（")[0],
-                           fallback_label, icon="🎮")
+                           fallback_label, icon="gpu")
             return
         if gpu.vendor == "nvidia":
             v = sysinfo.gpu_vram_usage()
@@ -500,16 +502,16 @@ class HomePage(QWidget):
                 self._set_card(self.card_gpu, "显卡", gpu.name,
                                f"{T('显存')} {v['used_mb'] / 1024:.1f} / "
                                f"{v['total_mb'] / 1024:.0f} GB · {T('占用')} {v['percent']:.0f}%",
-                               icon="🎮", pct=v['percent'])
+                               icon="gpu", pct=v['percent'])
             else:
                 gb = f"{gpu.vram_mb / 1024:.0f} GB" if gpu.vram_mb else T("显存未知")
                 self._set_card(self.card_gpu, "显卡", gpu.name,
-                               f"{T('显存')} {gb}", icon="🎮")
+                               f"{T('显存')} {gb}", icon="gpu")
             self.card_gpu.setToolTip(
                 f"{T('驱动')} {gpu.driver} → {T('推荐')} torch {gpu.torch_variant}")
         else:
             self._set_card(self.card_gpu, "显卡", gpu.name or T("未检测到"),
-                           fallback_label, icon="🎮")
+                           fallback_label, icon="gpu")
             self.card_gpu.setToolTip("")
 
     def _refresh_disk_card(self):
@@ -528,7 +530,7 @@ class HomePage(QWidget):
         self._set_card(self.card_disk, f"{drive} {T('盘空间')}",
                        f"{d['free_gb']:.0f} GB {T('可用')}",
                        f"{T('共')} {d['total_gb']:.0f} GB",
-                       icon="💾", pct=used_pct)
+                       icon="disk", pct=used_pct)
 
     def _refresh_live(self):
         """只刷会变的（内存/CPU/显存占用）；磁盘容量是静态信息不用每秒重画"""
@@ -536,11 +538,11 @@ class HomePage(QWidget):
         self._set_card(self.card_ram, "内存",
                        f"{r['used_gb']:.1f} / {r['total_gb']:.0f} GB",
                        f"{T('占用')} {r['percent']:.0f}%",
-                       icon="🧠", pct=r['percent'])
+                       icon="ram", pct=r['percent'])
         c = sysinfo.cpu_info()
         self._set_card(self.card_cpu, "处理器",
                        f"{c['cores_physical']}{T('核')}/{c['cores_logical']}{T('线程')}",
                        f"{T('占用')} {c['usage']:.0f}%",
-                       icon="⚙", pct=c['usage'])
+                       icon="cpu", pct=c['usage'])
         # 显存占用是动态数据（sysinfo.gpu_vram_usage 内部 3s 节流，不会每秒 spawn nvidia-smi）
         self._refresh_gpu_card()

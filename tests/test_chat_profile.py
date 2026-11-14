@@ -194,7 +194,7 @@ def main():
     try:
         cid = ai_chat_store.new_id()
         fake = types.SimpleNamespace(
-            _chat_id=cid, _history=[], _summary="", _summary_upto=0,
+            _chat_id=cid, _history=[], _summary="", _summary_upto=0, _summary_inst="", _artifacts=[],
             _chat_skills=[], _profile={"topic": "minimax 音乐"})
         ai_page.AiPage._save_chat(fake)
         d = ai_chat_store.load(cid)
@@ -206,7 +206,7 @@ def main():
         # 空会话、空设定 → 不产生垃圾记录
         cid2 = ai_chat_store.new_id()
         fake2 = types.SimpleNamespace(
-            _chat_id=cid2, _history=[], _summary="", _summary_upto=0,
+            _chat_id=cid2, _history=[], _summary="", _summary_upto=0, _summary_inst="", _artifacts=[],
             _chat_skills=[], _profile={})
         ai_page.AiPage._save_chat(fake2)
         check("全空不落盘", not os.path.isfile(ai_chat_store._path(cid2)), "")
@@ -226,10 +226,11 @@ def main():
         ai_chat_store.save(cid5, [{"role": "user", "content": "写首歌"}],
                            profile={"topic": "minimax 音乐"})
         opened2 = types.SimpleNamespace(
-            _chat_id="", _history=[], _summary="", _summary_upto=0,
+            _chat_id="", _history=[], _summary="", _summary_upto=0, _summary_inst="", _artifacts=[],
             _chat_skills=[], _profile={}, _pending_options=[],
             _last_user="", _atts=[{"kind": "image"}],
-            _save_chat=lambda: None, _clear_flow=lambda: None,
+            _save_chat=lambda: None, _inst=lambda: None, _clear_flow=lambda: None,
+            _pin_bottom=lambda *a, **k: None,
             _greet=lambda: None, _update_session_btn=lambda: None,
             _refresh_atts=lambda: None,
             _user_bubble=lambda t: None, _ai_card=lambda t: None)
@@ -240,10 +241,10 @@ def main():
                            skills=["error-diagnosis"],
                            profile={"topic": "Qwen 生图", "workflow": "qwen_image.json"})
         opened = types.SimpleNamespace(
-            _chat_id="", _history=[], _summary="", _summary_upto=0,
+            _chat_id="", _history=[], _summary="", _summary_upto=0, _summary_inst="", _artifacts=[],
             _chat_skills=["prompt-tuning"], _profile={"topic": "旧用途"},
             _pending_options=["旧选项"], _last_user="", _atts=[],
-            _save_chat=lambda: None,
+            _save_chat=lambda: None, _inst=lambda: None, _pin_bottom=lambda *a, **k: None,
             _clear_flow=lambda: None,
             _greet=lambda: opened_bits.append("greet"),
             _update_session_btn=lambda: None,

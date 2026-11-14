@@ -110,23 +110,30 @@ QToolTip {
     background: transparent;
 }
 
-/* ===== 顶栏 ===== */
-#TopBar {
-    background: #13171c;
-    border-bottom: 1px solid #2c3442;
+/* ===== 自绘标题栏（2026-11-14：窗口 Frameless 后，这条栏就是标题栏。
+   布局保持旧顶栏形态，底色透明 —— 和内容区（Backdrop）完全一致，
+   深浅主题都自动对，不再有「两条杠两种色」的割裂感） ===== */
+#TitleBar {
+    background: transparent;
+    border: none;
 }
-#TopBar QLabel#AppLogo {
+#TitleBar QLabel#AppLogo {
     color: #e6edf7;
     font-size: 15px;
     font-weight: bold;
     background: transparent;
 }
-#TopBar QLabel#AppTitle {
-    font-size: 15px;
-    font-weight: bold;
-    color: #e6edf7;
+/* 窗口控制三键：图标是矢量自绘（title_bar._glyph_pixmap），这里只管底板 ——
+   常态透明、悬停浅灰、关闭悬停红 */
+#TbMin, #TbMax, #TbClose {
     background: transparent;
+    border: none;
+    border-radius: 8px;
+    padding: 0px;
 }
+#TbMin:hover, #TbMax:hover { background: #2a323f; color: #e6edf7; }
+#TbClose:hover { background: #c42b1c; color: #ffffff; }
+#TbMin:pressed, #TbMax:pressed, #TbClose:pressed { background: #1c222b; }
 
 /* ===== 通用按钮 ===== */
 QPushButton {
@@ -466,6 +473,15 @@ QGroupBox::title {
 #FixBtn:hover { background: rgba(76, 141, 255, 0.30); color: #ffffff; }
 #FixBtn:disabled { background: rgba(255,255,255,0.05); border-color: #343e4d; color: #6c7a8c; }
 
+/* 插件加载失败横幅（plugin_banner.py）：暗琥珀底 + 同族描边。
+   放全局而不是控件里 setStyleSheet——半透明色在浅色主题下没有映射，
+   叠出来是一块看不懂的深棕（2026-11-14 实测），进全局表才能跟主题走。 */
+#PluginBanner {
+    background: #332b1a;
+    border-bottom: 1px solid #59492a;
+}
+#PluginBanner QLabel { background: transparent; color: #d8c9a3; }
+
 #Banner {
     background: rgba(255, 255, 255, 0.025);
     border: 1px solid #343e4d;
@@ -684,53 +700,73 @@ def fit_all_tables(root, row_h: int = TABLE_ROW_H) -> int:
 # 自定义主题 = 深色底 + 面板转半透明（rgba），由主窗背景层负责画用户图片。
 
 # 深色 → 浅色对应值（漏掉的颜色保持原样，因此模板新增颜色时要回来补表）
+#
+# 2026-11-14 用户反馈「浅色模式太白，看久了眼睛疼」：
+# 原来底/面用的是 #ffffff / #eef2f7（冷白），整屏亮度拉满，对比强烈但刺眼。
+# 现在换成**暖米白渐变**（色相偏黄、亮度整体降一档），层次仍靠明度差区分：
+#   页面 #f0ede4 < 凹陷 #e9e6dc < 卡片 #faf8f2 < 悬停 #f5f3ec
+# 文字改成暖近黑（#231f18 系），暖底 + 暖字比冷白 + 纯黑柔和一个量级。
+# 按钮做成「比卡片深一档 + 更明显边框」，否则浅色下按钮和卡片糊成一片（用户报障「按钮没有色差」）。
 _LIGHT_MAP = {
     # ---- 底 / 面板 / 边框 ----
-    "#12151a": "#e4e8ee", "#16191f": "#eef1f5", "#181c22": "#f2f5f9",
-    "#1a1e25": "#eef1f6", "#1c212a": "#ebeff5", "#1e2229": "#f7f8fa",
-    "#20252d": "#e9eef6", "#20252e": "#ffffff", "#22262e": "#e6ebf2",
-    "#232830": "#e2e8f0", "#232a34": "#dbe6f8", "#232c3a": "#d9e3f4",
-    "#242932": "#e3e9f1", "#262c36": "#dfe5ee", "#2a2f38": "#dfe4ec",
-    "#2a3038": "#e7ebf2", "#2a313c": "#dfe6f0", "#333c49": "#ccd4e0",
-    "#363f4d": "#c4ccd8", "#3a4250": "#b9c3d1", "#414c5d": "#aeb9c8",
-    "#2f4a75": "#cfe0fb", "#1e3a28": "#e3f5e9",
+    "#12151a": "#edeae1", "#16191f": "#f0eee6", "#181c22": "#f3f1ea",
+    "#1a1e25": "#eeece3", "#1c212a": "#ebe8df", "#1e2229": "#f7f5ee",
+    "#20252d": "#e7e4da", "#20252e": "#faf8f2", "#22262e": "#e4e1d7",
+    "#232830": "#e0ddd3", "#232a34": "#dfe6f4", "#232c3a": "#dbe4f2",
+    "#242932": "#e1ded4", "#262c36": "#dddad0", "#2a2f38": "#e2dfd5",
+    "#2a3038": "#e6e3d9", "#2a313c": "#e0e4ee", "#333c49": "#c9c5ba",
+    "#363f4d": "#c3bfb4", "#3a4250": "#b8b4a9", "#414c5d": "#ada99e",
+    "#2f4a75": "#cfe0fb", "#1e3a28": "#e3f0e6",
     # ---- v2 新增底色（2026-11-08）----
-    "#141920": "#f7f8fa", "#0f1216": "#eceff4", "#13171c": "#eef1f5",
-    "#1b2029": "#ffffff", "#14181e": "#f4f7fb", "#171c23": "#eef2f7",
-    "#1e242d": "#e9edf4", "#212734": "#e4ecf8", "#212a37": "#eaf0f8",
-    "#2c3442": "#e3e9f1", "#232a35": "#e7ecf3", "#343e4d": "#dfe5ee",
-    "#2a313b": "#e5eaf1", "#2b4674": "#cfe0fb", "#2c3644": "#e0e6ee",
-    "#3c4757": "#ccd4e0", "#313b4a": "#cfd7e3", "#31507f": "#a9c3ea",
+    "#141920": "#eeece3", "#0f1216": "#e8e5db", "#13171c": "#ece9e0",
+    "#1b2029": "#faf8f2", "#14181e": "#e9e6dc", "#171c23": "#f5f3ec",
+    "#1e242d": "#efede4", "#212734": "#e6ecf7", "#212a37": "#eaf0f8",
+    "#2c3442": "#e2dfd5", "#232a35": "#ece7d9", "#343e4d": "#d8d4c8",
+    "#2a313b": "#e5e2d8", "#2b4674": "#d5e3f9", "#2c3644": "#e0dcd2",
+    "#3c4757": "#cac6bb", "#313b4a": "#d0cdc2", "#31507f": "#a9c3ea",
     # 滚动条 handle（2026-11-08 提高对比度后新增）
-    "#55637a": "#b4bfcd", "#6f7f99": "#97a3b2",
-    "#33507a": "#b6cbe8", "#3b4a60": "#c2ccda", "#1d2a3d": "#dbe6f8",
-    "#16322a": "#e3f5e9", "#2b6a53": "#9fd3bc",
-    # ---- 文本 / 中性灰 ----
-    "#d8dee6": "#1f2430", "#e8edf3": "#12161d", "#b8c2ce": "#3c4655",
-    "#9aa4b2": "#5b6675", "#8fa3bf": "#5a6b82", "#8a94a2": "#707c8b",
-    "#7d8797": "#6b7684", "#5a636f": "#97a1ae", "#5a6472": "#98a2af",
-    "#5a6a80": "#8b98a8",
+    "#55637a": "#c3beb2", "#6f7f99": "#a7a296",
+    "#33507a": "#b6cbe8", "#3b4a60": "#c1bdb2", "#1d2a3d": "#dbe6f8",
+    "#16322a": "#e3f0e6", "#2b6a53": "#9fd3bc",
+    # ---- 文本 / 中性灰（暖近黑，别用纯黑：纯黑压在米白上反差过猛）----
+    "#d8dee6": "#231f18", "#e8edf3": "#171310", "#b8c2ce": "#3f3a31",
+    "#9aa4b2": "#5c574c", "#8fa3bf": "#4f6480", "#8a94a2": "#736e63",
+    "#7d8797": "#6d685d", "#5a636f": "#979186", "#5a6472": "#989287",
+    "#5a6a80": "#7b8798",
     # v2 文本
-    "#e6edf7": "#14191f", "#dbe3ee": "#1c222c", "#a9b7c8": "#4a5563",
-    "#94a2b4": "#5b6675", "#8c9aab": "#67717f", "#7f8b9c": "#6f7a88",
-    "#8a97a9": "#66717f",
-    "#6c7a8c": "#77818f", "#5f6b7a": "#909aa8", "#4a5768": "#9aa5b3",
-    "#6f87a6": "#7b8ea6", "#b9c5d4": "#3f4a58", "#c7d2e0": "#333d4a",
+    "#e6edf7": "#1f1b14", "#dbe3ee": "#2a251d", "#a9b7c8": "#4e493f",
+    "#94a2b4": "#5c574c", "#8c9aab": "#676157", "#7f8b9c": "#5b564c",
+    "#8a97a9": "#666156",
+    "#6c7a8c": "#787268", "#5f6b7a": "#918b80", "#4a5768": "#8a8478",
+    "#6f87a6": "#6b7f97", "#b9c5d4": "#3f3a30", "#c7d2e0": "#332e25",
+    # 控件级样式表里出现过的（2026-11-14 补：AI 页会话列表/搜索框/气泡）
+    "#c9d3e0": "#2f2a21", "#8a93a3": "#6b6559", "#a9b1bd": "#565146",
+    "#c3c9d4": "#3a352c", "#e6eaf0": "#2f2a21", "#7f8894": "#6f695e",
+    "#a9b7c8": "#4e493f", "#262e3a": "#e8e5db", "#2f3a4a": "#dbe3f2",
+    "#1a1f27": "#f3f1e9", "#2a3340": "#d5d1c5", "#232b36": "#e6e3d9",
+    "#12161c": "#eae7de", "#1f2430": "#221e17", "#2a323f": "#e3ddcd",
+    "#1c222b": "#dbd5c3", "#333b47": "#cdc7b8",
     # ---- 强调蓝 ----
-    "#3d8bff": "#2470e0", "#3d7ee2": "#2a6ad0", "#4da3ff": "#2b7fe8",
+    "#3d8bff": "#2470e0", "#3d7ee2": "#2a6ad0", "#4da3ff": "#1f5fc4",
     "#4a83f2": "#2a6ad0", "#2f6fd6": "#1f5fc4", "#2f6fed": "#1a56c4",
     "#1d5bb8": "#1a4fa0",
     # v2 强调蓝
-    "#4c8dff": "#2470e0", "#5aa0ff": "#2a6ad0", "#3a72d8": "#1f5fc4",
-    "#2f63c4": "#1a4fa0", "#6fa8ff": "#2b7fe8",
+    "#4c8dff": "#1f5fc4", "#5aa0ff": "#2a6ad0", "#3a72d8": "#1f5fc4",
+    "#2f63c4": "#1a4fa0", "#6fa8ff": "#1f5fc4", "#2f6fb2": "#1f5fc4",
     # ---- 语义色（绿 / 红 / 橙）----
-    "#4cd47c": "#16a34a", "#37a063": "#1b7d4e", "#379a63": "#1c7a4d",
+    "#4cd47c": "#0b7a3c", "#37a063": "#1b7d4e", "#379a63": "#1c7a4d",
     "#2e8b57": "#1f7a4a", "#e46e6e": "#c9503f", "#e8635a": "#cf4436",
     "#d95f5f": "#c0392b", "#b74646": "#b42318", "#b34848": "#b02a1f",
     "#a63a3a": "#b42318", "#e8a33d": "#a9750f", "#e8871e": "#b8670a",
     # v2 语义色
-    "#3ecf8e": "#16a34a", "#f0616d": "#cf222e", "#d9534f": "#c0392b",
+    "#3ecf8e": "#0b7a3c", "#f0616d": "#cf222e", "#d9534f": "#c0392b",
     "#e35f66": "#c9503f", "#35a06a": "#1b7d4e", "#47536a": "#aeb9c8",
+    # 插件加载失败横幅（#PluginBanner）
+    "#332b1a": "#f3ead6", "#59492a": "#d9c697", "#d8c9a3": "#5a4a22",
+    "#e2888a": "#c0392b", "#e24b4a": "#c0392b", "#ff9c9c": "#b42318",
+    "#ff6b6b": "#b42318",
+    # 运行期着色（QColor / 富文本）用到的
+    "#6fb3ff": "#1f5fc4", "#7aa2d0": "#456080", "#ffb347": "#a9750f", "#b78cff": "#6b4bb8",
 }
 
 # 亮度阈值：低于它的颜色视为「底 / 面」，自定义主题下转半透明；
@@ -758,14 +794,116 @@ def _rgba(h: str, alpha: float) -> str:
     return "rgba(%d,%d,%d,%d%%)" % (r, g, b, pct)
 
 
+_RGBA_RE_SRC = r"rgba\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*([\d.]+%?)\s*\)"
+
+
 def _replace_colors(qss: str, mapping: dict) -> str:
-    """把模板里的 hex 颜色按表替换（大小写不敏感，未入表的原样保留）"""
+    """把模板里的 hex / rgba 颜色按表替换（大小写不敏感，未入表的原样保留）
+
+    rgba 也要换（2026-11-14）：页面里大量半透明面板写的是
+    `background: rgba(27,32,41,0.92)`，只认 hex 的话浅色主题下这些面板会留在深色，
+    表现就是「白底里嵌一块黑板」。规则：用 RGB 三元组去表里找浅色，alpha 原样保留。
+    """
     import re
-    return re.sub(r"#[0-9a-fA-F]{6}",
-                  lambda m: mapping.get(m.group(0).lower(), m.group(0)), qss)
+    out = re.sub(r"#[0-9a-fA-F]{6}",
+                 lambda m: mapping.get(m.group(0).lower(), m.group(0)), qss)
+
+    def _sub(m):
+        key = "#%02x%02x%02x" % (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        tgt = mapping.get(key)
+        if not tgt or not tgt.startswith("#") or len(tgt) != 7:
+            return m.group(0)          # 表里没有 / 目标不是 hex（自定义主题）→ 不动
+        r, g, b = _hex_rgb(tgt)
+        return "rgba(%d,%d,%d,%s)" % (r, g, b, m.group(4))
+
+    return re.sub(_RGBA_RE_SRC, _sub, out)
 
 
 _SURFACE_SET = None
+
+# ============ 控件级样式表的主题重染（2026-11-14） ============
+# 为什么需要：全局 QSS 走 _replace_colors，但页面里还有 ~200 处
+# `w.setStyleSheet("background:#1b2029; color:#c9d3e0")` —— 控件级样式，
+# 完全不经过主题表。浅色主题下这些控件就留在深色（截图里 AI 页会话列表整块黑），
+# 而主题切换时控件级样式也不会重建。
+# 做法：在 QWidget.setStyleSheet 上装一层「记住深色原文 + 按当前模式重染」，
+# 主题切换时 retint_all() 重放。以后新增代码照常 setStyleSheet 就自动跟随主题，
+# 不需要每处手写判断 —— 这条规则要一直保留。
+_CUR_MODE = "dark"
+_HOOKED = False
+
+
+def current_mode() -> str:
+    """当前实际渲染模式（dark / light / custom）"""
+    return _CUR_MODE
+
+
+def tint(qss: str) -> str:
+    """按当前模式重染一段控件级 QSS（dark/custom 原样返回）"""
+    if not qss or _CUR_MODE != "light":
+        return qss
+    return _replace_colors(qss, _LIGHT_MAP)
+
+
+def style(widget, qss: str) -> None:
+    """给控件套主题感知样式表（等价 setStyleSheet，但浅色下自动换色）
+
+    setStyleSheet 已被 install_widget_hooks() 接管，这里只是给新代码一个
+    语义明确、读起来知道「这段样式会跟着主题走」的入口。
+    """
+    widget.setStyleSheet(qss)
+
+
+def fg(color: str) -> str:
+    """运行期前景色（QColor / 富文本 span）：浅色主题下换成语义相同的深色
+
+    QSS 那条路有 _replace_colors，但 `QColor("#4cd47c")`、`<span style='color:#...'>`
+    这类写死在代码里的颜色 QSS 管不到 —— 浅色主题下就成了「浅底 + 粉彩字」，
+    控制台日志实测几乎读不出来。这些地方统一走 fg()。
+    """
+    if _CUR_MODE != "light" or not color:
+        return color
+    return _LIGHT_MAP.get(str(color).strip().lower(), color)
+
+
+def install_widget_hooks() -> bool:
+    """给 QWidget.setStyleSheet 装主题重染（幂等，返回是否本次新装）"""
+    global _HOOKED
+    if _HOOKED:
+        return False
+    from PySide6.QtWidgets import QWidget
+    _orig = QWidget.setStyleSheet
+
+    def _set_style_sheet(self, qss):
+        # 只记"作者写的深色原文"，主题切换时才能重染出正确结果
+        try:
+            self._theme_src_qss = qss
+        except Exception:
+            pass
+        _orig(self, tint(qss) if qss else qss)
+
+    QWidget.setStyleSheet = _set_style_sheet
+    _HOOKED = True
+    return True
+
+
+def retint_all(app=None) -> int:
+    """主题切换后重放所有控件级样式表，返回重染的数量"""
+    from PySide6.QtWidgets import QApplication
+    app = app or QApplication.instance()
+    if app is None:
+        return 0
+    n = 0
+    for w in app.allWidgets():
+        src = getattr(w, "_theme_src_qss", None)
+        if not src:
+            continue
+        try:
+            w.setStyleSheet(src)
+            n += 1
+        except Exception:
+            continue
+    return n
 
 
 def _dark_surfaces() -> set:
@@ -802,6 +940,79 @@ def resolve_mode(mode: str) -> str:
     if mode in ("dark", "light", "custom"):
         return mode
     return "dark"
+
+
+# ============ 背景图可读性自适应（2026-11-14 用户反馈「暗图黑字看不见、
+# 亮图亮字看不清」方案 A） ============
+
+_BG_STATS_CACHE = {}     # path -> ((mtime, size), stats)
+
+
+def analyze_background(path: str) -> dict:
+    """图片亮度统计：avg / p10 / p90（0~1 灰度），带 mtime 缓存。
+
+    缩到 64×64 再采样 —— 人眼对背景图的「明暗分布」感知是低频的，
+    4096 个点足够稳，且大图也瞬间完成。
+    """
+    from PySide6.QtGui import QImage
+    from PySide6.QtCore import Qt as _Qt
+    try:
+        st = _os.stat(path)
+        sig = (int(st.st_mtime), st.st_size)
+    except OSError:
+        sig = None
+    hit = _BG_STATS_CACHE.get(path)
+    if hit and hit[0] == sig:
+        return hit[1]
+    stats = {"avg": 0.5, "p10": 0.5, "p90": 0.5}
+    img = QImage(path)
+    if not img.isNull():
+        small = img.scaled(64, 64, _Qt.IgnoreAspectRatio,
+                           _Qt.SmoothTransformation)
+        vals = []
+        for y in range(small.height()):
+            for x in range(small.width()):
+                vals.append(small.pixelColor(x, y).lightness() / 255.0)
+        vals.sort()
+        n = len(vals) or 1
+        stats = {"avg": sum(vals) / n,
+                 "p10": vals[int(n * 0.10)],
+                 "p90": vals[min(n - 1, int(n * 0.90))]}
+    _BG_STATS_CACHE[path] = (sig, stats)
+    return stats
+
+
+def auto_contrast(bg_path: str, user_alpha: float) -> dict:
+    """按图片亮度决定 custom 主题的字色极性与面板最低不透明度。
+
+    · 字色极性：图片平均亮度 ≥0.55 判为「偏亮图」→ 浅底深字（light 极性），
+      否则维持深底亮字（dark 极性，UI 默认观感）。
+    · 底板浓度：文字色由极性定死，最怕图里「和文字同亮度」的局部 ——
+      透过底板后的最坏背景亮度 B' = B·(1-a) + S·a 必须与文字拉开 0.35：
+        dark 极性取 B=p90（亮斑是威胁），light 极性取 B=p10（暗斑是威胁）。
+    · 用户滑杆是不透明度「下限」：auto 只会往上抬，不会把用户调透的改实。
+    """
+    user_alpha = max(0.35, min(1.0, float(user_alpha or 0.72)))
+    if not bg_path:
+        return {"resolved": "dark", "alpha": user_alpha}
+    st = analyze_background(bg_path)
+    LIGHT_TEXT, DARK_TEXT = 0.87, 0.13      # 亮字/暗字的感知亮度
+    SCRIM_DARK, SCRIM_LIGHT = 0.10, 0.92    # 深/浅底板的感知亮度
+    REQ = 0.35                              # 文字与透底后背景的最小亮度差
+    if st["avg"] >= 0.55:
+        resolved = "light"
+        B = st["p10"]                       # 浅底深字：怕图里暗的局部
+        need = 0.0
+        if B < DARK_TEXT + REQ and SCRIM_LIGHT > B:
+            need = ((DARK_TEXT + REQ) - B) / (SCRIM_LIGHT - B)
+    else:
+        resolved = "dark"
+        B = st["p90"]                       # 深底亮字：怕图里亮的局部
+        need = 0.0
+        if B > LIGHT_TEXT - REQ and B > SCRIM_DARK:
+            need = (B - (LIGHT_TEXT - REQ)) / (B - SCRIM_DARK)
+    a = max(0.35, min(0.97, max(user_alpha, need)))
+    return {"resolved": resolved, "alpha": a}
 
 
 # 自定义背景下的"描边补偿"（2026-11-07 用户报障）：
@@ -887,23 +1098,47 @@ def polish_styled_bg(root) -> int:
     return n
 
 
-def page_scrim_rgba(alpha: float, strength: float = 0.25) -> str:
+def page_scrim_rgba(alpha: float, strength: float = 0.25,
+                    light: bool = False) -> str:
     """页面级底板颜色（2026-11-07）。
 
     strength=0.25：表单页用——底下已叠分组框/卡片多层，页面层只补薄薄一层统一色调；
     strength=1.0：聊天类页面（AI 助手）用——聊天容器被 custom 主题强制透明、
     卡片本身很淡，需要页面层自己承担一整层（等效单层左栏）才有可读性。
     strength 按层叠系数缩放：0.25 → eff*0.25，1.0 → eff*0.6（与全局面板同档）。
+    light=True：自定义主题 + 偏亮背景图的浅色极性（2026-11-14 方案 A）——
+    底板换成暖米白半透明，配深色字。
     """
     eff = max(0.08, min(1.0, float(alpha) ** 1.8 * 0.6))
+    if light:
+        return f"rgba(250,248,242,{eff * strength:.3f})"
     return f"rgba(22,25,31,{eff * strength:.3f})"
 
 
-def build_qss(mode: str = "dark", alpha: float = 0.72) -> str:
-    """按模式产出 QSS：dark 原样 / light 换调色板 / custom 深色底 + 面板半透明"""
+# 浅色专属纠偏（2026-11-14）：
+# 模板里有些「白字」是压在深色底上的（如状态卡数值、表格选中行、CatChip 选中态）。
+# 底色被换成浅色后白字就看不见了 —— 这些不能靠颜色映射修（#ffffff 同时是
+# 强调按钮的前景色，映射成深色反而把蓝按钮写坏），只能按选择器单独纠偏。
+_LIGHT_PATCH = """
+#CardValue, #StatValue { color: #221e17; }
+#SideNav QListWidget::item:selected { color: #221e17; }
+QTableWidget::item:selected, QTableWidget::item:focus { color: #221e17; }
+#CatChip:checked { color: #221e17; }
+#FixBtn:hover { color: #221e17; }
+#StatBar { background: #e0ddd3; }
+"""
+
+
+def build_qss(mode: str = "dark", alpha: float = 0.72,
+              custom_light: bool = False) -> str:
+    """按模式产出 QSS：dark 原样 / light 换调色板 / custom 面板半透明。
+
+    custom_light（2026-11-14 方案 A）：自定义主题 + 偏亮背景图 → 整体换
+    浅色调色板后再把「面板表面」换成半透明浅色，深色字压在浅底板上才可读。
+    """
     resolved = resolve_mode(mode)
     if resolved == "light":
-        return _replace_colors(DARK_QSS, _LIGHT_MAP)
+        return _replace_colors(DARK_QSS, _LIGHT_MAP) + _LIGHT_PATCH
     if resolved == "custom":
         # 面板是多层嵌套的（页面 → 分组 → 卡片），alpha 直接相乘会把背景图吃光：
         # 三层 55% 只剩 9% 透光。幂次衰减缓解一部分。
@@ -911,10 +1146,20 @@ def build_qss(mode: str = "dark", alpha: float = 0.72) -> str:
         # 实测三层 eff=0.6 叠乘后页面亮度只有左栏的 1/3（35 vs 96），
         # 这里再乘 0.6，让叠乘后的整体透光率接近单层左栏，图能明显透出来。
         eff = max(0.08, min(1.0, float(alpha) ** 1.8 * 0.6))
-        mapping = {c: _rgba(c, eff) for c in _dark_surfaces()}
+        if custom_light:
+            # 先整体换浅色调色板（含白字纠偏补丁），再把浅色表面换回半透明
+            qss = _replace_colors(DARK_QSS, _LIGHT_MAP) + _LIGHT_PATCH
+            mapping = {}
+            for c in _dark_surfaces():
+                lt = _LIGHT_MAP.get(c, c)
+                mapping[lt] = _rgba(lt, eff)
+            qss = _replace_colors(qss, mapping)
+        else:
+            mapping = {c: _rgba(c, eff) for c in _dark_surfaces()}
+            qss = _replace_colors(DARK_QSS, mapping)
         # #Backdrop 是主窗背景层（画用户图片），必须透明才能露出图片；
         # QScrollArea 视口本身吃 palette.Base（不透明），不显式置透会把整页涂死
-        return (_replace_colors(DARK_QSS, mapping)
+        return (qss
                 + "\n#Backdrop { background: transparent; }\n"
                 + "QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }\n"
                 + _CUSTOM_EDGE_PATCH)
@@ -941,39 +1186,73 @@ _LAST_APPLIED = None     # (模式, 透明度)：同一组合不重复 setStyleS
 def apply_theme(app, cfg: dict = None, force: bool = False) -> dict:
     """应用主题：QSS + 调色板（QSS 覆盖不到的回落路径）。返回生效信息供背景层使用。
 
-    幂等：同一 (模式, 透明度) 重复调用直接跳过 —— app.setStyleSheet 会让全应用控件
-    重新 polish，多窗场景（测试矩阵反复建窗）下开销会累积成分钟级（2026-11-01 实测）。
+    幂等：同一 (模式, 极性, 透明度, 模糊, 背景图) 重复调用直接跳过 ——
+    app.setStyleSheet 会让全应用控件重新 polish，多窗场景（测试矩阵反复建窗）
+    下开销会累积成分钟级（2026-11-01 实测）。
+
+    custom 模式（2026-11-14 方案 A）：auto_contrast() 按背景图亮度决定
+    字色极性（偏亮图→浅底深字）并抬高面板不透明度下限，保证可读性。
     """
     from PySide6.QtGui import QPalette, QColor
-    global _LAST_APPLIED
+    global _LAST_APPLIED, _CUR_MODE
     mode, alpha, bg = theme_conf(cfg)
+    st = (cfg or {}).get("settings") or {}
+    try:
+        blur = max(0, min(24, int(st.get("bg_blur", 0) or 0)))
+    except (TypeError, ValueError):
+        blur = 0
+    # 背景图位置/缩放（2026-11-14 调整窗）：zoom 1~4，off 归一化 -0.5~0.5
+    def _f(key, default, lo, hi):
+        try:
+            return max(lo, min(hi, float(st.get(key, default) if st.get(key) is not None else default)))
+        except (TypeError, ValueError):
+            return default
+    bg_zoom = _f("bg_zoom", 1.0, 1.0, 4.0)
+    bg_off_x = _f("bg_off_x", 0.0, -0.5, 0.5)
+    bg_off_y = _f("bg_off_y", 0.0, -0.5, 0.5)
     resolved = resolve_mode(mode)
-    sig = (resolved, round(alpha, 3))
+    custom_light = False
+    if resolved == "custom":
+        ac = auto_contrast(bg, alpha)
+        custom_light = (ac["resolved"] == "light")
+        alpha = ac["alpha"]
+    sig = (resolved, custom_light, round(alpha, 3), blur, bg)
+    info = {"mode": mode, "resolved": resolved, "custom_light": custom_light,
+            "alpha": alpha, "bg_image": bg, "blur": blur,
+            "bg_zoom": bg_zoom, "bg_off_x": bg_off_x, "bg_off_y": bg_off_y}
     if sig == _LAST_APPLIED and not force:
-        return {"mode": mode, "resolved": resolved, "alpha": alpha, "bg_image": bg}
-    app.setStyleSheet(build_qss(resolved if resolved == "custom" else resolved, alpha))
+        return info
+    # 顺序要紧：先切模式 → 再产 QSS → 再重染控件级样式，
+    # 否则 tint() 会用上一轮的模式替换，浅色下残留深色（这就是之前的老毛病）
+    # custom_light 也按 light 走：运行期 fg() 颜色要跟着换深色
+    _CUR_MODE = "light" if (resolved == "light" or custom_light) else resolved
+    install_widget_hooks()
+    app.setStyleSheet(build_qss(resolved, alpha, custom_light=custom_light))
+    retint_all(app)
 
     # 调色板：单元格 current、输入框 base 等回落路径仍走系统 palette，
     # 深色系统下 highlight=黑会「单击单元格变黑」（2026-10-27 实测），跟着主题一起给值。
-    is_light = (resolved == "light")
+    is_light = (resolved == "light" or custom_light)
     is_custom = (resolved == "custom")
     # 自定义主题：palette 也带 alpha，否则走 palette 的回落路径（视口/输入框）
     # 会用不透明深色把背景图整片盖掉
     a = int(max(0.0, min(1.0, alpha)) * 255) if is_custom else 255
     pal = app.palette()
     pal.setColor(QPalette.Highlight, QColor("#cfe0fb" if is_light else "#2b4674"))
-    pal.setColor(QPalette.HighlightedText, QColor("#1f2430" if is_light else "#ffffff"))
-    pal.setColor(QPalette.Base, QColor(255 if is_light else 20, 255 if is_light else 24,
-                                       255 if is_light else 30, a))
-    pal.setColor(QPalette.AlternateBase, QColor(242 if is_light else 23, 245 if is_light else 28,
-                                                249 if is_light else 35, a))
-    pal.setColor(QPalette.Text, QColor("#1f2430" if is_light else "#e6edf7"))
-    pal.setColor(QPalette.WindowText, QColor("#1f2430" if is_light else "#e6edf7"))
-    pal.setColor(QPalette.Window, QColor(247 if is_light else 23, 248 if is_light else 27,
-                                         250 if is_light else 33, a))
+    pal.setColor(QPalette.HighlightedText, QColor("#221e17" if is_light else "#ffffff"))
+    # 浅色回落底色跟 QSS 同一档暖米白（2026-11-14）：palette 漏改会出现
+    # 「输入框/视口是冷白 #ffffff、周围是米白」的花屏感
+    pal.setColor(QPalette.Base, QColor(250 if is_light else 20, 248 if is_light else 24,
+                                       242 if is_light else 30, a))
+    pal.setColor(QPalette.AlternateBase, QColor(245 if is_light else 23, 243 if is_light else 28,
+                                                236 if is_light else 35, a))
+    pal.setColor(QPalette.Text, QColor("#221e17" if is_light else "#e6edf7"))
+    pal.setColor(QPalette.WindowText, QColor("#221e17" if is_light else "#e6edf7"))
+    pal.setColor(QPalette.Window, QColor(240 if is_light else 23, 237 if is_light else 27,
+                                         228 if is_light else 33, a))
     app.setPalette(pal)
     _LAST_APPLIED = sig
-    return {"mode": mode, "resolved": resolved, "alpha": alpha, "bg_image": bg}
+    return info
 
 
 def polish_tables(root) -> int:
@@ -1004,3 +1283,12 @@ def polish_tables(root) -> int:
         hh.setHighlightSections(False)
         n += 1
     return n
+
+
+# 模块导入即装钩子（2026-11-14）：
+# 只在 apply_theme 里装就晚了 —— 主窗在 apply_theme 之前就构造好了页面，
+# 那些控件级样式没被记录，之后主题切换/重染都摸不到它们（浅色下就是黑块）。
+try:
+    install_widget_hooks()
+except Exception:
+    pass

@@ -14,7 +14,7 @@ Unicode true
 ; ---------- 基本信息 ----------
 !define APP_NAME       "ComfyHub"
 !define APP_NAME_CN    "ComfyHub 多实例管理器"
-!define APP_VERSION    "0.8.29"
+!define APP_VERSION    "0.8.30"
 !define APP_PUBLISHER  "LeiMengStudio"
 !define APP_URL        "https://gitee.com/yzdydwdd/ComfyHub"
 !define APP_EXE        "ComfyHub.exe"
@@ -32,7 +32,7 @@ SetCompressor /SOLID lzma
 ShowInstDetails show
 ShowUninstDetails show
 
-VIProductVersion "0.8.29.0"
+VIProductVersion "0.8.30.0"
 VIAddVersionKey "ProductName"     "${APP_NAME_CN}"
 VIAddVersionKey "FileDescription" "${APP_NAME_CN} 安装程序"
 VIAddVersionKey "FileVersion"     "${APP_VERSION}"
@@ -217,6 +217,8 @@ Section "文档"
     SetOutPath "$INSTDIR\docs"
     File "..\docs\COMPLIANCE.md"
     File "..\docs\COMPETITORS.md"
+    ; 版本更新简介（2026-11-15）：升级首启弹窗的数据源（app/whats_new.py）
+    File "..\docs\RELEASE_*.md"
     SetOutPath "$INSTDIR"
 SectionEnd
 

@@ -309,17 +309,22 @@ class PlanExecutor:
         if r.returncode != 0:
             raise RuntimeError((r.stderr or "")[-200:])
         log(f"  插件克隆完成: {name}")
-        # 顺手装插件依赖（对标管理大师）
-        req = os.path.join(dest, "requirements.txt")
-        if os.path.isfile(req):
-            mirror = PYPI_MIRRORS["阿里云"]
-            import subprocess
-            r2 = run(
-                [self.inst["python_path"], "-m", "pip", "install",
-                 "-r", req, "-i", mirror, "--no-warn-script-location"],
-                capture_output=True, text=True, encoding="utf-8",
-                errors="replace", timeout=3600)
-            log("  插件依赖安装" + ("完成" if r2.returncode == 0 else "失败（可手动补装）"))
+        # 顺手装插件依赖 —— 必须带约束（原来直接 pip install -r）：
+        # 插件 requirements 里常写 torch==2.1.0 或 numpy<2，裸装会把 ComfyHub
+        # 按显卡装好的 CUDA torch 换成 CPU 版，环境从此报废且极难查。
+        from app import plugin_deps
+        try:
+            res = plugin_deps.install_for_dirs(
+                self.inst["python_path"], [(name, dest)], log=log,
+                mirror=PYPI_MIRRORS["阿里云"])
+        except Exception as e:
+            res = {"ok": False, "error": str(e)[:200]}
+        if not res.get("ok"):
+            # 不再只写一行日志：把结果记进实例，启动后会由日志哨兵/依赖自检
+            # 再次提示，用户至少有一条能点的路径，而不是「能启动就以为没事」
+            detail = res.get("error") or "部分包没有 Windows 轮子"
+            log(f"  ⚠️ 插件依赖未装全（{detail}）——"
+                f"可在 环境管理 → 依赖管理 点「插件依赖自检」补装")
 
     def _pip_install(self, content, log):
         # content: 包名字符串或 "pkg1 pkg2"

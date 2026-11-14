@@ -650,6 +650,37 @@ def install_comfyui_manager(comfyui_path: str, log=print, proxy: str = "") -> st
         return ""
 
 
+def install_manager_deps(comfyui_path: str, python_exe: str, log=print,
+                         mirror: str = "") -> dict:
+    """补装 ComfyUI-Manager 自己的依赖（GitPython / PyGithub / typer 等 8 个）
+
+    为什么要有：`install_comfyui_manager` 只解压 zip，Manager 的 requirements.txt
+    从来没人装。全新机器上 Manager 就此残缺（它会在网页里提示依赖缺失，用户
+    多半不知道要理），等于我们装进去的东西自己就是坏的。
+
+    ⚠️ 必须在 ComfyUI 本体 requirements 之后、torch 之前/之后都可以，但不能在
+    `install_comfyui_manager` 里顺手装 —— 那时解释器连 pip 依赖都没有，拉
+    transformers 大概率把 torch 的解析链拖进来。
+
+    失败不抛异常：Manager 残了不影响 ComfyUI 主流程，只记日志。
+    """
+    dest = os.path.join(comfyui_path or "", "custom_nodes", "ComfyUI-Manager")
+    if not os.path.isdir(dest):
+        return {"ok": True, "skipped": "Manager 未安装"}
+    if not os.path.isfile(os.path.join(dest, "requirements.txt")):
+        return {"ok": True, "skipped": "Manager 无 requirements.txt"}
+    from app import plugin_deps
+    log("检查 ComfyUI-Manager 运行依赖…")
+    res = plugin_deps.install_for_dirs(
+        python_exe, [("ComfyUI-Manager", dest)],
+        log=log, mirror=mirror or PYPI_MIRRORS["阿里云"])
+    if not res["ok"]:
+        log("⚠️ ComfyUI-Manager 依赖没装全（%s）——不影响 ComfyUI 本体运行，"
+            "可稍后在 环境管理 → 依赖管理 点「插件依赖自检」补装"
+            % (res.get("error") or "部分包无 Windows 轮子"))
+    return res
+
+
 # ---------------- pip / torch / 依赖 ----------------
 def pip_install(python_exe: str, pkgs: list, index_url: str, log=print,
                 extra: list | None = None, timeout: int = 5400) -> bool:

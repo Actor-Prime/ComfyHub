@@ -19,6 +19,7 @@ from app import instance as inst_lib
 from app import plugin_profiles as pp
 from app import plugin_store as store
 from app.i18n import T
+from app.ui import theme
 from app.config import save_config
 from app.workers import swap_worker
 from app.ui.theme import card_table
@@ -421,13 +422,13 @@ class PluginsPage(QWidget):
             # 悬停显示完整插件名：列被压窄时文字会省略号截断，tooltip 补全
             item.setToolTip(name)
             if pr is not None and (name in want) != p["enabled"]:
-                item.setForeground(Qt.gray)
+                item.setForeground(QColor(theme.fg("#7f8b9c")))
                 item.setToolTip(name + "\n与当前模式不一致，点「▶ 应用」同步")
             self.tb.setItem(i, 0, item)
             url = (p.get("url") or "").rstrip("/").removesuffix(".git")
             it_url = QTableWidgetItem(url)
             if url:
-                it_url.setForeground(Qt.cyan)
+                it_url.setForeground(QColor(theme.fg("#4da3ff")))
                 f = it_url.font()
                 f.setUnderline(True)            # 链接语义：点地址开网页
                 it_url.setFont(f)
@@ -439,7 +440,7 @@ class PluginsPage(QWidget):
             # 分支/版本/更新时间先占位，后台 git 信息线程回来再填
             for col in (2, 3, 4):
                 ph = QTableWidgetItem("…" if p["git"] else "—")
-                ph.setForeground(Qt.gray)
+                ph.setForeground(QColor(theme.fg("#7f8b9c")))
                 self.tb.setItem(i, col, ph)
             if p["git"]:
                 git_dirs.append(p["dir"])
@@ -819,7 +820,7 @@ class PluginsPage(QWidget):
             # 链接样式：蓝色+下划线，提示可点开仓库页面
             web = store.web_url(n)
             if web:
-                t.setForeground(QColor("#6fb3ff"))
+                t.setForeground(QColor(theme.fg("#6fb3ff")))
                 f = QFont(t.font())
                 f.setUnderline(True)
                 t.setFont(f)
@@ -832,11 +833,11 @@ class PluginsPage(QWidget):
             dl = int(n.get("_downloads") or 0)
             st_ = int(n.get("_stars") or 0)
             if dl >= 100000 or st_ >= 1000:
-                hot.setForeground(Qt.cyan)
+                hot.setForeground(QColor(theme.fg("#4da3ff")))
             elif dl > 0 or st_ > 0:
-                hot.setForeground(Qt.green)
+                hot.setForeground(QColor(theme.fg("#4cd47c")))
             else:
-                hot.setForeground(Qt.gray)
+                hot.setForeground(QColor(theme.fg("#7f8b9c")))
             hot.setTextAlignment(Qt.AlignCenter)
             hot.setToolTip(f"官方 Registry 下载量 {dl:,}　·　GitHub 星数 {st_:,}"
                            + ("" if (dl or st_) else "\n（该插件未注册到 ComfyUI 官方 Registry）"))
@@ -851,7 +852,7 @@ class PluginsPage(QWidget):
                 guess = guess[:-4]
             if guess in installed:
                 it = QTableWidgetItem("已安装 ✓")
-                it.setForeground(Qt.green)
+                it.setForeground(QColor(theme.fg("#4cd47c")))
                 it.setTextAlignment(Qt.AlignCenter)      # 与按钮列视觉对齐
                 self.tb_market.setItem(i, 4, it)
             else:

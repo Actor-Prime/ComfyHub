@@ -1,4 +1,4 @@
-APP_VERSION = "0.8.29"
+APP_VERSION = "0.8.30"
 
 # -*- coding: utf-8 -*-
 """配置管理：多实例配置持久化 + 自动探测本机 ComfyUI"""
@@ -96,7 +96,21 @@ def load_config() -> dict:
             if isinstance(data, dict):
                 cfg.update(data)
         except Exception:
-            pass  # 配置损坏时回退默认，不崩溃
+            # 配置损坏时回退默认，不崩溃；但**必须先把坏文件留底**再回退，
+            # 否则下次 save_config 会用默认骨架把用户的真配置无声覆盖掉
+            # （2026-11-15 事故：外部工具写了带 BOM 的 UTF-8，json.load 失败，
+            #  回退骨架被写回，用户设置全丢；utf-8-sig 可以吃掉 BOM，一并兼容）
+            try:
+                with open(CONFIG_PATH, "r", encoding="utf-8-sig") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    cfg.update(data)
+            except Exception:
+                try:
+                    import time as _t
+                    os.replace(CONFIG_PATH, CONFIG_PATH + ".bad_%d" % int(_t.time()))
+                except OSError:
+                    pass
     # 密钥解密（2026-11-06）：盘上是 DPAPI 密文，内存里用明文；
     # 解不开（换了机器/用户）就当没填过，别把密文当 Key 发出去
     try:
