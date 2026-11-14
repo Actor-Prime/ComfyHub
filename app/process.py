@@ -500,6 +500,7 @@ class ComfyProcess(QObject):
     """单个 ComfyUI 实例的进程封装"""
     log_line = Signal(str)          # 一行日志
     state_changed = Signal(bool)    # 运行状态变化（True=运行中）
+    ready = Signal(int)             # 服务就绪（参数=实际端口），每轮启动一次
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -707,6 +708,10 @@ class ComfyProcess(QObject):
                 self._ready_announced = True
                 self._ready_timer.stop()
                 self.log_line.emit(f"[ComfyHub] 服务就绪: http://127.0.0.1:{self._port}")
+                try:
+                    self.ready.emit(int(self._port))
+                except Exception:
+                    pass
                 if self._browser_on_ready:
                     import webbrowser
                     webbrowser.open(f"http://127.0.0.1:{self._port}")

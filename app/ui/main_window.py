@@ -4,7 +4,7 @@ import os
 import time as _time
 import uuid
 
-from PySide6.QtCore import QSize, Qt, QRect, QTimer
+from PySide6.QtCore import QSize, Qt, QRect, QRectF, QTimer, QEvent
 from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor
 from app.ui.nav import NAV
 from PySide6.QtWidgets import (
@@ -15,6 +15,8 @@ from PySide6.QtWidgets import (
 
 from app.config import load_config, save_config
 from app.proc_manager import ProcManager
+from app.ui.title_bar import (TitleBar, install_window_grips,
+                              layout_grips, set_grips_visible)
 
 # (emoji, 文字) —— 窄条导航：图标上、文字下
 # 上溯三层：开发环境 = 项目根/app/ui -> 项目根；打包后 = _internal/app/ui -> _internal
@@ -42,35 +44,110 @@ class _Backdrop(QWidget):
     只有「自定义」主题才画图，其余主题补一层与主题一致的低色兜底，
     避免 rgba 面板叠在未绘制区域上出现花屏。图片按 cover 方式裁切铺满，
     并按面板不透明度压暗 —— 面板越透，图越暗，保证文字始终可读。
+    2026-11-14 方案 A/B：resolved 由图片亮度自适应决定（偏亮图自动翻成
+    浅色极性）；可选高斯模糊（设置页「背景模糊」滑杆）抹平局部明暗差。
     """
+
+    _BLUR_CACHE = {}     # (path, blur) -> QPixmap，跨实例复用
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._pix = QPixmap()
         self._alpha = 1.0
         self._resolved = "dark"
+        self._blur = 0
+        self._zoom = 1.0
+        self._off_x = 0.0
+        self._off_y = 0.0
+        self._key = None
 
-    def set_background(self, image_path: str, alpha: float, resolved: str):
+    def set_background(self, image_path: str, alpha: float, resolved: str,
+                       blur: int = 0, zoom: float = 1.0,
+                       off_x: float = 0.0, off_y: float = 0.0):
         self._alpha = alpha
         self._resolved = resolved
-        pm = QPixmap(image_path) if (image_path and os.path.isfile(image_path)) else QPixmap()
-        self._pix = pm
+        self._blur = int(blur or 0)
+        # 配置文件可能被手改出脏值：类型/范围都兜底，别让主窗起不来
+        try:
+            self._zoom = max(1.0, min(4.0, float(zoom)))
+        except (TypeError, ValueError):
+            self._zoom = 1.0
+        try:
+            self._off_x = max(-0.5, min(0.5, float(off_x)))
+        except (TypeError, ValueError):
+            self._off_x = 0.0
+        try:
+            self._off_y = max(-0.5, min(0.5, float(off_y)))
+        except (TypeError, ValueError):
+            self._off_y = 0.0
+        key = (image_path or "", self._blur)
+        if key != self._key:
+            self._key = key
+            self._pix = self._load(image_path or "", self._blur)
         self.update()
+
+    @classmethod
+    def _load(cls, path: str, blur: int) -> QPixmap:
+        """加载背景图：先压到 1600px 内再模糊（大图直接糊会卡秒级）。"""
+        cache = cls._BLUR_CACHE
+        hit = cache.get((path, blur))
+        if hit is not None:
+            return hit
+        pm = QPixmap(path) if (path and os.path.isfile(path)) else QPixmap()
+        if not pm.isNull():
+            if pm.width() > 1600 or pm.height() > 1600:
+                pm = pm.scaled(1600, 1600, Qt.KeepAspectRatio,
+                               Qt.SmoothTransformation)
+            if blur > 0:
+                pm = _blur_pixmap(pm, blur)
+        cache[(path, blur)] = pm
+        # 缓存只留最近 4 张，防用户狂换图撑内存
+        while len(cache) > 4:
+            cache.pop(next(iter(cache)))
+        return pm
 
     def paintEvent(self, _ev):
         p = QPainter(self)
         r = self.rect()
-        p.fillRect(r, QColor("#f7f8fa" if self._resolved == "light" else "#1e2229"))
+        light = (self._resolved == "light")
+        p.fillRect(r, QColor("#f7f8fa" if light else "#1e2229"))
         if self._pix.isNull():
             return
-        scaled = self._pix.scaled(r.size(), Qt.KeepAspectRatioByExpanding,
-                                  Qt.SmoothTransformation)
-        sx = max(0, (scaled.width() - r.width()) // 2)
-        sy = max(0, (scaled.height() - r.height()) // 2)
-        p.drawPixmap(r, scaled, QRect(sx, sy, r.width(), r.height()))
-        # 固定轻度压暗：保证文字在花哨照片上可读，但不要压掉图片本身
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        # 模糊的边缘会有透明羽化圈：按模糊半径把计算用的视口外扩一圈，
+        # 让羽化落在窗口外，四边不会出现一圈"虚边"
+        pad = self._blur * 2
+        vw, vh = r.width() + pad * 2, r.height() + pad * 2
+        # 与调整窗预览同一套 cover 几何（短边贴边基准 + 等比放大 + 偏移），
+        # 保证用户在调整窗里摆的位置和主窗实际效果一致
+        from app.ui.bg_adjust import cover_geometry
+        iw, ih = self._pix.width(), self._pix.height()
+        dw, dh, dx, dy = cover_geometry(vw, vh, iw, ih,
+                                        self._zoom, self._off_x, self._off_y)
+        p.drawPixmap(QRectF(-pad + dx, -pad + dy, dw, dh), self._pix,
+                     QRectF(0, 0, iw, ih))
+        # 固定轻度压暗/提亮：保证文字在花哨照片上可读，但不要压掉图片本身
         # （早期按 1-alpha 取值，面板越透图越黑，实测等于把壁纸抹掉了）
-        p.fillRect(r, QColor(0, 0, 0, 52))
+        p.fillRect(r, QColor(255, 255, 255, 36) if light else QColor(0, 0, 0, 52))
+
+
+def _blur_pixmap(pm: QPixmap, radius: int) -> QPixmap:
+    """高斯模糊（QGraphicsBlurEffect 场景渲染），radius 0~24px。"""
+    from PySide6.QtWidgets import (QGraphicsScene, QGraphicsPixmapItem,
+                                   QGraphicsBlurEffect)
+    scene = QGraphicsScene()
+    item = QGraphicsPixmapItem(pm)
+    eff = QGraphicsBlurEffect()
+    eff.setBlurRadius(radius)
+    eff.setBlurHints(QGraphicsBlurEffect.QualityHint)
+    item.setGraphicsEffect(eff)
+    scene.addItem(item)
+    out = QPixmap(pm.size())
+    out.fill(Qt.transparent)
+    p = QPainter(out)
+    scene.render(p, QRectF(out.rect()))
+    p.end()
+    return out
 
 
 class MainWindow(QMainWindow):
@@ -98,6 +175,11 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self.setMinimumSize(_mw, _mh)
+        # 无边框窗口（2026-11-14）：系统标题栏 + 应用顶栏两层横条叠着被用户
+        # 嫌「显得很廉价」（参考 ComfyUI 管理大师的融合效果）。转 Frameless
+        # 后 TitleBar 一条栏同时当标题栏和工具栏，内容区从它下面直接开始。
+        self.setWindowFlag(Qt.FramelessWindowHint, True)
+        self.setWindowIcon(QIcon(os.path.join(ASSETS_DIR, "icon.ico")))
         self.cfg = load_config()
         # 旧配置里的明文密钥 → 启动时就加密落盘（2026-11-06，一次性迁移）
         if self.cfg.pop("_migrate_key", False):
@@ -185,25 +267,19 @@ class MainWindow(QMainWindow):
         sv.addWidget(self.lb_ver)
         root.addWidget(side)
 
-        # ---------- 右：顶栏 + 内容 ----------
+        # ---------- 右：自绘标题栏 + 内容（2026-11-14 第 3 版）----------
+        # 顶栏布局保持旧形态（页面标题 | 实例切换 | ＋添加 ComfyUI），只是：
+        # ① 窗口 Frameless，去掉系统标题栏（左上角 logo + 窗口标题文字），
+        #    行尾补最小化/最大化/关闭；② 底色透明，与内容区完全一致，去分隔线。
         right = QVBoxLayout()
         right.setContentsMargins(0, 0, 0, 0)
         right.setSpacing(0)
 
-        top = QFrame()
-        top.setObjectName("TopBar")
-        top.setFixedHeight(56)
-        tb = QHBoxLayout(top)
-        tb.setContentsMargins(18, 0, 18, 0)
-        tb.setSpacing(10)
-        self.lb_page = QLabel("工作台")
-        self.lb_page.setObjectName("AppLogo")
-        tb.addWidget(self.lb_page)
-        tb.addStretch()
-
-        lb_inst = QLabel("当前实例")
-        lb_inst.setStyleSheet("color:#7d8797; background:transparent;")
-        tb.addWidget(lb_inst)
+        self.title_bar = TitleBar(self)
+        tb = self.title_bar.host
+        self.lb_inst_cap = QLabel("当前实例")
+        self.lb_inst_cap.setStyleSheet("color:#7d8797; background:transparent;")
+        tb.addWidget(self.lb_inst_cap)
         self.cb_inst = QComboBox()
         self.cb_inst.setMinimumWidth(190)
         self.cb_inst.setFixedHeight(30)
@@ -214,13 +290,10 @@ class MainWindow(QMainWindow):
         b_setup.setFixedHeight(30)
         b_setup.clicked.connect(self._run_setup_wizard)
         tb.addWidget(b_setup)
-        right.addWidget(top)
+        right.addWidget(self.title_bar)
 
-        # 分隔线
-        line = QFrame()
-        line.setFrameShape(QFrame.HLine)
-        line.setStyleSheet("color:#262c36;")
-        right.addWidget(line)
+        # 无边框窗口的边缘缩放热区（装完先摆一次位，之后 resizeEvent 跟随）
+        install_window_grips(self)
 
         # 更新提示条（2026-11-04）：非模态，任何页面都可见
         from app.ui.update_banner import UpdateBanner
@@ -230,6 +303,14 @@ class MainWindow(QMainWindow):
         right.addWidget(self.update_banner)
         self._update_info = None
         self._check_worker = None
+
+        # 插件加载失败提示条（2026-11-14）：ComfyUI 只在日志里报插件 import
+        # 失败，界面一片正常，最后表现为「工作流提交 400」。这条把日志翻成人话。
+        from app.ui.plugin_banner import PluginBanner
+        self.plugin_banner = PluginBanner(self)
+        self.plugin_banner.sig_fix.connect(self._on_deps_fix_clicked)
+        right.addWidget(self.plugin_banner)
+        self._deps_inst = ""        # 横幅当前对应的实例 id
 
         self.stack = QStackedWidget()
         right.addWidget(self.stack, 1)
@@ -273,6 +354,9 @@ class MainWindow(QMainWindow):
         from app.ui.theme import fit_all_tables
         fit_all_tables(self)
 
+        # 插件加载失败 → 顶部提示条（进程层解析日志，UI 层只负责展示）
+        self.procs.on_plugin_failed = self._on_plugin_failed
+
         self._init_tray()
         self._init_task_watch()
         self._init_heartbeat()
@@ -284,6 +368,11 @@ class MainWindow(QMainWindow):
         # 版本检查：每次启动（用户定 2026-11-04），延迟 6s 避开启动高峰
         from PySide6.QtCore import QTimer as _QT
         _QT.singleShot(6000, lambda: self.check_updates(manual=False))
+
+        # 更新内容弹窗（2026-11-15）：低版本升级后的首次启动，展示 git Release
+        # 简介（随包 docs/RELEASE_v*.md，在线兜底）。1.2s 错开启动高峰；
+        # 同版本/降级/首装不弹，失败静默，绝不影响主窗使用。
+        _QT.singleShot(1200, self._maybe_show_whats_new)
 
         # 延迟提醒（2026-11-12 用户需求）：启动满 1 小时后若仍有新版本，主动提醒一次；
         # 用 60s tick 的轻量判断（只在内存里算时间，联网仍受 update_last_check 节流）
@@ -307,6 +396,7 @@ class MainWindow(QMainWindow):
         self._apply_theme()
         self.settings_page.sig_saved.connect(self._apply_theme)   # 设置页保存后实时重绘
         self._init_theme_watch()
+        self._enable_round_corners()
         from app.i18n import apply_language
         apply_language(self, str((self.cfg.get("settings") or {}).get("lang", "zh")))
 
@@ -326,7 +416,9 @@ class MainWindow(QMainWindow):
         info = apply_theme(QApplication.instance(), self.cfg)
         self._backdrop.set_background(
             info["bg_image"] if info["mode"] == "custom" else "",
-            info["alpha"], info["resolved"])
+            info["alpha"], info["resolved"], info.get("blur", 0),
+            info.get("bg_zoom", 1.0), info.get("bg_off_x", 0.0),
+            info.get("bg_off_y", 0.0))
         # 自定义主题下滚动视口会用自己的不透明底把背景图涂掉（palette autoFill），
         # 这里按模式统一关/开；其余主题保持 Qt 原行为不变。
         from PySide6.QtWidgets import QAbstractScrollArea
@@ -341,13 +433,24 @@ class MainWindow(QMainWindow):
                     fn(info)
                 except Exception:
                     pass
+            # 运行期着色的页面（控制台日志按级别上色）QSS 重染摸不到，
+            # 由页面自己实现 refresh_theme() 重放（2026-11-14）
+            ft = getattr(w, "refresh_theme", None)
+            if callable(ft):
+                try:
+                    ft()
+                except Exception:
+                    pass
         # 其余页面统一加底板（2026-11-06）：custom 主题把聊天区等容器强制透明，
         # 没有底板的页面元素会浮在背景图上。
         # 2026-11-07 用户要求：底板透明度必须与左侧栏一致（theme.page_scrim_rgba），
         # 不能比左栏实——否则自定义背景图就失去意义了。
         if custom:
             from app.ui.theme import page_scrim_rgba
-            scrim = page_scrim_rgba(float(info.get("alpha") or 0.72))
+            # 2026-11-14 方案 A：偏亮背景图自动翻浅色极性，页面底板同步换浅色
+            scrim = page_scrim_rgba(
+                float(info.get("alpha") or 0.72),
+                light=bool(info.get("custom_light")))
         for page in (self.home_page, self.comfyui_page, self.plugins_page,
                      self.env_page, self.models_page, self.workflow_page,
                      self.console_page, self.settings_page):
@@ -599,7 +702,7 @@ class MainWindow(QMainWindow):
     # ---------- 导航 ----------
     def _on_nav(self, row):
         self.stack.setCurrentIndex(row)
-        self.lb_page.setText(NAV_ITEMS[row][1])
+        self.title_bar.lb_page.setText(NAV_ITEMS[row][1])
         w = self.stack.currentWidget()
         if hasattr(w, "on_show"):
             w.on_show()
@@ -610,6 +713,57 @@ class MainWindow(QMainWindow):
 
     def goto(self, row):
         self.nav.setCurrentRow(row)
+
+    # ---------- 插件加载失败提示（2026-11-14）----------
+    def _on_plugin_failed(self, iid: str, hit: dict):
+        """进程层解析出「插件加载失败」→ 顶部提示条 + 状态栏一句
+
+        不弹模态框：插件缺依赖多半不影响出图，别把用户从任务里拽出来。
+        """
+        from app import plugin_log
+        text = plugin_log.summarize(hit)
+        if not text:
+            return
+        # 多实例时说清是谁，别让用户以为当前实例坏了
+        name = ""
+        for i in (self.cfg.get("instances") or []):
+            if i.get("id") == iid:
+                name = i.get("name") or ""
+                break
+        cur = self.current_inst()
+        if name and (not cur or cur.get("id") != iid):
+            text = "[%s] %s" % (name, text)
+        deps_hint = plugin_log.has_deps_hint(hit)
+        text += ("　·　多半是插件依赖没装全，可一键补装" if deps_hint
+                 else "　·　可去依赖自检看具体情况")
+        # 一行塞不下所有插件，逐条进 tooltip（用户可能就关心某几个）
+        tip = "\n".join(
+            "%s：%s" % (p.get("name") or "（未识别出插件）",
+                        "、".join(p.get("mods") or []) or "原因未解析出")
+            for p in hit.get("plugins") or [])
+        self._deps_inst = iid
+        self.plugin_banner.show_hit(text, hit.get("lines") or [], deps_hint, tip)
+        self.statusBar().showMessage(text, 12000)
+
+    def _on_deps_fix_clicked(self):
+        """跳「环境管理 → 依赖管理」并直接拉起插件依赖自检"""
+        iid = getattr(self, "_deps_inst", "")
+        # 提示的是别的实例时先切过去——否则自检扫的是当前实例，补错人
+        if iid:
+            for idx, i in enumerate(self.cfg.get("instances") or []):
+                if i.get("id") != iid:
+                    continue
+                if not self.current_inst() or self.current_inst().get("id") != iid:
+                    self.cb_inst.setCurrentIndex(idx)
+                break
+        from app.ui.nav import NAV
+        self.goto(NAV.ENV)
+        try:
+            self.env_page.tabs.setCurrentIndex(2)      # 依赖管理
+            self.env_page._plugin_deps_check()
+        except Exception as e:
+            self.statusBar().showMessage("打开依赖自检失败：%s" % e, 8000)
+        self.plugin_banner.hide()
 
     # ---------- 版本更新（2026-11-04 / 延迟提醒 2026-11-12）----------
     def check_updates(self, manual: bool = False, mode: str = ""):
@@ -868,6 +1022,14 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def _maybe_show_whats_new(self):
+        """升级首启弹「更新内容」（app/whats_new.py，失败静默）。"""
+        try:
+            from app.whats_new import maybe_show
+            maybe_show(self)
+        except Exception:
+            pass
+
     def _run_setup_wizard(self):
         from app.ui.setup_wizard import SetupWizard
         wiz = SetupWizard(self)
@@ -946,6 +1108,42 @@ class MainWindow(QMainWindow):
             log_exc(f"_check_orphans: {e}")
 
     # ---------- 关闭 ----------
+    # ---------- 无边框窗口：边缘热区跟随 / 最大化时收起热区 ----------
+    def _enable_round_corners(self):
+        """Win11 DWM 原生圆角（2026-11-14 用户要求「外边框做圆角」）。
+
+        走系统级 DWMWCP_ROUND：抗锯齿圆角 + 细边框光，比 Qt setMask 的
+        位图掩码锯齿方案好得多，也不影响布局。Win10 没有这个 API，调用
+        静默失败保持直角（Win10 本来也没有圆角窗口语言）。offscreen/
+        测试环境拿不到真 hwnd 同样无害。
+        """
+        import ctypes
+        import sys as _sys
+        if _sys.platform != "win32":
+            return
+        try:
+            hwnd = int(self.winId())
+            DWMWA_WINDOW_CORNER_PREFERENCE = 33
+            DWMWCP_ROUND = 2
+            val = ctypes.c_int(DWMWCP_ROUND)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, DWMWA_WINDOW_CORNER_PREFERENCE,
+                ctypes.byref(val), ctypes.sizeof(val))
+        except Exception:
+            pass
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        layout_grips(self)
+
+    def changeEvent(self, ev):
+        super().changeEvent(ev)
+        if ev.type() == QEvent.Type.WindowStateChange:
+            # 最大化后窗口贴满工作区，边缘热区还留着会出现"缩放光标"误导
+            set_grips_visible(self, not self.isMaximized())
+            if getattr(self, "title_bar", None) is not None:
+                self.title_bar._sync_max_icon()
+
     def closeEvent(self, event):
         # 关闭行为（2026-10-31）：settings.close_behavior = ask / close / minimize
         #   ask      = 弹框询问（退出 / 最小化到托盘，可勾「记住我的选择」）

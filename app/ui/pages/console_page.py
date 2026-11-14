@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.proc_manager import ProcManager
+from app.ui import theme
 
 _COLOR_RULES = [
     (re.compile(r"\[ERROR\]|Traceback|Exception|failed|Cannot|错误", re.I), "#e8635a"),
@@ -40,7 +41,7 @@ def classify_color(line: str) -> str:
     for pat, color in _COLOR_RULES:
         if pat.search(line):
             return color
-    return "#b8c2ce"
+    return "#d8dee6"
 
 
 class ConsolePage(QWidget):
@@ -58,16 +59,13 @@ class ConsolePage(QWidget):
         bar = QHBoxLayout()
         lb = QLabel("全局运行日志（全部实例）")
         lb.setStyleSheet("color:#9aa4b2; font-size:13px;")
+        from app.ui import theme
         bar.addWidget(lb)
         bar.addStretch()
         # 颜色图例
-        legend = QLabel(
-            "<span style='color:#e8635a;'>■ 错误</span>&nbsp;&nbsp;"
-            "<span style='color:#e8a33d;'>■ 警告</span>&nbsp;&nbsp;"
-            "<span style='color:#7fa8d9;'>■ 信息</span>&nbsp;&nbsp;"
-            "<span style='color:#4cd47c;'>■ 成功/出图</span>&nbsp;&nbsp;"
-            "<span style='color:#e8871e;'>■ ComfyHub</span>")
+        legend = QLabel(self._legend_html())
         legend.setStyleSheet("background:transparent; font-size:11px;")
+        self._legend = legend
         bar.addWidget(legend)
         bar.addStretch()
         self.ck_follow = QCheckBox("自动滚动")
@@ -106,7 +104,7 @@ class ConsolePage(QWidget):
         cursor = self.console.textCursor()
         cursor.movePosition(QTextCursor.End)
         fmt = QTextCharFormat()
-        fmt.setForeground(QColor(classify_color(text)))
+        fmt.setForeground(QColor(theme.fg(classify_color(text))))
         cursor.insertText(text + "\n", fmt)
 
     def _pull(self):
@@ -126,13 +124,36 @@ class ConsolePage(QWidget):
                 cursor = self.console.textCursor()
                 cursor.movePosition(QTextCursor.End)
                 pf = QTextCharFormat()
-                pf.setForeground(QColor("#5a636f"))
+                pf.setForeground(QColor(theme.fg("#5a636f")))
                 cursor.insertText(f"[{self.inst_name(iid)}] ", pf)
                 self._append_colored(line)
             else:
                 self._append_colored(line)
         if self.ck_follow.isChecked():
             self.console.moveCursor(QTextCursor.End)
+
+    def _legend_html(self) -> str:
+        """图例用运行期色：浅色主题下这几块粉彩色在米白底上几乎看不见"""
+        items = (("错误", "#e8635a"), ("警告", "#e8a33d"), ("信息", "#7fa8d9"),
+                 ("成功/出图", "#4cd47c"), ("ComfyHub", "#e8871e"))
+        return "&nbsp;&nbsp;".join(
+            "<span style='color:%s;'>■ %s</span>" % (theme.fg(c), n)
+            for n, c in items)
+
+    def refresh_theme(self):
+        """切主题后重刷日志与图例
+
+        日志颜色是运行期写进 QTextCharFormat 的，QSS 重染摸不到；
+        这里清屏后从缓冲区整段重放（_last_seq=0 时 _pull 会全量渲染）。
+        """
+        try:
+            if getattr(self, "_legend", None) is not None:
+                self._legend.setText(self._legend_html())
+            self.console.clear()
+            self._last_seq = 0
+            self._pull()
+        except Exception:
+            pass
 
     def on_show(self):
         self._pull()

@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QScrollArea, QComboBox, QTextBrowser,
 )
 
+from app import plugin_deps
 from app.ui.pages.comfyui_page import _FlowBox
 from app.i18n import T
 from app.tools import EnvBackup, Rescue
@@ -687,6 +688,10 @@ class EnvPage(QWidget):
         b_detect = QPushButton("📦 依赖检测")
         b_detect.setProperty("accent", True)
         b_detect.clicked.connect(self._deps_detect)
+        b_pdep = QPushButton("🔍 插件依赖自检")
+        b_pdep.setToolTip("扫 custom_nodes 各插件的 requirements.txt，"
+                          "找出没装上的包（插件报 ModuleNotFoundError / 工作流 400 的根因）")
+        b_pdep.clicked.connect(self._plugin_deps_check)
         b_install = QPushButton("➕ 安装新依赖")
         b_install.setProperty("success", True)
         b_install.clicked.connect(self._deps_install)
@@ -694,6 +699,7 @@ class EnvPage(QWidget):
         self.ed_pkg_kw.setPlaceholderText("🔍 搜索已装依赖…")
         self.ed_pkg_kw.textChanged.connect(lambda _t: self._deps_filter())
         bar.addWidget(b_detect)
+        bar.addWidget(b_pdep)
         bar.addWidget(b_install)
         bar.addWidget(self.ed_pkg_kw, 1)
         v.addLayout(bar)
@@ -712,10 +718,46 @@ class EnvPage(QWidget):
         self.tb_deps.setEditTriggers(QTableWidget.NoEditTriggers)
         v.addWidget(card_table(self.tb_deps), 1)
 
-        hint = QLabel("首次加载需要点上方【依赖检测】；卸载前请先停止 ComfyUI。")
+        hint = QLabel("首次加载需要点上方【依赖检测】；卸载前请先停止 ComfyUI。"
+                      "插件节点报 ModuleNotFoundError 时，先跑【插件依赖自检】。")
         hint.setStyleSheet("color:#7d8797;")
         v.addWidget(hint)
         return w
+
+    # ---- 插件依赖自检（2026-11-14）----
+    def _plugin_deps_check(self):
+        """扫 custom_nodes 的 requirements.txt，和实例解释器已装的包比对"""
+        inst = self._inst()
+        if not inst:
+            QMessageBox.information(self, "ComfyHub", "请先选择实例")
+            return
+        if not inst.get("comfyui_path"):
+            QMessageBox.information(self, "ComfyHub", "该实例还没有 ComfyUI 目录")
+            return
+        self._deps_log("正在扫描插件依赖（custom_nodes/*/requirements.txt）…")
+        w = PluginScanWorker(inst)
+        w.sig_done.connect(self._plugin_deps_done)
+        swap_worker(self, "_pdep_scan_worker", w)
+        w.start()
+
+    def _plugin_deps_done(self, rows, installed, err):
+        if err:
+            self._deps_log("❌ 插件依赖自检失败：" + str(err))
+            QMessageBox.warning(self, "ComfyHub", "自检失败：" + str(err))
+            return
+        s = plugin_deps.summarize(rows)
+        if not s["plugins"]:
+            self._deps_log("没有发现带 requirements.txt 的插件")
+            QMessageBox.information(self, "ComfyHub",
+                                    "custom_nodes 下没有带 requirements.txt 的插件")
+            return
+        self._deps_log(f"✅ 自检完成：{s['plugins']} 个插件，{s['bad']} 个缺依赖，"
+                       f"共缺 {s['missing']} 个包")
+        inst = self._inst()
+        dlg = PluginDepsDialog(self, inst, rows, installed)
+        dlg.sig_installed.connect(lambda: (self._deps_log("依赖有变化，重新拉取已装列表…"),
+                                           self._deps_detect()))
+        dlg.exec()
 
     # ---- 依赖管理逻辑 ----
     def _deps_log(self, m):
@@ -882,6 +924,102 @@ COMMON_DEPS = [
 ]
 
 
+# ---------------- 插件依赖自检（2026-11-14） ----------------
+class PluginScanWorker(QThread):
+    """扫 custom_nodes 各插件 requirements.txt，与实例解释器已装包比对"""
+    sig_done = Signal(list, dict, str)      # (rows, installed, err)
+
+    def __init__(self, inst, parent=None):
+        super().__init__(parent)
+        self._inst = inst
+
+    def run(self):
+        try:
+            py = self._inst.get("python_path") or ""
+            if not os.path.isfile(py):
+                self.sig_done.emit([], {}, "解释器不存在：" + str(py))
+                return
+            installed = plugin_deps.installed_packages(py)
+            rows = plugin_deps.scan(self._inst.get("comfyui_path") or "", installed)
+            self.sig_done.emit(rows, installed, "")
+        except Exception as e:                     # 线程里绝不能抛出去
+            self.sig_done.emit([], {}, str(e))
+
+
+class PluginInstallWorker(QThread):
+    """按插件补装缺失依赖
+
+    两条保护（缺一条都可能把环境改坏）：
+      · 每行只带「确实没装的包」→ 不会去动已装包；
+      · 全局 -c 约束文件把当前所有已装版本钉死 → pip 只能找不冲突的版本，
+        找不到就报错，而不是把 transformers / huggingface_hub 悄悄降级。
+    """
+    sig_log = Signal(str)
+    sig_done = Signal(list, str)             # (仍导不进来的包, err)
+
+    def __init__(self, python_exe, rows, installed, mirror="", parent=None):
+        super().__init__(parent)
+        self.python_exe = python_exe
+        self.rows = rows
+        self.installed = installed
+        self.mirror = mirror
+
+    def run(self):
+        import tempfile
+        tmp = tempfile.mkdtemp(prefix="ch_pdep_")
+        try:
+            cons = plugin_deps.write_constraints(
+                self.installed, os.path.join(tmp, "constraints.txt"))
+        except Exception as e:
+            self.sig_done.emit([], "写约束文件失败：" + str(e))
+            return
+        failed = []
+        for i, r in enumerate(self.rows):
+            text, base, special = plugin_deps.build_requirements([r])
+            if base:
+                self.sig_log.emit(f"   跳过底座包（由 ComfyHub 管，装了可能毁 torch）："
+                                  + "、".join(base))
+            if special:
+                self.sig_log.emit("   需手工安装：" + "；".join(special)[:160])
+            if not text.strip():
+                continue
+            self.sig_log.emit(f"== {r['name']}：补装 {len(r['missing'])} 个包")
+            req = os.path.join(tmp, f"req_{i}.txt")
+            with open(req, "w", encoding="utf-8") as f:
+                f.write(text)
+            args = plugin_deps.install_args(req, cons, self.mirror)
+            try:
+                p = sub_run([self.python_exe, "-m", "pip"] + args,
+                            capture_output=True, text=True, encoding="utf-8",
+                            errors="replace", timeout=7200)
+            except Exception as e:
+                self.sig_log.emit(f"   ❌ 异常：{e}")
+                failed.append(r["name"])
+                continue
+            out = ((p.stdout or "") + (p.stderr or "")).strip().splitlines()
+            for ln in [x for x in out if x.strip()][-8:]:
+                self.sig_log.emit("   " + ln[:180])
+            if p.returncode != 0:
+                failed.append(r["name"])
+                self.sig_log.emit(f"   ⚠️ {r['name']} 有包没装上（多为没有 Windows 轮子，"
+                                  f"其余插件继续）")
+            else:
+                self.sig_log.emit(f"   ✅ {r['name']} 完成")
+
+        names = sorted({m["name"] for r in self.rows for m in r["missing"]})
+        self.sig_log.emit("正在校验（逐个 import）…")
+        try:
+            bad = plugin_deps.verify(self.python_exe, names)
+        except Exception as e:
+            self.sig_done.emit([], "校验失败：" + str(e))
+            return
+        err = ""
+        if bad:
+            err = "以下包仍然导不进来：" + "、".join(bad[:8])
+        self.sig_done.emit(bad, err)
+
+
+
 class DepsDialog(QDialog):
     """安装新依赖：六种方式标签页（对标管理大师安装弹窗）"""
     sig_install = Signal(list)   # pip args
@@ -1015,6 +1153,177 @@ class DepsDialog(QDialog):
 
 
 from PySide6.QtCore import QThread as _QThread, Signal as _Signal
+
+
+class PluginDepsDialog(QDialog):
+    """插件依赖自检结果 + 勾选补装（2026-11-14）
+
+    起因：共享 Python 只装了 ComfyUI 本体的 requirements，插件自带的一律没装。
+    表现是插件加载失败、节点不注册，提交工作流直接 HTTP 400，
+    用户只看到「未知节点」完全看不出是缺依赖。
+    """
+    sig_installed = _Signal()          # 装完 → 让依赖管理页刷新已装列表
+
+    def __init__(self, parent, inst, rows, installed):
+        super().__init__(parent)
+        self.inst = inst
+        self.rows = rows
+        self.installed = installed
+        self._worker = None
+        self.setWindowTitle("插件依赖自检")
+        self.resize(860, 580)
+        v = QVBoxLayout(self)
+
+        s = plugin_deps.summarize(rows)
+        head = QLabel(
+            f"扫描到 {s['plugins']} 个带 requirements.txt 的插件，"
+            f"其中 <b>{s['bad']}</b> 个缺依赖，共缺 <b>{s['missing']}</b> 个包。")
+        head.setTextFormat(Qt.RichText)
+        v.addWidget(head)
+
+        heavy = [n for r in rows for n in r["heavy"]]
+        hint = plugin_deps.heavy_hint(heavy)
+        if hint:
+            lb = QLabel("⚠ " + hint)
+            lb.setStyleSheet("color:#e8a33d;")
+            v.addWidget(lb)
+
+        self.tb = QTableWidget(0, 4)
+        self.tb.setHorizontalHeaderLabels(["补装", "插件", "缺失", "缺失的包"])
+        hh = self.tb.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(3, QHeaderView.Stretch)
+        hh.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        hh.setHighlightSections(False)
+        self.tb.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.tb.verticalHeader().setVisible(False)
+        v.addWidget(card_table(self.tb), 1)
+        self._fill()
+
+        tip = QLabel(
+            "· 只补「确实没装」的包；已装版本用约束文件钉死，不会把 torch / transformers 降级\n"
+            "· torch、numpy 等底座包自动跳过（由 ComfyHub 按显卡统一管）\n"
+            "· 标「需手工」的是 git 依赖，得在插件目录里手动装；没有 Windows 轮子的包会失败但其余继续")
+        tip.setStyleSheet("color:#7d8797; font-size:11px;")
+        tip.setWordWrap(True)
+        v.addWidget(tip)
+
+        self.log = QPlainTextEdit()
+        self.log.setReadOnly(True)
+        self.log.setObjectName("LogConsole")
+        self.log.setPlaceholderText("补装日志…")
+        self.log.setMaximumHeight(120)
+        v.addWidget(self.log)
+
+        btns = QHBoxLayout()
+        self.b_all = QPushButton("全选")
+        self.b_none = QPushButton("全不选")
+        self.b_all.clicked.connect(lambda: self._check_all(True))
+        self.b_none.clicked.connect(lambda: self._check_all(False))
+        self.b_go = QPushButton("补装选中")
+        self.b_go.setProperty("accent", True)
+        self.b_go.clicked.connect(self._install)
+        b_close = QPushButton("关闭")
+        b_close.clicked.connect(self.reject)
+        btns.addWidget(self.b_all)
+        btns.addWidget(self.b_none)
+        btns.addStretch(1)
+        btns.addWidget(b_close)
+        btns.addWidget(self.b_go)
+        v.addLayout(btns)
+
+    # ---- 表格 ----
+    def _fill(self):
+        self.tb.setRowCount(0)
+        for r in self.rows:
+            n = self.tb.rowCount()
+            self.tb.insertRow(n)
+            it = QTableWidgetItem("")
+            if r["missing"]:
+                it.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+                it.setCheckState(Qt.Checked)
+            else:
+                it.setFlags(Qt.NoItemFlags)
+            self.tb.setItem(n, 0, it)
+            self.tb.setItem(n, 1, QTableWidgetItem(r["name"]))
+            self.tb.setItem(n, 2, QTableWidgetItem(
+                f"{len(r['missing'])}/{r['total']}" if r["missing"]
+                else f"齐 ({r['total']})"))
+            names = [m["name"] for m in r["missing"]]
+            if r["special"]:
+                names.append("需手工 " + str(len(r["special"])) + " 项")
+            cell = QTableWidgetItem("、".join(names) or "—")
+            cell.setToolTip("\n".join(
+                [m["raw"] for m in r["missing"]] + (r["special"] or []))[:1500])
+            self.tb.setItem(n, 3, cell)
+
+    def _check_all(self, on: bool):
+        for i in range(self.tb.rowCount()):
+            it = self.tb.item(i, 0)
+            if it is not None and it.flags() & Qt.ItemIsUserCheckable:
+                it.setCheckState(Qt.Checked if on else Qt.Unchecked)
+
+    def _selected(self) -> list:
+        out = []
+        for i in range(self.tb.rowCount()):
+            it = self.tb.item(i, 0)
+            if it is not None and it.checkState() == Qt.Checked:
+                out.append(self.rows[i])
+        return out
+
+    # ---- 补装 ----
+    def _install(self):
+        rows = self._selected()
+        if not rows:
+            QMessageBox.information(self, "ComfyHub", "先勾选要补装的插件")
+            return
+        if self._worker is not None:
+            return
+        # 实例在跑时 pip 会去改正在被占用的文件 → 装一半失败，必须拦住
+        mw = self.parent().mainwin if self.parent() is not None else None
+        try:
+            if mw is not None and mw.procs.is_running(self.inst):
+                QMessageBox.warning(self, "ComfyHub", "补装依赖前请先停止 ComfyUI")
+                return
+        except Exception:
+            pass
+        heavy = [n for r in rows for n in r["heavy"]]
+        n_pkg = sum(len(r["missing"]) for r in rows)
+        msg = f"将补装 {len(rows)} 个插件的 {n_pkg} 个缺失包。"
+        h = plugin_deps.heavy_hint(heavy)
+        if h:
+            msg += "\n\n" + h
+        msg += "\n\n补装期间请不要启动 ComfyUI。开始吗？"
+        if QMessageBox.question(self, "补装依赖", msg) != QMessageBox.Yes:
+            return
+        from app.bootstrap import PYPI_MIRRORS
+        self.b_go.setEnabled(False)
+        self.b_all.setEnabled(False)
+        self.b_none.setEnabled(False)
+        self.log.clear()
+        w = PluginInstallWorker(self.inst.get("python_path") or "",
+                                rows, self.installed,
+                                mirror=PYPI_MIRRORS["阿里云"])
+        w.sig_log.connect(lambda t: self.log.appendPlainText(str(t)))
+        w.sig_done.connect(self._done)
+        swap_worker(self, "_pdep_worker", w)
+        self._worker = w
+        w.start()
+
+    def _done(self, bad, err):
+        self._worker = None
+        self.b_go.setEnabled(True)
+        self.b_all.setEnabled(True)
+        self.b_none.setEnabled(True)
+        if err:
+            self.log.appendPlainText("⚠ " + err)
+            self.log.appendPlainText("→ 可在插件目录里手动 pip install 缺的包，或换镜像重试")
+        else:
+            self.log.appendPlainText("✅ 全部补齐，可以启动 ComfyUI 试跑工作流了")
+        self.log.appendPlainText("（已让依赖列表刷新；可再点一次「插件依赖自检」复核）")
+        self.sig_installed.emit()
 
 
 class _RunTask(_QThread):

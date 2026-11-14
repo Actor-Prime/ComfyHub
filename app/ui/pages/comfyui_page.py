@@ -4,6 +4,7 @@ import os
 import time
 
 from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtGui import QColor
 
 _KVER_PAGE = 20   # 内核版本列表一次加载行数（2026-11-02 用户定：分页 + 「加载更多」）
 from PySide6.QtWidgets import (
@@ -18,6 +19,7 @@ from app.log import log_exc
 from app.ui.nav import NAV
 from app.workers import BgWorker, RmWorker, swap_worker, wait_all
 from app.process import build_command, port_in_use
+from app.ui import theme
 from app.ui.theme import card_table
 
 
@@ -826,7 +828,7 @@ class ComfyuiPage(QWidget):
             self.tb_kver.setItem(i, 0, QTableWidgetItem(v["version"]))
             self.tb_kver.setItem(i, 1, QTableWidgetItem(v["date"]))
             k = QTableWidgetItem(v["kind"])
-            k.setForeground(Qt.green if v["kind"] == "稳定版" else Qt.gray)
+            k.setForeground(QColor(theme.fg("#4cd47c" if v["kind"] == "稳定版" else "#7f8b9c")))
             self.tb_kver.setItem(i, 2, k)
             b = QPushButton("切换并装依赖")
             # 2026-11-02 修复：开发版行 version 是提交标题（不是 ref！），

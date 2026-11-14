@@ -475,7 +475,7 @@ class ProfilesPage(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(22, 18, 22, 18)
         t = QLabel("⚡ 启动模式 · 快照隔离")
-        t.setStyleSheet("font-size:17px; font-weight:bold; color:#fff;")
+        t.setStyleSheet("font-size:17px; font-weight:bold; color:#e6edf7;")
         root.addWidget(t)
         sub = QLabel("基础内核只存一份快照；每个工作流/插件集一个启动模式，"
                      "插件与依赖互相隔离、模型全局共享")

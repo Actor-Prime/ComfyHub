@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 
 from app import workflow_scan, installer
 from app.installer import PlanExecutor
+from app.ui import theme
 from app.workers import swap_worker
 from app.ui.theme import card_table
 
@@ -427,13 +428,13 @@ class WorkflowPage(QWidget):
         for i, (a, b, c, d) in enumerate(rows):
             it = QTableWidgetItem(a)
             if a.startswith("✅"):
-                it.setForeground(Qt.green)
+                it.setForeground(QColor(theme.fg("#4cd47c")))
             elif a.startswith("❓"):
-                it.setForeground(Qt.red)
+                it.setForeground(QColor(theme.fg("#e8635a")))
             elif a.startswith("⬆️"):
-                it.setForeground(QColor("#ffb347"))
+                it.setForeground(QColor(theme.fg("#ffb347")))
             elif a.startswith("🤖"):
-                it.setForeground(QColor("#b78cff"))
+                it.setForeground(QColor(theme.fg("#b78cff")))
             self.tb.setItem(i, 0, it)
             self.tb.setItem(i, 1, QTableWidgetItem(b))
             self.tb.setItem(i, 2, QTableWidgetItem(c))

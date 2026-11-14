@@ -88,7 +88,7 @@ class ModelsPage(QWidget):
         # 标题行：标题 | stretch | 实例信息 | 下载中心
         head = QHBoxLayout()
         t = QLabel("模型库")
-        t.setStyleSheet("font-size:17px; font-weight:bold; color:#fff;")
+        t.setStyleSheet("font-size:17px; font-weight:bold; color:#e6edf7;")
         head.addWidget(t)
         head.addStretch()
         self.lb_inst = QLabel()

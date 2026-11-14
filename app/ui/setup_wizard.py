@@ -17,6 +17,27 @@ from app import bootstrap
 from app.bootstrap import PYPI_MIRRORS
 
 
+def install_requirements_then_manager(state: dict, log=print, mirror: str = "") -> bool:
+    """装 ComfyUI 本体依赖，成功后顺手把 ComfyUI-Manager 自己的依赖也装齐
+
+    顺序讲究：Manager 是解压进来的（`install_comfyui_manager` 只解压），它的
+    requirements（GitPython / PyGithub / typer …）以前没人管，全新机器上它一开
+    就是残的。放在这一步而不是解压那一步，是因为这里本体依赖已就位、约束文件
+    能把已装版本钉死；失败只提示不阻断 —— 本体能跑比 Manager 完整重要。
+    """
+    ok = bootstrap.install_comfyui_requirements(
+        state.get("python_path"), state.get("comfyui_path"),
+        log=log, mirror=mirror)
+    if ok:
+        try:
+            bootstrap.install_manager_deps(
+                state.get("comfyui_path"), state.get("python_path"),
+                log=log, mirror=mirror)
+        except Exception as e:
+            log(f"⚠️ Manager 依赖检查跳过：{e}")
+    return ok
+
+
 # ---------------- 后台安装线程 ----------------
 class _LogPage(QWizardPage):
     """安装进度页（步进制：每步 检测 → 询问 → 执行 → 复验 → 下一步）"""
@@ -242,6 +263,10 @@ class _LogPage(QWizardPage):
                 return bootstrap.detect_python_step("", py_dir)
             return bootstrap.detect_python_step(python_exe, py_dir)
 
+        def _install_requirements_with_manager():
+            return install_requirements_then_manager(
+                self.state, log=log, mirror=mirror)
+
         plan = [
             {"title": self.STEP_TITLES[0],
              "detect": _detect_python_step,
@@ -252,9 +277,7 @@ class _LogPage(QWizardPage):
             {"title": self.STEP_TITLES[2],
              "detect": lambda: bootstrap.detect_requirements_step(
                  self.state.get("python_path"), self.state.get("comfyui_path")),
-             "install": lambda: bootstrap.install_comfyui_requirements(
-                 self.state.get("python_path"), self.state.get("comfyui_path"),
-                 log=log, mirror=mirror)},
+             "install": _install_requirements_with_manager},
         ]
         if torch_flag:
             plan.append({"title": self.STEP_TITLES[3],

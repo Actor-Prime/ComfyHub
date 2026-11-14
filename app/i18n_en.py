@@ -77,6 +77,15 @@ EN_DICT = {
     "清除": "Clear",
     "（未选择，使用纯深色底）": "(none — plain dark background)",
     "面板不透明度:": "Panel opacity:",
+    "知道了": "Got it",
+    "ComfyHub 更新内容": "What's new in ComfyHub",
+    "调整位置…": "Adjust position…",
+    "背景图调整": "Adjust background image",
+    "重置": "Reset",
+    "确定": "OK",
+    "取消": "Cancel",
+    "拖动调整位置 · 滚轮缩放（以短边为基准等比放大，不会露边）":
+        "Drag to reposition · scroll to zoom (scales from the short edge, never exposes borders)",
     "面板越透明，背景图越清晰；改完点『保存设置』立即生效":
         "More transparency reveals more of the image; click Save settings to apply",
     "AI 接入（可选）": "AI assist (optional)",
