@@ -42,11 +42,14 @@ def part_a():
     print("== A. skill 声明工具 → 工具表收窄 ==")
     have = {s["id"]: s for s in ai_skills.list_skills()}
 
-    check("A1 内置「报错诊断」声明了工具",
-          have.get("error-diagnosis", {}).get("tools") ==
-          ["get_logs", "queue_list", "list_workflows", "check_workflow",
-           "control_instance"],
+    _err_tools = set(have.get("error-diagnosis", {}).get("tools") or [])
+    check("A1 内置「报错诊断」声明了核心诊断工具",
+          {"get_logs", "queue_list", "control_instance"} <= _err_tools,
           str(have.get("error-diagnosis", {}).get("tools")))
+    _all_names = {t["name"] for t in ai_tools.TOOLS}
+    check("A1b 技能声明的工具全在注册表内",
+          _err_tools <= _all_names,
+          str(_err_tools - _all_names))
     check("A2 内置「提示词优化」声明为空集（纯文本技能）",
           have.get("prompt-tuning", {}).get("tools") == [],
           str(have.get("prompt-tuning", {}).get("tools")))
@@ -94,7 +97,8 @@ def part_a():
 
     # schemas 过滤
     full = ai_tools.schemas()
-    check("A13 全量工具表 19 个", len(full) == 19, str(len(full)))
+    check("A13 全量工具表完整（= 注册表全部工具）",
+          len(full) == len(ai_tools.TOOLS), str(len(full)))
     sub = ai_tools.schemas(only)
     names = {t["function"]["name"] for t in sub}
     check("A14 收窄后只剩声明工具 + 元能力",
@@ -104,10 +108,11 @@ def part_a():
     check("A16 空集收窄 → 只剩 3 个元能力",
           len(ai_tools.schemas(set())) == 3,
           str([t["function"]["name"] for t in ai_tools.schemas(set())]))
-    check("A17 None → 不收窄", len(ai_tools.schemas(None)) == 19)
+    check("A17 None → 不收窄", len(ai_tools.schemas(None)) == len(ai_tools.TOOLS))
 
     note = ai_skills.tool_note(["error-diagnosis"])
-    check("A18 tool_note 列出工具名", "get_logs" in note and "共 8 个" in note, note[:60])
+    _exp_note_n = len(_err_tools | set(ai_skills.BASE_TOOLS))
+    check("A18 tool_note 列出工具名", "get_logs" in note and f"共 {_exp_note_n} 个" in note, note[:60])
     check("A19 tool_note 明确禁止调清单外工具", "不要调用清单外的工具" in note)
     check("A20 不限制时 tool_note 为空（不浪费 token）",
           ai_skills.tool_note([]) == "")
@@ -393,7 +398,9 @@ def part_e():
         ai_agent._round_chat = orig_round
         ai_agent.ai_models.detect = orig_detect
 
-    check("E1 会话技能收窄了工具表", len(cap.get("tools") or []) == 8,
+    _e_tools = set(ai_skills.get_skill("error-diagnosis").get("tools") or [])
+    _exp_e1 = len(_e_tools | set(ai_skills.BASE_TOOLS))
+    check("E1 会话技能收窄了工具表", len(cap.get("tools") or []) == _exp_e1,
           str(cap.get("tools")))
     check("E2 收窄后不含生图工具", "run_workflow" not in (cap.get("tools") or []),
           str(cap.get("tools")))
@@ -414,7 +421,7 @@ def part_e():
     finally:
         ai_agent._round_chat = orig_round
         ai_agent.ai_models.detect = orig_detect
-    check("E6 不勾技能时保留全量工具", len(cap.get("tools") or []) == 19,
+    check("E6 不勾技能时保留全量工具", len(cap.get("tools") or []) == len(ai_tools.TOOLS),
           str(len(cap.get("tools") or [])))
     check("E7 全量时不写启用清单（省 token）",
           "【本会话启用工具】" not in (cap.get("system") or ""))

@@ -142,6 +142,46 @@ _STATUS_TIPS_ZH = {
 }
 
 
+# 400 里有一类是「上下文超限」（2026-11-17 用户截图：8243 > 8192 tokens）。
+# 按状态码给的通用提示会引导用户去核对模型名——完全文不对题，实际要减上下文，
+# 所以先看服务端原文识别出来，给专用提示。
+_CTX_OVERFLOW_RE = re.compile(
+    r"exceeds the available context|context (?:size|length|window)"
+    r"|maximum context length|too many tokens|context length limit"
+    r"|上下文(?:长度|窗口|超)", re.I)
+
+
+def _is_ctx_overflow(detail: str) -> bool:
+    return bool(detail) and bool(_CTX_OVERFLOW_RE.search(str(detail)))
+
+
+def _ctx_nums(detail: str):
+    """从服务端原文抠 (本次 tokens, 窗口 tokens)；抠不到给 (0, 0)"""
+    d = str(detail or "")
+    # llama.cpp / vLLM：request (8243 tokens) exceeds the available context size (8192 tokens)
+    m = re.search(r"\((\d+)\s*tokens?\)\s*exceeds[\s\S]{0,60}?\((\d+)\s*tokens?\)",
+                  d, re.I)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    # OpenAI 风格：maximum context length is 8192 tokens ... resulted in 10000 tokens
+    m = re.search(r"maximum context length is\s*(\d+)[\s\S]{0,200}?(\d+)\s*tokens",
+                  d, re.I)
+    if m:
+        return int(m.group(2)), int(m.group(1))
+    return 0, 0
+
+
+def _ctx_overflow_msg(detail: str) -> str:
+    """上下文超限专用提示：带具体数字 + 三条可操作建议，不误导改模型名"""
+    got, lim = _ctx_nums(detail)
+    num = f" ({got} > {lim} tokens)" if got and lim else ""
+    return T("上下文已满{num}：这一轮携带的历史对话与工具返回超过了模型的"
+             "上下文窗口，不是模型名的问题。\n"
+             "建议：① 点「新对话」重新开始；② 到「系统设置 → AI 接入」把"
+             "「上下文压缩」调到 strong，或减少带入的上下文条数；"
+             "③ 别让工具一次读入超大 JSON / 长日志——那最占窗口。").format(num=num)
+
+
 def describe_error(e, one_line: bool = False) -> str:
     """底层异常 → 用户看得懂的一段话（带下一步动作）。
 
@@ -155,13 +195,33 @@ def describe_error(e, one_line: bool = False) -> str:
     return out
 
 
+def _is_tool_args_error(detail: str) -> bool:
+    """服务端渲染历史时解析 tool_call arguments 失败（llama-server 典型报错）。
+
+    根因是模型生成了语法损坏的 JSON（本机小模型实测踩到），不是厂商故障；
+    这类 500 重试也只会同样失败，文案必须指向「换模型/新开对话」而不是
+    「联系厂商」（2026-11-17 用户截图：报错说厂商侧故障，误导）。
+    """
+    d = (detail or "").lower()
+    return "parse tool call arguments" in d
+
+
 def _describe_error(e) -> str:
     status = int(getattr(e, "status", 0) or getattr(e, "code", 0) or 0)
     detail = str(getattr(e, "detail", "") or "").strip()
 
     if status:
-        if status in _STATUS_TIPS_ZH:
+        if status == 400 and _is_ctx_overflow(detail):
+            # 上下文超限是 400 的特例：给的建议必须是减上下文，不是改模型名
+            msg = _ctx_overflow_msg(detail)
+        elif status in _STATUS_TIPS_ZH:
             msg = T(_STATUS_TIPS_ZH[status])
+        elif 500 <= status < 600 and _is_tool_args_error(detail):
+            # 5xx 特例：坏工具参数（D1 2026-11-17），不是厂商侧故障
+            msg = T("服务端出错（{s}）：模型生成的工具参数不是合法 JSON，"
+                    "服务端解析失败。已按空参数继续；反复出现说明当前模型"
+                    "写 JSON 不稳，建议换一个模型或点「新对话」重新开始。"
+                    ).format(s=status)
         elif 500 <= status < 600:
             msg = T("服务端出错（{s}）：厂商侧故障，不是你的配置问题。"
                     "稍后重试；持续出现就换个模型或联系厂商。").format(s=status)

@@ -235,7 +235,13 @@ PROVIDERS = [
      "models": ["hunyuan-2.0-instruct", "hunyuan-2.0-thinking"],
      "hint": "腾讯云 LKEAP Coding Plan 端点（/coding/v3）；按量付费走 /v1，Key 不同"},
 
-    # ---------------- 自定义 ----------------
+    # ---------------- 本地 / 自定义 ----------------
+    # 2026-11-15：本地模型（可选组件）。地址是 llama-server 的固定端口，
+    # 被占用时组件会自动顺延端口并由卡片回填，所以这里只作默认值。
+    {"id": "local", "group": "", "name": "本地模型（内置组件）",
+     "base": "http://127.0.0.1:8089/v1", "models": [],
+     "hint": "在「本地模型（可选组件）」卡片里安装并启动；纯 CPU 运行，不占显存，"
+             "离线可用，不消耗任何 API 额度"},
     {"id": CUSTOM_ID, "group": "", "name": "自定义（手动填写）",
      "base": "", "models": [],
      "hint": "填任意 OpenAI 兼容端点：中转站、Azure（…/openai/v1 + 部署名）、自建 vLLM / Ollama"},
@@ -300,6 +306,9 @@ _HOST_KEYS = [
     ("novita", "novita"),
     ("fireworks", "fireworks"),
     ("api.openai.com", "openai"),
+    # 本地 llama-server（可选组件）。放最后：不与其他域名冲突
+    ("127.0.0.1", "local"),
+    ("localhost", "local"),
 ]
 
 
@@ -308,11 +317,11 @@ def all_providers() -> list:
 
 
 def grouped() -> list:
-    """[(组名, [项…]), …]；自定义组名空（UI 用分隔线 + 单项）"""
+    """[(组名, [项…]), …]；空组名（本地 / 自定义）用分隔线单列"""
     out = [(g, [p for p in PROVIDERS if p.get("group") == g]) for g in GROUPS]
-    custom = [p for p in PROVIDERS if p["id"] == CUSTOM_ID]
-    if custom:
-        out.append(("", custom))
+    tail = [p for p in PROVIDERS if not p.get("group")]
+    if tail:
+        out.append(("", tail))
     return out
 
 

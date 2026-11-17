@@ -54,6 +54,42 @@ def _fmt_usage(u) -> str:
     return line
 
 
+def _fmt_ts(ts) -> str:
+    """消息时间戳 → 显示文本（2026-11-17 用户反馈：要能看到每条消息几点发的）
+
+    今天只显示 HH:mm，跨天补 MM-dd 前缀；没有时间戳的老数据返回空串
+    —— 宁可不显示，也不拿「打开会话的时间」冒充发送时间。
+    """
+    try:
+        ts = float(ts or 0)
+    except Exception:
+        return ""
+    if ts <= 0:
+        return ""
+    lt = time.localtime(ts)
+    now = time.localtime()
+    if (lt.tm_year, lt.tm_yday) == (now.tm_year, now.tm_yday):
+        return time.strftime("%H:%M", lt)
+    return time.strftime("%m-%d %H:%M", lt)
+
+
+def _fmt_dur(sec) -> str:
+    """本轮耗时 → 显示文本（<10s 带一位小数，>=1 分钟折成分秒）"""
+    try:
+        sec = float(sec or 0)
+    except Exception:
+        return ""
+    if sec <= 0:
+        return ""
+    if sec < 60:
+        return f"{sec:.1f}s" if sec < 10 else f"{int(round(sec))}s"
+    m, s = divmod(int(round(sec)), 60)
+    if m < 60:
+        return f"{m}分{s:02d}s"
+    h, m = divmod(m, 60)
+    return f"{h}时{m:02d}分"
+
+
 def _refresh_right_safe(page):
     """刷新右侧概要栏（页面替身 / 早期构造阶段调用也不炸）
 
@@ -204,6 +240,9 @@ class _AgentWorker(QThread):
         self.profile = dict(profile or {})  # 本会话工作台设定（2026-11-11）
         self.chat_id = str(chat_id or "")   # 会话 id：压缩原文落盘 + recall_history
         self.stop_flag = threading.Event()
+        # 用户点了「停止」或切了会话：线程还在收尾，但它的所有事件都要丢掉，
+        # 否则会往新会话里插内容（2026-11-15 串台防护）
+        self.abandoned = False
 
     def run(self):
         try:
@@ -218,6 +257,17 @@ class _AgentWorker(QThread):
                                skills=self.skills,
                                profile=self.profile,
                                chat_id=self.chat_id)
+        except Exception as e:
+            # 兜底（2026-11-16）：以前这里只有 finally，run_agent 里若冒出未捕获
+            # 异常，会被 QThread 吞掉（windowed 打包下 stderr 不可见），界面表现
+            # 就是「占位消失、什么都没有」——用户只会觉得程序没反应。
+            try:
+                from app import ai_assist
+                self.sig_event.emit({"kind": "error",
+                                     "text": ai_assist.describe_error(e),
+                                     "raw": "%s: %s" % (type(e).__name__, e)})
+            except Exception:
+                pass
         finally:
             self.sig_done.emit()
 
@@ -257,11 +307,14 @@ class AiPage(QWidget):
         self.mainwin = mainwin
         self._history = []          # [{"role","content"}] 仅文本消息
         self._worker = None
+        # 被「停止」废弃但线程尚未结束的 worker：留着引用防 QThread 被提前回收
+        self._zombies = []
         self._last_user = ""
         self._tl_widget = None      # 当前未完成的工具时间线项
         self._think_lbl = None      # 「思考中…」占位
         self._think_timer = None
         self._think_t0 = 0.0
+        self._t_send = 0.0          # 本轮发送时刻（算耗时 + 气泡时间戳）
         self._atts = []             # 待发送附件：[{kind:'image'|'text',...}]
         self._stream = None         # 流式中的卡片状态
         self._stream_timer = None
@@ -365,6 +418,17 @@ class AiPage(QWidget):
         self.lb_inst = QLabel("未选择实例")
         self.lb_inst.setStyleSheet("color:#a9b1bd; font-size:12px;")
         head.addWidget(self.lb_inst)
+        # AI 服务状态（2026-11-16 用户反馈：本地模型什么时候加载完、能不能用，
+        # 页面上完全看不出来，只能回设置页翻）。跟实例状态并排，一眼可见。
+        sep = QLabel("│")
+        sep.setStyleSheet("color:rgba(127,127,127,0.45); font-size:11px;")
+        head.addWidget(sep)
+        self.lb_ai_dot = QLabel("●")
+        self.lb_ai_dot.setStyleSheet("color:#888; font-size:11px;")
+        head.addWidget(self.lb_ai_dot)
+        self.lb_ai = QLabel("")
+        self.lb_ai.setStyleSheet("color:#a9b1bd; font-size:12px;")
+        head.addWidget(self.lb_ai)
         head.addStretch(1)
         # ---- 会话切换（2026-11-06 多对话；2026-11-11 顶栏下拉 → 左侧常驻栏）----
         self.b_side = QPushButton("☰ 会话")
@@ -1145,7 +1209,7 @@ class AiPage(QWidget):
         lb.setFixedWidth(outer)                         # +padding +border
         lb.setFixedHeight(self._wrap_height(lb, text, outer, pad, 16))
 
-    def _user_bubble(self, text: str):
+    def _user_bubble(self, text: str, ts: float = 0):
         lb = QLabel(text)
         lb.setWordWrap(True)
         lb.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -1157,9 +1221,18 @@ class AiPage(QWidget):
         h = QHBoxLayout(w)
         h.setContentsMargins(0, 0, 0, 0)
         h.addStretch(1)
+        # 发送时间（2026-11-17 用户反馈）：贴在气泡左侧同一行，右对齐布局里
+        # 气泡在最右，时间紧挨它左边，不另起一行免得把消息流拉散。
+        stamp = _fmt_ts(ts)
+        if stamp:
+            tl = QLabel(stamp)
+            tl.setStyleSheet("color:#7f8894; font-size:11px;")
+            tl.setProperty("chatKind", "meta")     # 重排时不碰它（定宽无意义）
+            tl.setToolTip("发送时间")
+            h.addWidget(tl)
         h.addWidget(lb)
         self.flow.insertWidget(self.flow.count() - 1, w)
-        self._scroll_bottom()
+        self._follow_bottom()
 
     def _user_thumb(self, pm: QPixmap):
         lb = _ClickableLabel()
@@ -1174,8 +1247,31 @@ class AiPage(QWidget):
         h.addWidget(lb)
         self.flow.insertWidget(self.flow.count() - 1, wrap)
 
-    def _ai_card(self, text: str, streaming: bool = False):
-        model = str((self.cfg.get("settings") or {}).get("ai_model") or "") or "AI"
+    def _model_label(self) -> str:
+        """卡片标题里显示的模型名（2026-11-16）
+
+        配置里 ai_model 可能是**完整路径**——llama-server 的 /v1/models 返回的就是
+        model_path，一旦被自动填进配置，卡片标题就会变成
+        例如 `.../models/Qwen3-VL-2B-Instruct-Q4_K_M.gguf` 被原样塞进标题，
+        又长又没法看。这里统一收敛成产品名。
+        """
+        raw = str((self.cfg.get("settings") or {}).get("ai_model") or "").strip()
+        if not raw:
+            return "AI"
+        if "\\" not in raw and "/" not in raw:
+            return raw
+        base = raw.replace("\\", "/").rsplit("/", 1)[-1]
+        try:
+            from app import local_llm
+            for m in local_llm.MODELS:
+                if str(m.get("file") or "") == base:
+                    return str(m.get("name") or base)
+        except Exception:
+            pass
+        return base.rsplit(".", 1)[0] or base
+
+    def _ai_card(self, text: str, streaming: bool = False, dur=None, ts=None):
+        model = self._model_label()
         card = QFrame()
         card.setObjectName("aiCard")
         card.setStyleSheet(self._card_qss())
@@ -1189,8 +1285,19 @@ class AiPage(QWidget):
         dot = QLabel("●")
         dot.setStyleSheet("color:#4cd47c; font-size:11px;")
         hd.addWidget(dot)
-        cap = QLabel("AI 助手 · " + model + " · " +
-                     ("生成中…" if streaming else QTime.currentTime().toString("HH:mm")))
+        # 标题 = 模型 · 完成时刻 · 本轮耗时（2026-11-17 用户反馈：
+        # 「能不能显示那次对话时的耗时」——从点发送到收尾的墙钟时间）。
+        # ts 只在回放历史时传：实时渲染取当前时刻，回放必须用消息落库的时刻，
+        # 否则每次打开会话，旧回答的时间都会变成「你刚打开它的这一秒」。
+        if streaming:
+            stamp = "生成中…"
+        else:
+            stamp = (_fmt_ts(ts) if ts else
+                     QTime.currentTime().toString("HH:mm"))
+        _d = _fmt_dur(dur)
+        if _d:
+            stamp += " · " + T("耗时") + " " + _d
+        cap = QLabel("AI 助手 · " + model + " · " + stamp)
         cap.setStyleSheet("color:#8a93a3; font-size:11px;")
         # 这行是卡片最小宽度的最大来源：模型名一长就把整张卡顶宽 → 消息区冒
         # 横向滚动条（2026-11-14 用户报障）。显式给最小宽度 1，布局就允许压缩它，
@@ -1228,7 +1335,7 @@ class AiPage(QWidget):
         v.addWidget(body)
 
         self.flow.insertWidget(self.flow.count() - 1, card)
-        self._scroll_bottom()
+        self._follow_bottom()
         self._last_card = {"card": card, "body": body, "copy": b_copy,
                            "re": b_re, "cap": cap, "text": text}
         return card
@@ -1259,7 +1366,7 @@ class AiPage(QWidget):
             self.flow.insertWidget(self.flow.count() - 1, wrap)
             shown += 1
         if shown:
-            self._scroll_bottom()
+            self._follow_bottom()
 
     def _fit_err_bubble(self, lb: QLabel, text: str):
         pad = 2 * self.BUBBLE_PAD + 2 * self.BUBBLE_BORDER
@@ -1289,7 +1396,7 @@ class AiPage(QWidget):
         h.setContentsMargins(0, 0, 0, 0)
         h.addWidget(lb)
         self.flow.insertWidget(self.flow.count() - 1, w)
-        self._scroll_bottom()
+        self._follow_bottom()
 
     def _tl_text_width(self) -> int:
         """时间线文字宽：行内缩进 16 + 竖线内边距 10 + 左侧竖线 2"""
@@ -1334,7 +1441,7 @@ class AiPage(QWidget):
         wl.setContentsMargins(16, 0, 0, 0)     # 时间线缩进
         wl.addWidget(f)
         self.flow.insertWidget(self.flow.count() - 1, wrap)
-        self._scroll_bottom()
+        self._follow_bottom()
         self._tl_widget = (wrap, lb, name)
         return wrap
 
@@ -1371,14 +1478,21 @@ class AiPage(QWidget):
             return
         atts = list(self._atts)
         self.ed.clear()
-        self._user_bubble(text)
+        # 用户按回车/点发送 = 明确要看最新内容，无条件贴底（2026-11-15 用户报障：
+        # 原实现插入气泡后只调 _scroll_bottom，布局未算完 → 滚动条不动，
+        # 正文直接插在视口外，用户得自己往下拖）
+        self._pin_bottom(1500)
+        # 发送时刻：用户气泡显示时间 + 收尾算「本轮耗时」都用它（2026-11-17）
+        self._t_send = time.time()
+        self._user_bubble(text, ts=self._t_send)
         for a in atts:
             if a["kind"] == "image":
                 self._user_thumb(a["thumb"])
         self._atts.clear()
         self._refresh_atts()
         self._last_user = text
-        self._history.append({"role": "user", "content": text})
+        self._history.append({"role": "user", "content": text,
+                              "ts": self._t_send})
         self._save_chat()               # 先落盘：即便进程被杀，这句也不会丢
         self._worker = _AgentWorker(self.cfg, inst, text, list(self._history), atts,
                                     mainwin=self.mainwin,
@@ -1387,8 +1501,9 @@ class AiPage(QWidget):
                                     skills=self._chat_skills,
                                     profile=self._profile,
                                     chat_id=self._chat_id)
-        self._worker.sig_event.connect(self._on_event)
-        self._worker.sig_done.connect(self._on_done)
+        self._worker.sig_event.connect(lambda ev, _w=self._worker:
+                                       self._on_event(ev, _w))
+        self._worker.sig_done.connect(lambda _w=self._worker: self._on_done(_w))
         self.b_send.setEnabled(False)
         self.b_stop.setEnabled(True)
         self._think_start()
@@ -1406,8 +1521,26 @@ class AiPage(QWidget):
         QTimer.singleShot(1200, lambda: btn.setText(old))
 
     def _stop(self):
-        if self._worker is not None:
-            self._worker.stop_flag.set()
+        """停止：立刻把界面放开，不等后台线程收尾（2026-11-15）
+
+        原来的实现只置 stop_flag 就完事：worker 仍非空 → 新建/切换/重发全部
+        静默 return，而长工具（比如等 ComfyUI 起来 180 秒）根本不看这个标志，
+        用户看到的就是「整个软件卡死、连新建对话都点不动」。
+        现在：标记 abandoned → 事件全部丢弃 → worker 引用摘掉 → 界面立即可用。
+        """
+        w = self._worker
+        if w is None:
+            return
+        w.stop_flag.set()
+        w.abandoned = True
+        self._zombies.append(w)          # 线程还没结束，保住引用直到它自己退出
+        self._worker = None
+        self._think_stop()
+        self.b_send.setEnabled(True)
+        self.b_stop.setEnabled(False)
+        self._notice(T("已停止本轮回答（未完成的输出不保留）。"
+                       "可以点消息上的「重发」再试一次。"))
+        self._pin_bottom(1200)
 
     # -------------------------------------------------- 会话（2026-11-06）
     def _boot_chats(self):
@@ -1508,9 +1641,12 @@ class AiPage(QWidget):
         if self._history:
             for m in self._history:
                 if m["role"] == "user":
-                    self._user_bubble(m["content"])
+                    self._user_bubble(m["content"], ts=m.get("ts"))
                 else:
-                    self._ai_card(m["content"])
+                    # 老会话没有 ts/dur 字段 → 回落为打开时刻、不显耗时，
+                    # 绝不编一个假时间或假耗时出来（2026-11-17）
+                    self._ai_card(m["content"], dur=m.get("dur"),
+                                  ts=m.get("ts"))
             self._last_user = next(
                 (m["content"] for m in reversed(self._history)
                  if m["role"] == "user"), "")
@@ -1550,7 +1686,9 @@ class AiPage(QWidget):
 
     def _new_chat(self):
         if self._worker is not None:
-            return
+            # 正在回答时点「新建对话」原来直接 return，用户以为按钮坏了。
+            # 现在自动先停（后台收尾、事件丢弃），再开新会话。
+            self._stop()
         self._save_chat()
         self._chat_id = ai_chat_store.new_id()
         self._history = []
@@ -1571,7 +1709,10 @@ class AiPage(QWidget):
         _refresh_right_safe(self)
 
     def _rename_chat(self):
-        if not self._chat_id or self._worker is not None:
+        if not self._chat_id:
+            return
+        if self._worker is not None:
+            self._notice("正在回答，先点「停止」再重命名")
             return
         cur = next((c["title"] for c in ai_chat_store.list_chats()
                     if c["id"] == self._chat_id), "")
@@ -1582,6 +1723,7 @@ class AiPage(QWidget):
 
     def _delete_chat(self):
         if self._worker is not None:
+            self._notice("正在回答，先点「停止」再删除")
             return
         if self._chat_id:
             from PySide6.QtWidgets import QMessageBox
@@ -1844,7 +1986,9 @@ class AiPage(QWidget):
                 ch.setParent(None)
                 ch.deleteLater()
 
-    def _on_event(self, ev: dict):
+    def _on_event(self, ev: dict, w=None):
+        if w is not None and getattr(w, "abandoned", False):
+            return                    # 已停止的旧线程，事件一律丢弃（防串台）
         kind = ev.get("kind")
         if kind == "reasoning":       # 模型在思考：更新占位文案，不撤占位
             if self._think_lb is not None:
@@ -1875,9 +2019,18 @@ class AiPage(QWidget):
                          f"后续问答会带着它继续")
             _refresh_right_safe(self)
         elif kind == "assistant":
-            self._stream_finalize(ev.get("text", ""))
-            self._history.append({"role": "assistant", "content": ev.get("text", "")})
+            text = ev.get("text", "")
+            # 本轮耗时 = 从点发送到回答落地（2026-11-17 用户反馈）。
+            # _t_send 是 _send() 里记的；历史回放/异常路径没记就只显示时间不显耗时。
+            now = time.time()
+            dur = (now - self._t_send) if getattr(self, "_t_send", 0) else 0
+            self._stream_finalize(text, dur=dur)
+            msg = {"role": "assistant", "content": text, "ts": now}
+            if dur:
+                msg["dur"] = round(dur, 1)
+            self._history.append(msg)
             self._save_chat()
+            self._verify_state_claim(text)     # 小模型会复述历史里的「已启动」，实测纠正
         elif kind == "tool":
             self._tool_item(ev.get("name", "?"), ev.get("args") or {})
             if ev.get("name") == "ask_user":
@@ -1902,9 +2055,26 @@ class AiPage(QWidget):
             for p in (ev.get("paths") or []):
                 self._add_artifact({"kind": "image", "path": p})
         elif kind == "error":
+            # 出错时流式卡若还开着，必须收尾（2026-11-17 用户截图：卡片永停
+            # 「生成中…」）——error 分支原来只插红气泡，没人 finalize 流式卡
+            if self._stream is not None:
+                buf = (self._stream or {}).get("buf", "")
+                self._stream_finalize(buf)
+                card = getattr(self, "_last_card", None)
+                if card is not None:
+                    cap = card["cap"].text() + " · " + T("已中断")
+                    card["cap"].setText(cap)
+                    card["cap"].setToolTip(cap)
             self._err_bubble(ev.get("text", "未知错误"), ev.get("raw") or "")
 
-    def _on_done(self):
+    def _on_done(self, w=None):
+        if w is not None:
+            if getattr(w, "abandoned", False):
+                if w in self._zombies:
+                    self._zombies.remove(w)
+                return                # 被停掉的线程收尾：不碰界面，不写盘
+            if w is not self._worker:
+                return                # 旧线程迟到的 done，别干扰新会话
         self._think_stop()
         self.b_send.setEnabled(True)
         self.b_stop.setEnabled(False)
@@ -1963,14 +2133,19 @@ class AiPage(QWidget):
         if not card:
             return
         st["dirty"] = False
+        # 跟随判断必须在 setText 之前取（2026-11-17 用户反馈：输出时滚轮
+        # 上翻被拽回）：内容一变 maximum 就被撑大，事后判「距底 80px」会把
+        # 正常贴底误判成用户上翻，从此再也不跟；而旧实现是无条件
+        # _scroll_bottom，用户上翻 60ms 内必被硬拽回底部，根本滚不上去。
+        self._follow_bottom(400)
         body = card["body"]
         card["text"] = st["buf"]
         html = _md_to_html(st["buf"])
         body.setText(html)
         self._fit_ai_body(body, html)      # 与历史卡同一套宽度预算（流式/收尾不跳宽）
-        self._scroll_bottom()
+        # 布局重算后的贴底由 _pin_bottom 预约的 singleShot / rangeChanged 接管
 
-    def _stream_finalize(self, full_text: str):
+    def _stream_finalize(self, full_text: str, dur=None):
         st, card = self._stream, getattr(self, "_last_card", None)
         if self._stream_timer is not None:
             self._stream_timer.stop()
@@ -1978,16 +2153,20 @@ class AiPage(QWidget):
         self._stream = None
         if card is None:
             if full_text.strip():
-                self._ai_card(full_text)
+                self._ai_card(full_text, dur=dur)
             return
         text = full_text or (st or {}).get("buf", "") or ""
         self._stream_flush_direct(text)
         card["copy"].setEnabled(True)
         card["copy"].setProperty("payload", text)
         card["re"].setEnabled(bool(self._last_user))
-        model = str((self.cfg.get("settings") or {}).get("ai_model") or "") or "AI"
-        cap_txt = ("AI 助手 · " + model + " · "
-                   + QTime.currentTime().toString("HH:mm"))
+        model = self._model_label()
+        # 收尾标题带上本轮耗时（2026-11-17）：从用户点发送到回答完整落地
+        stamp = QTime.currentTime().toString("HH:mm")
+        _d = _fmt_dur(dur)
+        if _d:
+            stamp += " · " + T("耗时") + " " + _d
+        cap_txt = "AI 助手 · " + model + " · " + stamp
         card["cap"].setText(cap_txt)
         card["cap"].setToolTip(cap_txt)
         self._relayout_messages()      # 流式期间 resize 被跳过，收尾补一次重排
@@ -1996,13 +2175,14 @@ class AiPage(QWidget):
         card = getattr(self, "_last_card", None)
         if not card:
             return
+        # 同 _stream_flush：先取「是否在底部」再改内容，收尾也不硬拽用户
+        self._follow_bottom(400)
         body = card["body"]
         card["text"] = text
         card["copy"].setProperty("payload", text)
         html = _md_to_html(text)
         body.setText(html)
         self._fit_ai_body(body, html)      # 与历史卡同一套宽度预算（流式/收尾不跳宽）
-        self._scroll_bottom()
 
     def _fit_notice(self, lb: QLabel, text: str):
         """提示行宽度跟行宽走（行内左缩进 2）"""
@@ -2024,20 +2204,90 @@ class AiPage(QWidget):
         h.setContentsMargins(2, 0, 0, 0)
         h.addWidget(lb)
         self.flow.insertWidget(self.flow.count() - 1, wrap)
-        self._scroll_bottom()
+        self._follow_bottom(600)
 
     # ---------- 「思考中…」占位（非流式时的等待反馈） ----------
-    def _think_start(self):
-        import time
-        self._think_t0 = time.time()
-        lb = QLabel("思考中… 0.0s")
+    # 谎报检测（2026-11-16）：本地 2B 模型会把历史里那句
+    # 「实例已成功启动，状态为 ready，可访问地址 http://127.0.0.1:8188」
+    # 当成答案原样复述（实测必现），于是 AI 说已启动、工作台/控制台却什么都没有。
+    # 提示词约束不住这种情况，只能拿实际进程状态对一遍。
+    _CLAIM_UP = ("已成功启动", "已启动", "启动成功", "已经启动",
+                 "状态为 ready", "状态是 ready", "状态为ready", "状态是ready")
+    _CLAIM_DOWN = ("已停止", "已经停止", "停止成功", "已关闭")
+
+    def _procs_running(self):
+        """实测实例是否在跑；拿不到状态时返回 None（宁可不提示，别误报）"""
+        inst = self._inst()
+        if not inst:
+            return None
+        try:
+            return bool(self.mainwin.procs.is_running(inst))
+        except Exception:
+            return None
+
+    def _verify_state_claim(self, text: str):
+        t = str(text or "")
+        if not t:
+            return
+        up = any(k in t for k in self._CLAIM_UP)
+        down = any(k in t for k in self._CLAIM_DOWN)
+        if not up and not down:
+            return
+        running = self._procs_running()
+        if running is None:
+            return
+        if up and not running:
+            self._warn_card(
+                T("⚠ 上面这句与实测不符：当前实例**并没有运行**（端口未监听）。"
+                  "以工作台底部的状态为准；我这可能是复述了历史里的旧结论，"
+                  "可以让我「用工具重新查一次」。"))
+        elif down and running:
+            self._warn_card(
+                T("⚠ 上面这句与实测不符：实例仍在运行。以工作台底部状态为准。"))
+
+    def _warn_card(self, text: str):
+        """橙色警示卡：比 _notice 的灰字显眼，专用于「AI 说法与实际不符」"""
+        lb = QLabel(text)
+        lb.setWordWrap(True)
         lb.setObjectName("ChatBody")
-        lb.setStyleSheet("color:#8a93a3; font-size:12px;")
+        lb.setTextFormat(Qt.MarkdownText)
+        lb.setStyleSheet("background:rgba(230,140,60,0.13);"
+                         "border:1px solid rgba(230,140,60,0.5);"
+                         "border-radius:10px; padding:8px 12px; color:#e0a15c;"
+                         " font-size:12px;")
+        lb.setProperty("chatKind", "notice")
+        lb.setProperty("chatText", text)
         wrap = self._row()
         h = QHBoxLayout(wrap)
-        h.setContentsMargins(2, 0, 0, 0)
+        h.setContentsMargins(0, 0, 0, 0)
         h.addWidget(lb)
-        h.addStretch(1)
+        self.flow.insertWidget(self.flow.count() - 1, wrap)
+        self._follow_bottom(800)
+
+    def _think_start(self):
+        """等待占位（2026-11-16 重做）
+
+        用户反馈「输入对话没有显示任何内容」：本地模型首轮要 30~60 秒，
+        而原来这里只有一行 12px 灰字「思考中… 0.0s」，既不起眼、也不说
+        在等什么、要等多久。现在拆成两行：主行给状态与时序，副行给预期与
+        可操作建议，并且**强制贴底**（否则占位插在视口外等于没有）。
+        """
+        import time
+        self._think_t0 = time.time()
+        lb = QLabel(T("正在请求模型…"))
+        lb.setObjectName("ChatBody")
+        lb.setWordWrap(True)
+        lb.setStyleSheet("color:#8fa3bd; font-size:13px;")
+        self._think_sub = QLabel(T("正在读取上下文并推理"))
+        self._think_sub.setObjectName("ChatBody")
+        self._think_sub.setWordWrap(True)
+        self._think_sub.setStyleSheet("color:#7f8894; font-size:11px;")
+        wrap = self._row()
+        v = QVBoxLayout(wrap)
+        v.setContentsMargins(2, 0, 0, 0)
+        v.setSpacing(2)
+        v.addWidget(lb)
+        v.addWidget(self._think_sub)
         self.flow.insertWidget(self.flow.count() - 1, wrap)
         self._think_lbl = wrap
         self._think_lb = lb
@@ -2045,21 +2295,31 @@ class AiPage(QWidget):
         self._think_timer.setInterval(200)
         self._think_timer.timeout.connect(self._think_tick)
         self._think_timer.start()
-        self._scroll_bottom()
+        self._pin_bottom(2500)          # 必须滚到能看见，不能只靠 _scroll_bottom
 
     def _think_tick(self):
         import time
         if self._think_lb is None:
             return
         sec = time.time() - self._think_t0
-        if sec > 45:
-            # 2026-11-06：实测系统代理抖动时请求会长时间无数据，用户只看到「思考中」会很懵
-            self._think_lb.setText(
-                f"已等待 {sec:.0f}s，模型还没有返回数据（常见于网络/代理不稳，可点「停止」重试）")
-        elif sec > 20:
-            self._think_lb.setText(f"仍在等待模型响应… {sec:.0f}s")
+        stamp = ("%.1fs" % sec) if sec < 10 else ("%ds" % int(sec))
+        self._think_lb.setText(T("正在请求模型… %s") % stamp)
+        if getattr(self, "_think_sub", None) is None:
+            return
+        if sec < 12:
+            self._think_sub.setText(T("正在读取上下文并推理"))
+        elif sec < 40:
+            self._think_sub.setText(
+                T("本地 CPU 推理较慢，通常需要 30~60 秒，请稍等"))
+        elif sec < 90:
+            # 2026-11-06：代理抖动 / 本地模型慢都会长时间无数据，得说清可能原因
+            self._think_sub.setText(
+                T("已等待 %s 秒。如果这条消息涉及启动实例，可能要 1~3 分钟；"
+                  "也可以点「停止」把问题拆小再问。") % int(sec))
         else:
-            self._think_lb.setText(f"思考中… {sec:.1f}s")
+            self._think_sub.setText(
+                T("已等待 %s 秒仍未返回。建议点「停止」后重试，"
+                  "或到设置页换个小一点的模型。") % int(sec))
 
     def _think_stop(self):
         if self._think_timer is not None:
@@ -2070,10 +2330,40 @@ class AiPage(QWidget):
             self._think_lbl.deleteLater()
             self._think_lbl = None
             self._think_lb = None
+            self._think_sub = None
+
+    def _follow_bottom(self, ms: int = 500):
+        """内容追加后跟着走 —— 但只在「本来就在底部」时才跟（2026-11-15）
+
+        为什么不能无条件贴底：流式输出时用户常常上滚去看历史，硬拽回底部
+        非常烦人。判据取「距底部 80px 内」或「仍在贴底窗口期」。
+
+        为什么不能只调 _scroll_bottom：气泡是 addWidget 进去的，此时
+        QScrollArea 的几何还没重算，sb.maximum() 仍是旧值（常常就是旧位置），
+        所以视觉上「没动」。得靠 _pin_bottom 跟着 rangeChanged 滚动。
+        """
+        sb = self.scroll.verticalScrollBar()
+        pinned = time.monotonic() < getattr(self, "_pin_until", 0.0)
+        if pinned or sb.maximum() - sb.value() <= 80:
+            self._pin_bottom(ms)
+
+    def _jump(self, v: int):
+        """程序发起的滚动。
+
+        必须和用户滚动区分开：贴底窗口期内用户滚轮上翻是很常见的，
+        如果分不清，rangeChanged 一响又把人家拽回底部。这里用一个标志位
+        隔开——程序 setValue 期间置位，valueChanged 里看到置位就不解除贴底。
+        """
+        sb = self.scroll.verticalScrollBar()
+        self._prog_scroll = True
+        try:
+            sb.setValue(v)
+        finally:
+            self._prog_scroll = False
 
     def _scroll_bottom(self):
         sb = self.scroll.verticalScrollBar()
-        sb.setValue(sb.maximum())
+        self._jump(sb.maximum())
 
     # 切会话默认停在「最新一条」，而不是让用户自己拖到底（2026-11-14 用户报障）。
     # 坑：气泡是 setFixedWidth + 自动换行，高度要等布局激活才算得出来，
@@ -2088,16 +2378,28 @@ class AiPage(QWidget):
             # 用户一动手就解除贴底，绝不跟用户抢滚动条
             sb.sliderPressed.connect(self._unpin_bottom)
             sb.actionTriggered.connect(lambda *_: self._unpin_bottom())
+            sb.valueChanged.connect(self._on_scroll_value)
         self._scroll_bottom()
-        QTimer.singleShot(0, self._scroll_bottom)
-        QTimer.singleShot(60, self._scroll_bottom)
+        # 预约补滚也要看窗口：布局重算要几十 ms，用户在这期间上翻
+        # （valueChanged → _unpin_bottom）就不能再拽回去（2026-11-17）
+        QTimer.singleShot(0, self._scroll_bottom_if_pinned)
+        QTimer.singleShot(60, self._scroll_bottom_if_pinned)
+
+    def _scroll_bottom_if_pinned(self):
+        if time.monotonic() < getattr(self, "_pin_until", 0.0):
+            self._scroll_bottom()
 
     def _unpin_bottom(self):
         self._pin_until = 0.0
 
+    def _on_scroll_value(self, _v):
+        # 用户拖动/滚轮（非程序滚动）→ 立刻停止跟随
+        if not getattr(self, "_prog_scroll", False):
+            self._unpin_bottom()
+
     def _on_scroll_range(self, _lo, hi):
         if time.monotonic() < getattr(self, "_pin_until", 0.0):
-            self.scroll.verticalScrollBar().setValue(hi)
+            self._jump(hi)
 
     # -------------------------------------------------- 对外（兼容旧调用）
     def _add_bubble(self, role: str, text: str):
@@ -2113,6 +2415,46 @@ class AiPage(QWidget):
 
     def _finish_tool_card(self, name: str, ok: bool, brief: str, ms: int = 0):
         self._finish_tool_item(name, ok, brief, ms)
+
+    def _set_ai_state(self, color: str, text: str):
+        self.lb_ai_dot.setStyleSheet("color:%s; font-size:11px;" % color)
+        self.lb_ai.setText(text)
+
+    def refresh_ai_state(self):
+        """当前 AI 服务商与模型状态（2026-11-16）
+
+        用户原话「也不知道什么时候加载完成模型」——本地模型的启停以前只有设置页
+        那张卡片知道，AI 页完全看不出来。这里读**内存缓存**（不做 HTTP 探测，
+        UI 线程不能等 1~2 秒）。
+        """
+        st = (self.cfg.get("settings") or {})
+        base = str(st.get("ai_base_url") or "")
+        model = str(st.get("ai_model") or "")
+        if not st.get("ai_enabled", True):
+            self._set_ai_state("#888", T("AI 未启用"))
+            return
+        if not base:
+            self._set_ai_state("#888", T("未配置 AI 服务商"))
+            return
+        low = base.lower()
+        if "127.0.0.1" in low or "localhost" in low:
+            from app import local_llm
+            if local_llm.SERVER.running:
+                info = local_llm.SERVER.info or {}
+                name = str(info.get("name") or model or T("本地模型"))
+                ctx = info.get("ctx")
+                txt = T("本地 · %s") % name
+                if ctx:
+                    txt += T(" · 上下文 %s") % ctx
+                self._set_ai_state("#4cd47c", txt)
+            else:
+                self._set_ai_state(
+                    "#e8635a",
+                    T("本地模型未启动（设置页 → 本地模型 → 启动本地服务）"))
+        elif model:
+            self._set_ai_state("#4cd47c", T("云端 · %s") % model)
+        else:
+            self._set_ai_state("#888", T("未指定模型"))
 
     def refresh_inst(self):
         """显示实例信息并**异步探测端口**：状态点必须反映"真的在跑"，不是"配置里有" """
@@ -2162,8 +2504,11 @@ class AiPage(QWidget):
             QTimer.singleShot(0, self._relayout_messages)
             # 重排会改气泡高度 → 滚到底也要跟着重算一次
             QTimer.singleShot(0, lambda: self._pin_bottom(800))
+        self.refresh_ai_state()
         if getattr(self, "_status_timer", None) is None:
             self._status_timer = QTimer(self)
             self._status_timer.setInterval(5000)
             self._status_timer.timeout.connect(self.refresh_inst)
+            # 本地模型在别处启动/停止后，这里 5 秒内也能跟上
+            self._status_timer.timeout.connect(self.refresh_ai_state)
             self._status_timer.start()

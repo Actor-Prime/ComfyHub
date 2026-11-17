@@ -229,4 +229,12 @@ print(f"AI 补全队列回归：{len(RESULTS) - len(fails)}/{len(RESULTS)} 通�
 if fails:
     for n, _, d in fails:
         print(f"  FAIL {n}  [{d}]")
-sys.exit(1 if fails else 0)
+# QThread 收尾崩溃规避（同 test_ai_stop 排查记录）：
+# WorkflowPage 内有 QThread 子对象，os._exit / sys.exit 走 DllMain detach
+# 时 Qt 析构链可能崩。TerminateProcess 直接杀进程，先 flush 保证输出不丢。
+sys.stdout.flush()
+sys.stderr.flush()
+import ctypes
+_ctypes_exit = 1 if fails else 0
+ctypes.windll.kernel32.TerminateProcess(
+    ctypes.windll.kernel32.GetCurrentProcess(), _ctypes_exit)

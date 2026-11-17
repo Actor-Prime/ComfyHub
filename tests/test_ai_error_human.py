@@ -57,6 +57,57 @@ check("5xx 说是厂商侧问题", "服务端出错" in m500 and "厂商" in m50
 m404 = A.describe_error(A.ApiError(404, "model not found"))
 check("404 附服务端原文", "model not found" in m404, m404[-60:])
 
+# ---- 400 特例：上下文超限（2026-11-17 用户截图 8243 > 8192）----
+print("[A2] 400 上下文超限专用文案")
+_CTX_RAW = ("request (8243 tokens) exceeds the available context size "
+            "(8192 tokens)")
+mctx = A.describe_error(A.ApiError(400, _CTX_RAW))
+check("上下文超限命中专用提示", "上下文已满" in mctx, mctx[:60])
+check("带具体 token 数", "8243" in mctx and "8192" in mctx, mctx[:80])
+check("不再误导改模型名", "参数或模型名有问题" not in mctx, mctx[:60])
+check("给三条可操作建议", "新对话" in mctx and "上下文压缩" in mctx
+      and "JSON" in mctx, mctx[:200])
+check("仍附服务端原文", _CTX_RAW in mctx, mctx[-80:])
+# OpenAI 风格原文也要识别
+mctx2 = A.describe_error(A.ApiError(
+    400, "This model's maximum context length is 8192 tokens. However, "
+         "your messages resulted in 10000 tokens"))
+check("OpenAI 风格也命中", "上下文已满" in mctx2 and "10000" in mctx2,
+      mctx2[:80])
+# 普通 400 仍走通用文案
+check("普通 400 不受影响", "参数或模型名有问题" in
+      A.describe_error(A.ApiError(400, "boom")), "")
+# 英文模式
+i18n.set_lang("en")
+try:
+    en_ctx = A.describe_error(A.ApiError(400, _CTX_RAW))
+    check("英文上下文提示", en_ctx.startswith("Context full"), en_ctx[:40])
+finally:
+    i18n.set_lang("zh")
+
+# ---- 5xx 特例：坏工具参数（2026-11-17 用户截图 column 9719 的 500）----
+print("[A3] 5xx 坏工具参数专用文案")
+_TOOLARGS_RAW = ("Failed to parse tool call arguments as JSON: "
+                 "[json.exception.parse_error.101] parse error at line 1, "
+                 "column 9719: syntax error w")
+mtool = A.describe_error(A.ApiError(500, _TOOLARGS_RAW))
+check("坏参数命中专用提示", "不是合法 JSON" in mtool, mtool[:80])
+check("不再误导厂商侧故障", "厂商" not in mtool, mtool[:80])
+check("给换模型/新对话建议", "换一个模型" in mtool and "新对话" in mtool,
+      mtool[:200])
+check("仍附服务端原文", "Failed to parse" in mtool, mtool[-80:])
+# 普通 500 不被误伤，仍走厂商文案
+check("普通 500 不受影响", "厂商" in
+      A.describe_error(A.ApiError(500, "internal boom")), "")
+# 英文模式
+i18n.set_lang("en")
+try:
+    en500 = A.describe_error(A.ApiError(500, _TOOLARGS_RAW))
+    check("英文坏参数提示", "valid JSON" in en500 and "vendor" not in en500,
+          en500[:80])
+finally:
+    i18n.set_lang("zh")
+
 # ============================================================ B/C. 网络层
 print("[B] 网络类异常")
 check("超时 → 请求超时",
@@ -151,6 +202,66 @@ if errs:
           text[:60])
     check("raw 保留原始异常", "401" in (errs[0].get("raw") or ""),
           errs[0].get("raw"))
+
+# ---- 重试 notice 文案分流（D2 2026-11-17 用户截图：HTTP 500 却说「连接中断」）----
+print("[H] 重试 notice 分流")
+_old_round2 = ai_agent._round_chat
+_old_waits = ai_agent.RETRY_WAITS_S
+ai_agent.RETRY_WAITS_S = (0.0, 0.0)   # 不真睡
+
+_calls_n = {"n": 0}
+
+
+def _round_500_then_ok(*a, **k):
+    _calls_n["n"] += 1
+    if _calls_n["n"] == 1:
+        raise A.ApiError(500, _TOOLARGS_RAW)
+    return {"content": "ok", "tool_calls": []}
+
+
+ai_agent._round_chat = _round_500_then_ok
+try:
+    cap2 = []
+    ai_agent.run_agent(cfg, {"id": "a", "port": 8188, "comfyui_path": "C:/tmp"},
+                       "hi", [], lambda kind, **kw: cap2.append((kind, kw)),
+                       log=lambda *a: None)
+finally:
+    ai_agent._round_chat = _old_round2
+    ai_agent.RETRY_WAITS_S = _old_waits
+
+notes2 = [kw.get("text", "") for kind, kw in cap2 if kind == "notice"]
+check("5xx 重试发了 notice", len(notes2) >= 1, notes2)
+check("5xx notice 说服务端返回状态码",
+      any("服务端返回 500" in t for t in notes2), notes2)
+check("5xx notice 不说连接中断",
+      not any("连接中断" in t for t in notes2), notes2)
+check("5xx notice 带重试进度", any("第 1/2 次" in t for t in notes2), notes2)
+
+# 网络异常（可重试的超时）仍说「连接中断」
+_calls_n["n"] = 0
+
+
+def _round_timeout_then_ok(*a, **k):
+    _calls_n["n"] += 1
+    if _calls_n["n"] == 1:
+        raise TimeoutError("timed out")
+    return {"content": "ok", "tool_calls": []}
+
+
+ai_agent._round_chat = _round_timeout_then_ok
+ai_agent.RETRY_WAITS_S = (0.0, 0.0)
+try:
+    cap3 = []
+    ai_agent.run_agent(cfg, {"id": "a", "port": 8188, "comfyui_path": "C:/tmp"},
+                       "hi", [], lambda kind, **kw: cap3.append((kind, kw)),
+                       log=lambda *a: None)
+finally:
+    ai_agent._round_chat = _old_round2
+    ai_agent.RETRY_WAITS_S = _old_waits
+
+notes3 = [kw.get("text", "") for kind, kw in cap3 if kind == "notice"]
+check("网络异常 notice 说连接中断",
+      any("连接中断" in t for t in notes3), notes3)
 
 print(f"\nPASS {PASS} / FAIL {FAIL}")
 sys.exit(1 if FAIL else 0)

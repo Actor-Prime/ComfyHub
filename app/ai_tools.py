@@ -27,7 +27,7 @@ from app import workflow_scan
 READONLY_TOOLS = frozenset({
     "get_health", "get_logs", "queue_list", "list_models", "search_models",
     "list_repo_files", "list_workflows", "check_workflow", "inspect_workflow",
-    "get_job", "recall_history",
+    "get_job", "recall_history", "list_templates", "web_search",
 })
 
 CACHE_TTL_S = 30.0      # 只读结果复用时长；窗口更短意义不大（一次提问就有几十秒）
@@ -39,14 +39,22 @@ class ToolCtx:
     """工具执行上下文；MCP 模式下 mainwin=None"""
 
     def __init__(self, cfg: dict, inst: dict, mainwin=None, log=print,
-                 profile=None, chat_id: str = ""):
+                 profile=None, chat_id: str = "", cancel=None):
         self.cfg = cfg or {}
         self.inst = inst or {}
         self.chat_id = str(chat_id or "")   # 会话 id：recall_history 回查用
         self.mainwin = mainwin            # GUI 模式才有：用于后台下载队列
         self.log = log
+        # 取消信号（threading.Event）：长耗时工具（启停实例、等任务）要能被打断。
+        # 2026-11-15 事故：助手调 control_instance(start) 等 180s，用户点「停止」
+        # 后工具里压根不检查，界面上的「新建对话」又因为 worker 还在而静默返回
+        # —— 用户看到的就是「整个软件卡死」。
+        self.cancel = cancel
         self.api = f"http://127.0.0.1:{int(self.inst.get('port') or 8188)}"
         self.comfyui_path = self.inst.get("comfyui_path") or ""
+        # 实例解释器：官方模板库（comfyui_workflow_templates*）在它的
+        # site-packages 里，扫模板时要靠它定位
+        self.python_path = self.inst.get("python_path") or ""
         # 2026-11-07：跟着实例设置里的「模型目录」走，别硬编码 models/
         from app.model_paths import model_root
         self.models_dir = model_root(self.comfyui_path, self.inst.get("models_dir") or "")
@@ -154,6 +162,17 @@ def _t_control_instance(args, ctx: ToolCtx):
     def _ui(fn):
         QTimer.singleShot(0, mw, fn)       # 编组回 mainwin 所在的 UI 线程
 
+    def _console(text: str):
+        """把 AI 的操作写进控制台（2026-11-16）
+
+        用户反馈「AI 说启动了，控制台什么都没有」——控制台原本只收实例自身
+        的 stdout，AI 发的启停指令完全不留痕，出问题无从对账。
+        """
+        page = getattr(mw, "console_page", None)
+        if page is None or not hasattr(page, "append_line"):
+            return
+        _ui(lambda: page.append_line(text))
+
     def _brief_tail():
         lines = [t for _, t in procs.tail(iid, 10)][-3:]
         return " | ".join(ln.strip() for ln in lines if ln.strip()) or "（无日志）"
@@ -161,11 +180,16 @@ def _t_control_instance(args, ctx: ToolCtx):
     # ---- stop ----
     if action == "stop":
         if not procs.is_running(inst):
+            _console("[AI] 停止实例 %s：本来就没在运行" % (inst.get("name") or ""))
             return ctx.ok(action="stop", already=True, msg="实例本来就未运行")
+        _console("[AI] 停止实例 %s …" % (inst.get("name") or ""))
         _ui(lambda: procs.get(inst).stop())
         for _ in range(30):                          # 最多 15s
             if not procs.is_running(inst):
                 break
+            if _cancelled(ctx):
+                return ctx.ok(action="stop", cancelled=True,
+                              msg="已按停止，停止指令已发出（后台继续收尾）")
             time.sleep(0.5)
         stopped = not procs.is_running(inst)
         return ctx.ok(action="stop", stopped=stopped,
@@ -188,10 +212,14 @@ def _t_control_instance(args, ctx: ToolCtx):
 
     # AI 触发的启动不要弹浏览器：就绪瞬间抢焦点会把正在对话的用户打断
     # （2026-11-14 实测，Windows 上直接顶掉 ComfyHub 前台）
+    _console("[AI] 启动实例 %s …" % (inst.get("name") or ""))
     _ui(lambda: procs.get(inst).start(inst, open_browser=False))
     for _ in range(20):                              # 最多 10s 等进程起来
         if procs.is_running(inst):
             break
+        if _cancelled(ctx):
+            return ctx.ok(action=action, cancelled=True,
+                          msg="已按停止，启动请求已发出但不再等待")
         time.sleep(0.5)
     if not procs.is_running(inst):
         return ctx.fail("启动失败：进程没有起来（常见原因：Python 路径无效、"
@@ -203,6 +231,18 @@ def _t_control_instance(args, ctx: ToolCtx):
     port = int(inst.get("port") or 8188)
     ready = False
     while time.time() < deadline:
+        if _cancelled(ctx):
+            # 别再占着 AI 会话等下去了：进程该起还是会起，让模型用 get_health 复查
+            return ctx.ok(action=action, cancelled=True,
+                          pid=procs.get(inst).pid,
+                          port=procs.actual_port(inst) or port,
+                          msg="已按停止，不再等待 HTTP 就绪（进程仍在后台启动，"
+                              "过一会儿可用 get_health 复查）")
+        if not procs.is_running(inst):
+            # 进程自己退了（缺依赖/端口冲突/崩溃）—— 等满 180s 毫无意义，
+            # 直接把日志尾部交给模型，比一句「未就绪」有用得多
+            return ctx.fail("实例进程启动后立即退出（不是慢，是失败了）。"
+                            f"日志尾部：{_brief_tail()}")
         ap = procs.actual_port(inst) or port         # 端口被占自动顺延后的真实端口
         port = ap
         if _probe_ok(ap):
@@ -554,8 +594,24 @@ def _wf_path(ctx, name):
     return p
 
 
+def _is_api_wf(wf):
+    """API 格式：顶层 {node_id: {class_type, inputs}}，没有 UI 的 nodes 数组。
+
+    2026-11-18 模拟实测：minimal_sd_txt2img.json 就是这种，旧版 inspect/patch
+    只认 UI 格式 → node_count=0、patch 报「节点不存在」，AI 改不了提示词。
+    """
+    return (isinstance(wf, dict) and not isinstance(wf.get("nodes"), list)
+            and any(isinstance(v, dict) and "class_type" in v for v in wf.values()))
+
+
 def _iter_nodes(wf):
-    """遍历 (key, node)：顶层 key=节点id；子图 key='sg:<子图id>:<节点id>'"""
+    """遍历 (key, node)：UI 顶层 key=节点id；子图 key='sg:<子图id>:<节点id>'；
+    API 格式 key=顶层节点id（node 带 class_type/inputs，无 widgets_values）。"""
+    if _is_api_wf(wf):
+        for k, v in wf.items():
+            if isinstance(v, dict) and "class_type" in v:
+                yield str(k), v
+        return
     for n in wf.get("nodes") or []:
         yield str(n.get("id")), n
     for sg in (wf.get("definitions") or {}).get("subgraphs") or []:
@@ -581,29 +637,41 @@ def _t_inspect_workflow(args, ctx: ToolCtx):
     path = _wf_path(ctx, _wf_name(args))
     with open(path, encoding="utf-8") as f:
         wf = json.load(f)
+    api = _is_api_wf(wf)
     nodes = []
     for key, n in _iter_nodes(wf):
-        wv = n.get("widgets_values")
-        vals = []
-        if isinstance(wv, list):
-            vals = [(str(v)[:120] + "…") if isinstance(v, str) and len(str(v)) > 120 else v
-                    for v in wv]
         # 空字段不写（2026-11-14）：33 个节点里 title 大多为空，
         # 每条都带 "title": "" 纯浪费预算，导致真内容被裁掉
-        item = {"key": key, "type": n.get("type")}
-        if n.get("title"):
-            item["title"] = n.get("title")
-        hint = _node_hint(n.get("type"))
+        ntype = n.get("class_type") if api else n.get("type")
+        item = {"key": key, "type": ntype}
+        if (not api) and n.get("title"):
+            item["title"] = n["title"]
+        hint = _node_hint(ntype)
         if hint:
             item["hint"] = hint
-        if vals:
-            item["widgets"] = vals
+        if api:
+            # API 格式没有 widgets_values，值在 inputs 里（键名即字段名）
+            ins = n.get("inputs") or {}
+            item["inputs"] = {k: (str(v)[:120] + "…") if isinstance(v, str) and len(str(v)) > 120
+                              else v for k, v in ins.items()}
+        else:
+            wv = n.get("widgets_values")
+            vals = []
+            if isinstance(wv, list):
+                vals = [(str(v)[:120] + "…") if isinstance(v, str) and len(str(v)) > 120 else v
+                        for v in wv]
+            if vals:
+                item["widgets"] = vals
         nodes.append(item)
     has_sub = bool((wf.get("definitions") or {}).get("subgraphs"))
+    if api:
+        note = ("API 格式：patch_workflow 用 ops[].field 指定 inputs 里的键名"
+                "（如 text/seed/steps），node 填上面的 key，不要用 index。")
+    else:
+        note = ("节点 key 直接用于 patch_workflow 的 ops[].node；widgets 顺序即 index。"
+                + (" 该工作流含子图，子图节点的 key 形如 sg:<子图id>:<节点id>。" if has_sub else ""))
     return ctx.ok(
-        name=os.path.basename(path), node_count=len(nodes), nodes=nodes,
-        note=("节点 key 直接用于 patch_workflow 的 ops[].node；widgets 顺序即 index。"
-              + (" 该工作流含子图，子图节点的 key 形如 sg:<子图id>:<节点id>。" if has_sub else "")),
+        name=os.path.basename(path), node_count=len(nodes), nodes=nodes, note=note,
     )
 
 
@@ -618,7 +686,7 @@ def _widget_index(obj_info, ntype, field):
             t = spec[0]
             is_w = isinstance(t, list) or (isinstance(t, str)
                                            and (t in ("INT", "FLOAT", "STRING", "BOOLEAN")
-                                                or t == "COMBO"))
+                                                or t in ("COMBO", "COMFY_DYNAMICCOMBO_V3")))
             if not is_w:
                 continue
             if k == field:
@@ -646,6 +714,7 @@ def _t_patch_workflow(args, ctx: ToolCtx):
                         f"收到的是：{str(bad[0])[:60]}")
     with open(src_path, encoding="utf-8") as f:
         wf = json.load(f)
+    api = _is_api_wf(wf)
     index = {k: n for k, n in _iter_nodes(wf)}
     obj = None
     applied, failed = [], []
@@ -653,7 +722,45 @@ def _t_patch_workflow(args, ctx: ToolCtx):
         key = str(op.get("node") or op.get("key") or op.get("node_id") or "").strip()
         node = index.get(key)
         if node is None:
-            failed.append(f"节点 {key} 不存在")
+            # 兜底：模型有时把 class_type 当 node 传（如 "CLIPTextEncode"），
+            # 唯一匹配就直接用，多个就报清楚让模型挑 key（2026-11-18 模拟实测）
+            hits = [k for k, n in index.items()
+                    if str(n.get("class_type") or n.get("type") or "") == key]
+            if len(hits) == 1:
+                key, node = hits[0], index[hits[0]]
+            elif len(hits) > 1:
+                failed.append(f"节点类型 {key} 有多个（key: {'、'.join(hits)}），"
+                              "请用 inspect 的 key 指定具体节点")
+                continue
+            else:
+                failed.append(f"节点 {key} 不存在")
+                continue
+        if api:
+            # API 格式：值在 inputs 里，按字段名改；index 也容忍（映射到 inputs 键序）
+            ins = node.get("inputs")
+            if not isinstance(ins, dict):
+                ins = {}
+                node["inputs"] = ins
+            field = str(op.get("field") or "").strip()
+            if not field and op.get("index") is not None:
+                keys = list(ins.keys())
+                i = int(op.get("index") or 0)
+                if 0 <= i < len(keys):
+                    field = keys[i]
+                else:
+                    failed.append(f"节点 {key} 没有第 {i} 个输入字段"
+                                  f"（现有：{'、'.join(keys) or '空'}）")
+                    continue
+            if not field:
+                failed.append(f"节点 {key} 缺 field：API 格式要写 inputs 里的键名"
+                              "（如 text/seed/steps），不是 index")
+                continue
+            if field not in ins:
+                failed.append(f"节点 {key} 没有字段 {field}"
+                              f"（现有：{'、'.join(ins.keys()) or '空'}）")
+                continue
+            ins[field] = op.get("value")
+            applied.append(f"{key}.{field}={str(op.get('value'))[:40]}")
             continue
         wv = node.setdefault("widgets_values", [])
         if not isinstance(wv, list):
@@ -671,6 +778,14 @@ def _t_patch_workflow(args, ctx: ToolCtx):
         while len(wv) <= idx:
             wv.append("")
         wv[idx] = op.get("value")
+        # widgets_values_named 与数组由前端同一循环产出、键序即 widget 序
+        # （2026-11-18 H3 实测：两者值会分叉，只改数组在「named 优先」的
+        #  前端里 patch 等于没改）→ 按键序同步
+        named = node.get("widgets_values_named")
+        if isinstance(named, dict):
+            nkeys = list(named.keys())
+            if idx < len(nkeys):
+                named[nkeys[idx]] = op.get("value")
         applied.append(f"{key}.#{idx}={str(op.get('value'))[:40]}")
     if not applied:
         return ctx.fail("没有任何改动生效：" + "；".join(failed))
@@ -681,6 +796,105 @@ def _t_patch_workflow(args, ctx: ToolCtx):
         json.dump(wf, f, ensure_ascii=False, indent=2)
     return ctx.ok(name=out_name, applied=applied, failed=failed,
                   note="改的是副本，原工作流未被修改；用 run_workflow 跑这个新名字")
+
+
+def _t_list_templates(args, ctx: ToolCtx):
+    """检索工作流模板：本地库 + 官方模板库（2026-11-15）
+
+    为什么不让模型直接写工作流 JSON：实测 2B 级模型会编节点名与字段
+    （KSampler 缺 model/positive/negative、cfg 写成 cfg_scale）。改成
+    「选模板 + 填参数」，图结构由代码保证，模型只做语言理解。
+
+    官方模板（pip 的 comfyui_workflow_templates + ComfyUI/blueprints）一并入库，
+    每个候选带上缺模型数——官方模板引用的模型动辄 10GB+，不先提示，模型会
+    直接 apply 然后跑出「模型不存在」。
+    """
+    from app import workflow_lib
+    q = str(args.get("query") or args.get("keyword") or "").strip()
+    tpls = workflow_lib.scan(ctx.comfyui_path, include_official=True,
+                             python_path=getattr(ctx, "python_path", ""))
+    if not tpls:
+        return ctx.fail("工作流库里没有可用模板（目录为空？）")
+    try:
+        limit = max(1, min(10, int(args.get("limit") or 5)))
+    except (TypeError, ValueError):
+        limit = 5
+    hits = workflow_lib.search(tpls, q, limit=limit) if q else []
+    if not hits:            # 检索无命中：给最近修改的几个兜底，别让模型空手而归
+        hits = tpls[:limit]
+    inst = workflow_lib.installed_models(ctx.comfyui_path,
+                                         ctx.inst.get("models_dir") or "")
+    out = []
+    for t in hits:
+        brief = workflow_lib.brief(t, with_slots=True)
+        brief["source"] = t.get("source") or "local"
+        miss = workflow_lib.missing_models(t, inst)
+        lack = [m for m in miss if not m["ok"]]
+        brief["models_ok"] = len(miss) - len(lack)
+        brief["models_total"] = len(miss)
+        if lack:
+            brief["missing"] = ["%s(%s)" % (m["file"], m["dir"]) for m in lack[:4]]
+            brief["model_hint"] = workflow_lib.model_note(t, miss)
+        out.append(brief)
+    return ctx.ok(
+        total=len(tpls),
+        local=sum(1 for t in tpls if t.get("source") == "local"),
+        official=sum(1 for t in tpls if t.get("source") != "local"),
+        candidates=out,
+        note="挑一个 name，用 apply_template 只改参数；不要输出节点结构。"
+             "missing 里的模型没装时，先告诉用户要下什么（可用 download_model 或让用户在模型库下载）",
+    )
+
+
+def _t_apply_template(args, ctx: ToolCtx):
+    """用模板生成新工作流（只改值，结构由守卫保证不变）"""
+    from app import workflow_lib
+    name = str(args.get("name") or "").strip()
+    edits = args.get("edits") or args.get("params") or {}
+    if not name:
+        return ctx.fail("缺少 name（用 list_templates 查模板名）")
+    found = workflow_lib.find_template(name, ctx.comfyui_path,
+                                       getattr(ctx, "python_path", ""))
+    src = found.get("path") or ""
+    if not src or not os.path.isfile(src):
+        return ctx.fail(f"模板不存在：{name}（用 list_templates 查）")
+    if not isinstance(edits, dict) or not edits:
+        return ctx.fail('edits 不能为空，格式：{"prompt": "...", "width": 832}')
+    with open(src, encoding="utf-8") as f:
+        wf = json.load(f)
+    try:
+        new, applied, warns = workflow_lib.apply_edits(wf, edits)
+    except ValueError as e:
+        return ctx.fail(str(e))
+    if not applied:
+        return ctx.fail("没有一项参数被应用：" + "；".join(warns or ["edits 的键都不在模板里"]))
+    problems = workflow_lib.validate(new)
+    stem = os.path.splitext(os.path.basename(src))[0]
+    out_name = stem + "_tpl.json"
+    out_path = os.path.join(ctx.workflows_dir, out_name)
+    os.makedirs(ctx.workflows_dir, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(new, f, ensure_ascii=False, indent=2)
+    # 缺模型提示：官方模板尤其需要（用户装的是量化版，官方模板认的是另一份文件名）
+    tpl = workflow_lib.describe(src, source=found.get("source") or "local")
+    inst = workflow_lib.installed_models(ctx.comfyui_path,
+                                         ctx.inst.get("models_dir") or "")
+    miss = workflow_lib.missing_models(tpl or {}, inst)
+    lack = [m for m in miss if not m["ok"]]
+    res = ctx.ok(
+        name=out_name,
+        source=found.get("source") or "local",
+        applied=["%s=%s" % (a["field"], str(a["value"])[:40]) for a in applied],
+        warnings=warns,
+        problems=problems,
+        note=("结构未改动，可先 check_workflow 体检再 run_workflow"
+              if not problems else "静态校验发现问题，先别跑，按 problems 修正参数"),
+    )
+    if lack:
+        res["missing_models"] = ["%s(%s)" % (m["file"], m["dir"]) for m in lack]
+        res["model_hint"] = workflow_lib.model_note(tpl or {}, miss)
+        res["note"] += "；另有 %d 个模型没装，先按 model_hint 补齐再跑" % len(lack)
+    return res
 
 
 def _t_import_workflow(args, ctx: ToolCtx):
@@ -723,6 +937,9 @@ def _t_wait_job(args, ctx: ToolCtx):
     limit = max(10, min(1800, int(args.get("timeout_s") or 300)))
     t0 = time.time()
     while time.time() - t0 < limit:
+        if _cancelled(ctx):
+            return ctx.ok(state="cancelled", images=[],
+                          note="用户已停止等待；任务可能还在跑，可用 get_job 复查")
         try:
             h = _http(ctx, f"/history/{pid}", timeout=15)
         except InstanceDown:
@@ -756,6 +973,36 @@ def _t_wait_job(args, ctx: ToolCtx):
         time.sleep(2)
     return ctx.ok(state="timeout", images=[],
                   note=f"等了 {limit}s 还没完成，可用 get_job 再查")
+
+
+def _t_web_search(args, ctx: ToolCtx):
+    """联网搜索（2026-11-15）
+
+    本地 2B 模型的知识停在训练时，用户问「H3 要多少显存」这类新东西，它会
+    一本正经地编。给它一个真能查的工具，比在提示词里喊「别编」有用。
+    返回只给标题/链接/摘要——正文塞进小模型上下文只会挤掉真正的问题。
+    """
+    from app import web_search
+    q = str(args.get("query") or args.get("q") or "").strip()
+    if not q:
+        return ctx.fail("query 不能为空")
+    try:
+        limit = max(1, min(10, int(args.get("limit") or 6)))
+    except (TypeError, ValueError):
+        limit = 6
+    key = ""
+    try:
+        key = ((ctx.cfg.get("settings") or {}).get("tavily_key")
+               or os.environ.get("TAVILY_API_KEY") or "")
+    except Exception:
+        key = os.environ.get("TAVILY_API_KEY") or ""
+    res = web_search.search(q, limit=limit, tavily_key=key)
+    if not res.get("ok"):
+        return ctx.fail(res.get("error") or "搜索失败")
+    return ctx.ok(engine=res.get("engine"), count=len(res["results"]),
+                  results=res["results"],
+                  note="引用事实时带上 url；结果里没有的内容不要臆测。"
+                       "查到的模型名/文件名可以直接用于 search_models 或 download_model")
 
 
 def _t_ask_user(args: dict, ctx: ToolCtx) -> dict:
@@ -829,10 +1076,31 @@ TOOLS = [
                                                            "value": {}},
                                             "required": ["node", "value"]}}},
          "required": ["name", "ops"]}, "fn": _t_patch_workflow},
+    {"name": "list_templates",
+     "desc": "按需求检索**本地工作流模板**（含用途标签与可改参数）。做新工作流时先调它，"
+             "拿到候选后交给 apply_template；不要自己编节点结构（小模型编出来必然是坏的）。",
+     "schema": {"type": "object", "properties": {
+         "query": {"type": "string", "description": "用户要的效果/用途，如「三视图 竖幅」「面部修复」"},
+         "limit": {"type": "integer", "description": "候选数量，默认 5"}},
+         "required": []}, "fn": _t_list_templates},
+    {"name": "apply_template",
+     "desc": "用模板生成工作流副本（_tpl.json）：只改参数值，绝不增删节点/改连线，"
+             "结构被改动会自动中止。edits 的键用 role：prompt/negative/width/height/seed/steps/cfg。",
+     "schema": {"type": "object", "properties": {
+         "name": {"type": "string", "description": "list_templates 返回的模板名（含 .json）"},
+         "edits": {"type": "object", "description": "如 {\"prompt\":\"银发少女\",\"width\":832,\"height\":1216}"}},
+         "required": ["name", "edits"]}, "fn": _t_apply_template},
     {"name": "import_workflow", "desc": "把用户给的 JSON 保存成工作流（自动识别 UI 格式/API 格式）。",
      "schema": {"type": "object", "properties": {
          "json_text": {"type": "string"}, "name": {"type": "string"}},
          "required": ["json_text"]}, "fn": _t_import_workflow},
+    {"name": "web_search",
+     "desc": "联网搜索（Bing/DDG，有 Key 时走 Tavily）。用于查模型显存要求、节点插件名、"
+             "ComfyUI 新版本变化等自己不确定的事实——不要凭记忆编。返回标题+链接+摘要。",
+     "schema": {"type": "object", "properties": {
+         "query": {"type": "string", "description": "搜索词，中文英文都行"},
+         "limit": {"type": "integer", "description": "结果条数，默认 6"}},
+         "required": ["query"]}, "fn": _t_web_search},
     {"name": "wait_job", "desc": "等任务跑完并返回出图绝对路径（内部轮询，别自己反复 get_job）。",
      "schema": {"type": "object", "properties": {
          "prompt_id": {"type": "string"}, "timeout_s": {"type": "integer"}},
@@ -860,9 +1128,18 @@ TOOLS = [
 
 
 def build_ctx(cfg: dict, inst: dict, mainwin=None, log=print,
-              profile=None, chat_id: str = "") -> ToolCtx:
+              profile=None, chat_id: str = "", cancel=None) -> ToolCtx:
     return ToolCtx(cfg, inst, mainwin=mainwin, log=log, profile=profile,
-                   chat_id=chat_id)
+                   chat_id=chat_id, cancel=cancel)
+
+
+def _cancelled(ctx) -> bool:
+    """用户是否已按「停止」（长循环里每轮都该查一次）"""
+    ev = getattr(ctx, "cancel", None)
+    try:
+        return bool(ev is not None and ev.is_set())
+    except Exception:
+        return False
 
 
 def schemas(only=None) -> list:

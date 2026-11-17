@@ -14,7 +14,51 @@ import re
 from datetime import datetime
 
 WIDGET_TYPES = {'INT', 'FLOAT', 'STRING', 'BOOLEAN'}
+# COMBO=标准下拉；COMFY_DYNAMICCOMBO_V3=新式带动态子项的下拉（SaveVideo.format
+# 等 220 处，2026-11-18 实测不识别就漏传 format → 后端 missing argument）。
+# 注意 COMFY_MATCHTYPE_V3 / COMFY_AUTOGROW_V3 是连接口，不是 widget，别加进来。
+WIDGET_TYPE_NAMES = WIDGET_TYPES | {'COMBO', 'COMFY_DYNAMICCOMBO_V3'}
 SKIPPED_TYPES = {'Note', 'MarkdownNote', 'XB_CanvasLabel'}
+
+_MISSING = object()
+
+
+class _Lit:
+    """子图边界输入未连线时、从实例 widget 兜出来的字面量值（不是连线对）"""
+    __slots__ = ('v',)
+
+    def __init__(self, v):
+        self.v = v
+
+
+def sg_widget_value(sg, inst, iname):
+    """子图实例上某边界输入对应的 widget 值；找不到返回 _MISSING。
+
+    2026-11-18 H3 视频工作流实测：子图 15 个输入里 6 个（prompt/vae_name/
+    unet_name 等）是纯 widget，根本不在实例 inputs 列表里——旧版直接抛
+    「子图输入未连线」，run_workflow 必失败。取值顺序：
+    1) widgets_values 数组：按「sg 里 widget 型输入」的序号定位（ComfyHub
+       与前端 serialiseWidgetValues 同序）；
+    2) widgets_values_named（键名→值，键序同上）——数组缺位时兜底。
+    """
+    wv = inst.get('widgets_values')
+    if isinstance(wv, list):
+        idx = 0
+        for i in sg.get('inputs') or []:
+            t = i.get('type')
+            is_w = isinstance(t, list) or (isinstance(t, str)
+                                           and t in WIDGET_TYPE_NAMES)
+            if not is_w:
+                continue
+            if i.get('name') == iname:
+                if idx < len(wv):
+                    return wv[idx]
+                break
+            idx += 1
+    named = inst.get('widgets_values_named')
+    if isinstance(named, dict) and iname in named:
+        return named[iname]
+    return _MISSING
 
 
 def fetch_obj_info(api_base: str, timeout: int = 60) -> dict:
@@ -78,6 +122,29 @@ def build(workflow: dict, obj_info: dict):
     prompt = {}
     warnings = []
 
+    def _val(r):
+        """resolve_* 返回连线对或 _Lit 字面量 → 统一成可直接写进 inputs 的值"""
+        return r.v if isinstance(r, _Lit) else list(r)
+
+    _OMIT = object()
+
+    def _optional(ctype, k):
+        return k in ((obj_info.get(ctype) or {}).get('input', {}).get('optional') or {})
+
+    def _conn(link, ctype, k, inst_id):
+        """解析连线；子图边界没接线且该输入可选 → _OMIT（前端同款：不传该输入，
+        2026-11-18 H3 实测 first_frame/last_frame 是 optional 且未接线）"""
+        try:
+            if inst_id is None:
+                l = main_links[link]
+                return _val(resolve_main(l[1], l[2]))
+            il = sg_links[link]
+            return _val(resolve_sub(inst_id, il['origin_id'], il['origin_slot']))
+        except RuntimeError as e:
+            if '未连线' in str(e) and _optional(ctype, k):
+                return _OMIT
+            raise
+
     def widget_names(ctype):
         info = obj_info.get(ctype)
         if not info:
@@ -90,7 +157,7 @@ def build(workflow: dict, obj_info: dict):
                 t = spec[0]
                 if isinstance(t, list):          # 旧式 COMBO
                     names.append(k)
-                elif isinstance(t, str) and (t in WIDGET_TYPES or t == 'COMBO'):
+                elif isinstance(t, str) and t in WIDGET_TYPE_NAMES:
                     names.append(k)
                     extra = spec[1] if len(spec) > 1 and isinstance(spec[1], dict) else {}
                     if k == 'seed' or extra.get('control_after_generate'):
@@ -130,7 +197,11 @@ def build(workflow: dict, obj_info: dict):
                 if inp['name'] == iname and inp.get('link') is not None:
                     l = main_links[inp['link']]
                     return resolve_main(l[1], l[2], depth + 1)
-            raise RuntimeError(f'子图输入 {iname} 未连线')
+            # 未连线 → 该输入的值挂在实例 widget 上（2026-11-18 H3 实测兜底）
+            val = sg_widget_value(sg, inst, iname)
+            if val is not _MISSING:
+                return _Lit(val)
+            raise RuntimeError(f'子图输入 {iname} 未连线，实例上也没有对应 widget 值')
         n = sub_nodes[inst_id][orig]
         if n['type'] == 'Reroute':
             lid = (n.get('inputs') or [{}])[0].get('link')
@@ -158,7 +229,7 @@ def build(workflow: dict, obj_info: dict):
                     continue
                 sp0 = spec[0]
                 is_widget = isinstance(sp0, list) or (
-                    isinstance(sp0, str) and (sp0 in WIDGET_TYPES or sp0 == 'COMBO'))
+                    isinstance(sp0, str) and sp0 in WIDGET_TYPE_NAMES)
                 if is_widget:
                     # widget 可能被转成输入端口并连线——连接优先取值，但位置照常消耗
                     link = None
@@ -167,12 +238,9 @@ def build(workflow: dict, obj_info: dict):
                             link = inp['link']
                             break
                     if link is not None:
-                        if inst_id is None:
-                            l = main_links[link]
-                            inputs[k] = list(resolve_main(l[1], l[2]))
-                        else:
-                            il = sg_links[link]
-                            inputs[k] = list(resolve_sub(inst_id, il['origin_id'], il['origin_slot']))
+                        v = _conn(link, t, k, inst_id)
+                        if v is not _OMIT:
+                            inputs[k] = v
                     elif wi < len(wvals):
                         inputs[k] = norm_combo(wvals[wi], spec)
                     elif isinstance(spec[1], dict) and 'default' in spec[1]:
@@ -191,24 +259,18 @@ def build(workflow: dict, obj_info: dict):
                         link = inp['link']
                         break
                 if link is not None:
-                    if inst_id is None:
-                        l = main_links[link]
-                        inputs[k] = list(resolve_main(l[1], l[2]))
-                    else:
-                        il = sg_links[link]
-                        inputs[k] = list(resolve_sub(inst_id, il['origin_id'], il['origin_slot']))
+                    v = _conn(link, t, k, inst_id)
+                    if v is not _OMIT:
+                        inputs[k] = v
         # 动态输入（object_info 未声明，如 ImageConcatMulti 的 image_3+）：补其连线
         for inp in node.get('inputs') or []:
             nm = inp.get('name')
             link = inp.get('link')
             if link is None or nm in inputs:
                 continue
-            if inst_id is None:
-                l = main_links[link]
-                inputs[nm] = list(resolve_main(l[1], l[2]))
-            else:
-                il = sg_links[link]
-                inputs[nm] = list(resolve_sub(inst_id, il['origin_id'], il['origin_slot']))
+            v = _conn(link, t, nm, inst_id)
+            if v is not _OMIT:
+                inputs[nm] = v
         if wi < len(wvals):
             warnings.append(f'{t}#{node["id"]} 有未消耗的 widget 值 {wvals[wi:]}（多为历史遗留，无害）')
         pid = f'{inst_id}:{node["id"]}' if inst_id is not None else str(node['id'])

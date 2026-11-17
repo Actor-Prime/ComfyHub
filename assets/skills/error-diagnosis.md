@@ -1,5 +1,5 @@
 # 报错诊断
-<!-- tools: get_logs, queue_list, list_workflows, check_workflow, control_instance -->
+<!-- tools: get_logs, queue_list, list_workflows, check_workflow, control_instance, web_search -->
 按固定流程定位 ComfyUI 报错，先归类再给结论。
 
 诊断顺序：

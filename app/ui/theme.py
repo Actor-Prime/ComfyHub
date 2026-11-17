@@ -650,6 +650,13 @@ QPushButton#DeleteBtn:hover { background: rgba(240, 97, 109, 0.12); }
     padding: 1px 8px;
     font-size: 11px;
 }
+/* 组件包还没下完时用橙色，跟「已就绪」的绿分开 */
+#BadgeInstalled[ok="false"] {
+    background: #3a2a16;
+    color: #e8a33e;
+    border-color: #6a512b;
+}
+#CompBar { background: transparent; }
 """
 
 

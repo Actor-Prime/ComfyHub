@@ -41,7 +41,17 @@ def _clip(msgs: list) -> list:
         role = m.get("role")
         if role not in ("user", "assistant"):
             continue
-        out.append({"role": role, "content": str(m.get("content") or "")[:MAX_CHARS]})
+        row = {"role": role, "content": str(m.get("content") or "")[:MAX_CHARS]}
+        # 时间戳/耗时（2026-11-17 用户反馈）：老消息没有这两个字段就保持
+        # 原样（只有 role/content），别凭空补一个假时间误导用户。
+        try:
+            if m.get("ts"):
+                row["ts"] = float(m["ts"])
+            if m.get("dur"):
+                row["dur"] = float(m["dur"])
+        except Exception:
+            pass
+        out.append(row)
     return out
 
 

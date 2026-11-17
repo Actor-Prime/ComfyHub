@@ -48,6 +48,24 @@ EN_DICT = {
     "PyPI 镜像:": "PyPI mirror:",
     "GitHub 代理:": "GitHub proxy:",
     "Git Clone 代理:": "Git Clone proxy:",
+    "模型镜像端点:": "Model mirror endpoint:",
+    "测试": "Test",
+    "留空用默认镜像；可填自建反代或公司内网镜像":
+        "Empty = default mirror; or use your own proxy / intranet mirror",
+    "当前生效": "Active",
+    "保存后生效": "Applies after save",
+    "正在测试": "Testing",
+    "（默认）": " (default)",
+    "可用": "Available",
+    "地址格式不对": "Bad address format",
+    "地址格式不对，要像 https://hf-mirror.com 这样":
+        "Bad address format, e.g. https://hf-mirror.com",
+    "连接超时（网络不通或地址有误）":
+        "Connection timed out (network unreachable or bad address)",
+    "证书校验失败": "TLS certificate verification failed",
+    "域名解析失败（地址拼错了？）": "DNS lookup failed (typo in the address?)",
+    "连接被拒绝（端口/服务没起？）":
+        "Connection refused (port or service not up?)",
     "留空直连；如 https://ghproxy.net/ （自动拼在 github URL 前）":
         "Empty = direct; e.g. https://ghproxy.net/ (prepended to GitHub URLs)",
     "git clone 专用代理（留空则同上）": "Proxy for git clone (empty = same as above)",
@@ -752,6 +770,7 @@ EN_DICT = {
     "加载更多": "Load more",
     "复制": "Copy",
     "重跑": "Re-run",
+    "耗时": "took",
     "未选择实例": "No instance selected",
     "移除这个附件": "Remove this attachment",
     "点右下 ✕ 或直接点这张卡片即可移除附件":
@@ -1211,6 +1230,14 @@ EN_DICT = {
         "Server said: ",
     "服务端出错（{s}）：厂商侧故障，不是你的配置问题。稍后重试；持续出现就换个模型或联系厂商。":
         "Server error ({s}): vendor-side failure, not your configuration. Retry later; if it persists, switch models or contact the vendor.",
+    # 5xx 特例：坏工具参数（2026-11-17，本机小模型生成坏 JSON 致 500）
+    "服务端出错（{s}）：模型生成的工具参数不是合法 JSON，"
+    "服务端解析失败。已按空参数继续；反复出现说明当前模型"
+    "写 JSON 不稳，建议换一个模型或点「新对话」重新开始。":
+        "Server error ({s}): the model generated tool-call arguments that "
+        "are not valid JSON, so the server failed to parse them. The call "
+        "continued with empty arguments; if this keeps happening the model "
+        "is unreliable at writing JSON — switch models or start a new chat.",
     "请求失败（HTTP {s}）。":
         "Request failed (HTTP {s}).",
     "（当前接口可能不支持 function calling，请换支持工具调用的模型，如 deepseek-chat / glm-4.7 等）":
@@ -1233,6 +1260,19 @@ EN_DICT = {
         "calling (this assistant needs function calling). Check the model "
         "name under Settings → AI access, or switch to a model with "
         "tool-calling support.",
+    # 400 特例：上下文超限（2026-11-17 用户截图 8243 > 8192）
+    "上下文已满{num}：这一轮携带的历史对话与工具返回超过了模型的上下文窗口，"
+    "不是模型名的问题。\n"
+    "建议：① 点「新对话」重新开始；② 到「系统设置 → AI 接入」把"
+    "「上下文压缩」调到 strong，或减少带入的上下文条数；"
+    "③ 别让工具一次读入超大 JSON / 长日志——那最占窗口。":
+        "Context full{num}: this turn's history plus tool outputs exceed "
+        "the model's context window — this is not a model-name problem.\n"
+        "Try: (1) start a new chat; (2) under Settings → AI access set "
+        "\"Context compression\" to strong or reduce the number of context "
+        "messages; (3) don't let tools read huge JSON / long logs — they "
+        "eat the window fastest.",
+    "已中断": "interrupted",
     # ---- 会话检索 + 环境画像（2026-11-13）----
     "搜索对话内容": "Search chats",
     "仅当前实例": "Current instance only",
@@ -1274,4 +1314,132 @@ EN_DICT = {
         "Get a key at platform.xiaomimimo.com. The thinking.type switch works here. "
         "This is the pay-as-you-go endpoint (keys look like sk-…); for a Token Plan "
         "pick the plan entry in the group below.",
+
+    # ---- 本地模型（可选组件，2026-11-15）----
+    "本地模型（可选组件）": "Local model (optional component)",
+    # ---- 组件包卡片（2026-11-15）----
+    "MiniMax H3 · W4A8 低显存文生视频":
+        "MiniMax H3 · W4A8 low-VRAM text-to-video",
+    "12GB 显存可跑，1344×768 一条约 150 秒（带音轨）。"
+    "4bit W4A8 量化扩散模型 + NVFP4 文本编码器 + 双 VAE + 4 步加速 LoRA。":
+        "Runs on 12GB VRAM, about 150s per 1344x768 clip with audio. "
+        "4-bit W4A8 diffusion model + NVFP4 text encoder + two VAEs + 4-step LoRA.",
+    "· ComfyUI 0.3.60+（w4a8 需要 comfy-kitchen 后端，内核已内置）":
+        "· Requires ComfyUI 0.3.60+ (w4a8 needs the comfy-kitchen backend; bundled)",
+    "一键下载": "Download all",
+    "打开目录": "Open folder",
+    "已就绪": "Ready",
+    # ---- 残留模型清理（2026-11-16）----
+    "清理残留模型": "Clean leftover models",
+    "删除已不在模型清单里的权重文件": "Delete weight files no longer in the model list",
+    "删除已不在模型清单里的权重文件：%s":
+        "Delete weight files no longer in the model list: %s",
+    "这些权重已不在模型清单里，删掉可释放 %s：\n\n%s\n\n确认删除？":
+        "These weights are no longer in the model list. Deleting them frees "
+        "%s:\n\n%s\n\nDelete them?",
+    "已清理 %d 个文件，释放 %s": "Removed %d file(s), freed %s",
+    "待下载": "Not downloaded",
+    "未选择实例": "No instance selected",
+    "组件定义缺失": "Component definition missing",
+    "下载中…": "Downloading…",
+    "准备下载…": "Preparing…",
+    "下载完成": "Download complete",
+    "下载完成，起步工作流已放入实例的 workflows 目录":
+        "Download complete. Starter workflow copied into the instance workflows folder",
+    "%d/%d · 共 %s": "%d/%d · %s total",
+    "%d/%d · 还需 %s": "%d/%d · %s to download",
+    "本地模型（内置组件）": "Local model (built-in)",
+    "安装组件": "Install component",
+    "下载模型": "Download model",
+    "模型已就绪": "Model ready",
+    "启动本地服务": "Start local service",
+    "停止本地服务": "Stop local service",
+    "设为当前 AI 服务商": "Use as current AI provider",
+    "移除组件": "Remove component",
+    "下载中 %p%": "Downloading %p%",
+    "下载失败": "Download failed",
+    "启动失败": "Start failed",
+    "未安装": "Not installed",
+    "组件已就绪": "Component ready",
+    "本地服务运行中": "Local service running",
+    # ---- 本地服务「当前加载」（2026-11-16）----
+    "当前加载": "Loaded",
+    # ---- 提示条（2026-11-16）----
+    "连接失败": "Connection failed",
+    "连接失败（详情见提示）": "Connection failed (see the notice)",
+    # ---- AI 页服务状态与等待占位（2026-11-16）----
+    "AI 未启用": "AI disabled",
+    "⚠ 上面这句与实测不符：当前实例**并没有运行**（端口未监听）。"
+    "以工作台底部的状态为准；我这可能是复述了历史里的旧结论，"
+    "可以让我「用工具重新查一次」。":
+        "Warning: the statement above does not match reality — the instance is "
+        "**not running** (port not listening). Trust the status bar at the bottom "
+        "of the Workbench; I may have repeated an old conclusion from history.",
+    "⚠ 上面这句与实测不符：实例仍在运行。以工作台底部状态为准。":
+        "Warning: the statement above does not match reality — the instance is "
+        "still running. Trust the Workbench status bar.",
+    "未配置 AI 服务商": "No AI provider configured",
+    "本地 · %s": "Local · %s",
+    " · 上下文 %s": " · %s ctx",
+    "本地模型未启动（设置页 → 本地模型 → 启动本地服务）":
+        "Local model not running (Settings → Local model → Start service)",
+    "云端 · %s": "Cloud · %s",
+    "未指定模型": "No model selected",
+    "正在请求模型…": "Requesting model…",
+    "正在请求模型… %s": "Requesting model… %s",
+    "正在读取上下文并推理": "Reading context and reasoning",
+    "本地 CPU 推理较慢，通常需要 30~60 秒，请稍等":
+        "Local CPU inference is slow; usually 30-60s, please wait",
+    "已等待 %s 秒。如果这条消息涉及启动实例，可能要 1~3 分钟；"
+    "也可以点「停止」把问题拆小再问。":
+        "Waited %s s. If this involves starting an instance it may take 1-3 "
+        "minutes; you can also press Stop and ask in smaller steps.",
+    "已等待 %s 秒仍未返回。建议点「停止」后重试，"
+    "或到设置页换个小一点的模型。":
+        "Waited %s s with no reply. Press Stop and retry, or pick a smaller "
+        "model in Settings.",
+    "已停止本轮回答（未完成的输出不保留）。"
+    "可以点消息上的「重发」再试一次。":
+        "Stopped this reply (partial output is discarded). "
+        "Use Resend on the message to try again.",
+    "读取中…": "Reading…",
+    "（服务无响应）": "(server not responding)",
+    "（未知模型）": "(unknown model)",
+    "上下文 %s": "%s ctx",
+    "可看图": "vision",
+    "上下文只有 %s（内存不足已自动降级），长对话仍可能被拒（400）；"
+    "关掉其他程序后重启服务可恢复 8192。":
+        "Context is only %s (auto-reduced due to low memory); long chats may "
+        "still be rejected (400). Close other apps and restart the service.",
+    "配置完成 · 未启动": "Ready · not running",
+    "可选组件：不进安装包，按需下载。纯 CPU 运行，不占用显存，出图时互不影响。":
+        "Optional component: downloaded on demand, not bundled. Runs on CPU, uses no "
+        "VRAM, so it never competes with image generation.",
+    "请选择并下载一个模型，模型从 hf-mirror 下载，支持断点续传。":
+        "Choose and download a model. Models come from hf-mirror with resume support.",
+    "点「设为当前 AI 服务商」把地址填进上方表单，再点页面底部保存。":
+        "Click “Use as current AI provider” to fill the form above, then save at the "
+        "bottom of the page.",
+    "启动后为纯 CPU 推理，不占用显存；端口被占用时自动顺延。":
+        "Runs on CPU after start, using no VRAM; if the port is taken, the next free "
+        "one is used.",
+    "正在启动（首次加载模型约 10~30 秒）…":
+        "Starting (first load takes about 10–30 s)…",
+    "确定删除本地模型组件？将释放约 %s，已下载的模型会一并删除。":
+        "Remove the local model component? This frees about %s and deletes all "
+        "downloaded models.",
+    # 纯文本 1.7B（严谨 / 创作向）已于 2026-11-16 移除：用户口径「不能识图的也删掉」。
+    # 词表里的旧键一并清掉，避免以后加回同名模型时匹配到过期翻译。
+    "能看报错截图/界面，也支持工具调用（22 工具实测 18/18）；内存约 3 GB":
+        "Can read error screenshots and UI, and supports tool calls "
+        "(18/18 with 22 tools); about 3 GB RAM.",
+    "Qwen3-VL-2B（看图 + 工具）": "Qwen3-VL-2B (vision + tools)",
+    "当前模型不支持看图，附图片会被忽略；需要看截图请换 Qwen3-VL-2B。":
+        "This model cannot see images; attachments are ignored. Pick Qwen3-VL-2B to "
+        "read screenshots.",
+    "启动后为纯 CPU 推理，不占用显存；可看图、可调用工具。":
+        "Runs on CPU after start with no VRAM use; can read images and call tools.",
+    "启动后为纯 CPU 推理，不占用显存；该模型只能对话与调工具，不能看图。":
+        "Runs on CPU after start with no VRAM use; this model can chat and call "
+        "tools but cannot read images.",
 }

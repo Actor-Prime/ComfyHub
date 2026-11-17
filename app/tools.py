@@ -245,13 +245,12 @@ class ModelDownloader:
 
     def download(self, url: str, subdir: str, filename: str = "", log=print) -> bool:
         """下载模型到指定类别目录（断点续传）。CivitAI 直链需带 token 参数。
-        HuggingFace 链接自动替换为国内镜像 hf-mirror.com（免梯直连）。"""
-        # HF 镜像替换：huggingface.co 被墙，hf-mirror.com 国内直连可用
-        if "huggingface.co/" in url:
-            mirror_url = url.replace("huggingface.co/", "hf-mirror.com/")
-            if mirror_url != url:
-                log("检测到 HuggingFace 链接，已自动切换国内镜像 hf-mirror.com")
-                url = mirror_url
+        指向 HuggingFace 官方站的链接自动改写成当前镜像端点（设置里可换）。"""
+        from app import mirror as _mirror
+        _new = _mirror.rewrite(url)
+        if _new != url:
+            log("检测到 HuggingFace 链接，已自动切换到 %s" % _mirror.endpoint())
+            url = _new
         if not filename:
             filename = url.rstrip("/").split("?")[0].split("/")[-1]
         dest = self.resolve_dest(subdir, filename)

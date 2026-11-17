@@ -11,6 +11,7 @@ import json
 import shutil
 import hashlib
 import urllib.request
+import urllib.parse
 import subprocess
 
 from app.winsub import run
@@ -161,15 +162,31 @@ def _detect_gpu_impl() -> GpuInfo:
 # ---------------- 下载器（断点续传 + 多源重试） ----------------
 # 公共加速代理域名（这些域名证书常过期/自签，需宽松校验；直连仍严格校验）
 _PROXY_HOSTS = ("gh-proxy.com", "ghproxy.", "gh.llkk.cc", "ghfast.top",
-                "gh.ddlc.top", "ghp.ci", "ghproxy.cc")
+                "gh.ddlc.top", "ghp.ci", "ghproxy.cc",
+                # 2026-11-15 实测：hf-mirror.com 的证书在部分网络/中间设备下报
+                # "certificate has expired"，严格校验会直接下载失败（可选组件
+                # 拉 GGUF 时踩到）。镜像站与模型文件本身有体积与哈希校验兜底，
+                # 这里按既有「加速域名走宽松 SSL」的约定处理。
+                "hf-mirror.com")
 _SSL_LOOSE = None
+
+
+def _proxy_hosts() -> tuple:
+    """加速/镜像域名集合 = 内置名单 + 用户自定义的模型镜像端点。
+
+    2026-11-16：端点可在设置里改成自建反代（app.mirror），自建反代同样
+    常见自签/过期证书，必须一并走宽松校验，否则换完端点立刻下不动。
+    """
+    from app import mirror
+    extra = mirror.extra_hosts()
+    return _PROXY_HOSTS + extra if extra else _PROXY_HOSTS
 
 
 def _ssl_ctx_for(url: str):
     """代理加速域名 → 宽松 SSL（证书过期也能用）；其余 → 默认严格校验"""
     global _SSL_LOOSE
     host = url.split("//", 1)[-1].split("/", 1)[0].lower()
-    if any(h in host for h in _PROXY_HOSTS):
+    if any(h in host for h in _proxy_hosts()):
         if _SSL_LOOSE is None:
             import ssl as _ssl
             ctx = _ssl.create_default_context()
@@ -185,6 +202,24 @@ def _http_get(url: str, timeout: int = 60) -> urllib.request.Request:
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ComfyHub/0.2",
     })
     return req
+
+
+def _looks_like_error_page(head: bytes, ctype: str = "") -> bool:
+    """首块像不像网页/JSON 错误页（镜像反爬、登录墙、限流提示）。
+
+    2026-11-15 改：原来是「必须是 ZIP/GZIP/TAR 头」的白名单，结果 GGUF 模型
+    （文件头 "GGUF"）和其它非压缩产物全被误杀成"响应不是压缩包"。
+    这里翻成黑名单 —— 只否决明确的 HTML/XML/JSON 错误体，其余一律放行。
+    """
+    if "text/html" in (ctype or "").lower():
+        return True
+    h = (head or b"")[:512].lstrip().lower()
+    if h.startswith((b"<!doctype", b"<html", b"<?xml", b"<head", b"<body")):
+        return True
+    if h[:1] in (b"{", b"[") and (b'"error"' in h or b'"code"' in h
+                                  or b'"message"' in h):
+        return True
+    return False
 
 
 def _sha256_of(path: str) -> str:
@@ -224,6 +259,37 @@ def _unzip(zpath: str, dest: str, strip_root: bool = False):
                 _sh.copyfileobj(fsrc, fdst)
 
 
+# 支持分段并发、且实测不会被限速的源（2026-11-15 实测 ModelScope 8 线程 27MB/s，
+# 单连接只有 3~4MB/s）。codeload 明确不在此列：多线程反而被限速到近乎停滞。
+_THREADED_HOSTS = (
+    "modelscope.cn", "modelscope.net", "cdn-lfs",
+    "hf-mirror.com", "huggingface.co", "hf.co",
+    "aliyuncs.com", "pytorch.org", "download.pytorch.org",
+    "mirrors.cloud.tencent.com",
+)
+
+
+def _host_of(url: str) -> str:
+    try:
+        return (urllib.parse.urlsplit(url).hostname or "").lower()
+    except Exception:
+        return ""
+
+
+def _threaded_ok(url: str) -> bool:
+    """该源是否值得开多线程（白名单，别拿 codeload 去试）"""
+    h = _host_of(url)
+    hosts = list(_THREADED_HOSTS)
+    # 自定义镜像端点（设置里填的自建反代）默认按"值得分段"处理：
+    # 它是给整仓库拉权重用的，单连接跑几 GB 会让人以为卡死
+    try:
+        from app import mirror
+        hosts.extend(mirror.extra_hosts())
+    except Exception:
+        pass
+    return any(h == x or h.endswith("." + x) or x in h for x in hosts)
+
+
 def _probe_range(url: str, timeout: int = 15) -> tuple[bool, int]:
     """探测源是否支持 Range 并返回文件总长（0=未知）"""
     try:
@@ -245,10 +311,14 @@ def _probe_range(url: str, timeout: int = 15) -> tuple[bool, int]:
         return False, 0
 
 
+_SEG_RETRY = 3          # 单个分段的尝试次数（段内重试，不丢已下数据）
+
+
 def _download_threaded(url: str, dest: str, size: int, log=print,
                        threads: int = 8, timeout: int = 30) -> bool:
     """分段并发下载（同一 .part 文件按偏移写入）。失败返回 False 交给上层换源。"""
     import threading
+    import time as _t
     tmp = dest + ".part"
     try:
         with open(tmp, "wb") as f:
@@ -264,37 +334,50 @@ def _download_threaded(url: str, dest: str, size: int, log=print,
     name = os.path.basename(dest)
     total_mb = size / 1048576
 
+    _kw = {"timeout": timeout}
+    _ctx = _ssl_ctx_for(url)
+    if _ctx is not None:
+        _kw["context"] = _ctx
+
     def worker(i: int):
         start = i * seg
         end = min(start + seg - 1, size - 1)
         if start >= size:
             return
-        try:
-            _kw = {"timeout": timeout}
-            _ctx = _ssl_ctx_for(url)
-            if _ctx is not None:
-                _kw["context"] = _ctx
-            req = _http_get(url)
-            req.add_header("Range", f"bytes={start}-{end}")
-            r = urllib.request.urlopen(req, **_kw)
-            if getattr(r, "status", 200) != 206:
-                raise IOError("该源不支持分段")
-            with open(tmp, "r+b") as f:
-                f.seek(start)
-                while True:
-                    chunk = r.read(256 * 1024)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    with lock:
-                        done[0] += len(chunk)
-            r.close()
-        except Exception as e:
-            with lock:
-                errors.append(f"段{i + 1}: {type(e).__name__}")
+        # 2026-11-16：原来单段一超时就整轮作废（实测 1.1GB 跑到 98% 时第 7 段
+        # TimeoutError，前面 1045MB 全白下，只能从 0 单连接重来）。改成本段内
+        # 重试，已写进 .part 的部分不重下——分段各自的偏移互不影响。
+        pos = start
+        last_err = ""
+        for attempt in range(_SEG_RETRY):
+            try:
+                req = _http_get(url)
+                req.add_header("Range", f"bytes={pos}-{end}")
+                r = urllib.request.urlopen(req, **_kw)
+                if getattr(r, "status", 200) != 206:
+                    raise IOError("该源不支持分段")
+                with open(tmp, "r+b") as f:
+                    f.seek(pos)
+                    while True:
+                        chunk = r.read(256 * 1024)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        pos += len(chunk)
+                        with lock:
+                            done[0] += len(chunk)
+                r.close()
+                if pos > end:            # 本段下满
+                    return
+                last_err = "数据提前结束"
+            except Exception as e:
+                last_err = type(e).__name__
+            if attempt < _SEG_RETRY - 1:
+                _t.sleep(1.0 + attempt * 1.5)
+        with lock:
+            errors.append(f"段{i + 1}: {last_err}")
 
     ts = [threading.Thread(target=worker, args=(i,), daemon=True) for i in range(threads)]
-    import time as _t
     [t.start() for t in ts]
     # 总超时：按最慢 20KB/s 估算 + 90 秒余量，超时即放弃（避免卡死在个别段）
     _deadline = _t.time() + max(90, size / 1024 / 20 + 90)
@@ -370,12 +453,20 @@ def download_multi(url_or_tpl: str | list, dest: str, log=print,
         # proxy 为空时跳过 {proxy} 模板项（否则与直连重复，白占第一顺位）
         raw = [u for u in url_or_tpl if not ("{proxy}" in u and not proxy)]
         urls = [u.format(proxy=proxy) if "{proxy}" in u else u for u in raw]
+    # 官方 HF 直链统一改写到当前镜像端点（2026-11-16）：只在下载器入口做一次，
+    # 任何调用方——组件包、本地模型、AI 工具、用户粘贴的链接——都自动受益
+    try:
+        from app import mirror as _mir
+        urls = [_mir.rewrite(u) for u in urls]
+    except Exception:
+        pass
     # 去重保序
     _seen = set()
     urls = [u for u in urls if not (u in _seen or _seen.add(u))]
     tmp = dest + ".part"
     name = os.path.basename(dest)
     no_range = set()          # 不支持断点续传的源
+    _threaded_deny = set()    # 本次调用内分段失败过的 host（改走单连接）
     failed_count = {}         # 每个源本轮累计失败次数
     restart_done = False      # 是否已经清空重下过
 
@@ -401,24 +492,25 @@ def download_multi(url_or_tpl: str | list, dest: str, log=print,
                     headers["Range"] = f"bytes={pos}-"
                 log(f"  下载 {name} ← {url[:78]}"
                     + (f"  (续传 {pos / 1048576:.1f}MB)" if pos else ""))
-                # 多线程并发在 codeload 上会被限速到近乎停滞（实测卡在 67%~78%），
-                # 故默认关闭，只走稳定的单连接续传。开关保留便于将来换源时启用。
-                use_threaded = False
+                # 分段并发：只对「支持 Range 且不限速」的源开（ModelScope / HF 镜像等）。
+                # codeload 之类多线程会被限速到近乎停滞，故走白名单而不是全开。
+                # 分段失败不算致命——本源退回单连接重下，绝不因分段失败丢掉整个源。
+                use_threaded = _threaded_ok(url) and _host_of(url) not in _threaded_deny
                 if pos == 0 and use_threaded:
                     _ok_range, _size = _probe_range(url)
-                    if _ok_range and _size > 4 * 1048576:
-                        log(f"  该源支持分段，尝试 4 线程并发（共 {_size / 1048576:.1f}MB，"
-                            f"被限速会自动回退）")
+                    if _ok_range and _size > 8 * 1048576:
+                        log(f"  该源支持分段，尝试 8 线程并发（共 {_size / 1048576:.1f}MB，"
+                            f"被限速会自动回退单连接）")
                         if _download_threaded(url, dest, _size, log=log,
-                                              timeout=timeout):
+                                              threads=8, timeout=timeout):
                             if expected_sha and _sha256_of(dest) != expected_sha:
                                 log("  sha256 校验失败，删除重试")
                                 os.remove(dest)
                                 raise IOError("sha256 校验不通过")
                             return True
-                        log("  分段下载未成功，回退单连接重下")
-                        pos = 0
-                        continue      # 直接换下一个源（当前源分段都卡）
+                        _threaded_deny.add(_host_of(url))
+                        log("  分段未成功，本源改用单连接重下")
+                        pos = 0          # 分段已清掉 .part，落到下面的单连接分支
                 _kw = {"timeout": timeout}
                 _ctx = _ssl_ctx_for(url)
                 if _ctx is not None:
@@ -451,10 +543,9 @@ def download_multi(url_or_tpl: str | list, dest: str, log=print,
                         #     用户看到的就是「源1 失败: OSError」）
                         if _first:
                             _first = False
-                            if pos == 0 and not (chunk[:4] == b"PK\x03\x04"
-                                                 or chunk[:2] == b"\x1f\x8b"
-                                                 or chunk[:5] == b"ustar"):
-                                raise IOError("响应不是压缩包（可能是网页/错误页）")
+                            if pos == 0 and _looks_like_error_page(
+                                    chunk, r.headers.get("Content-Type", "")):
+                                raise IOError("响应是网页/错误页而非文件")
                         f.write(chunk)
                         _now = _t.time()
                         if _now - _last_log >= 2.0:     # 仅节流输出，不做任何切换判断

@@ -26,6 +26,7 @@ from app.tools import ModelDownloader
 from app import instance as inst_lib
 from app.workers import swap_worker
 from app.ui.pages.model_market_widget import ModelMarketWidget
+from app.ui.pages.component_card import ComponentBar
 from app.ui.download_center import DownloadCenter
 from app.ui.theme import card_table
 
@@ -98,6 +99,11 @@ class ModelsPage(QWidget):
         self.dl_center.sig_queue_done.connect(lambda *_: self.refresh_stats())
         head.addWidget(self.dl_center)
         root.addLayout(head)
+
+        # 组件包（2026-11-15）：一整套能跑起来的模型清单 + 一键下载。
+        # 放在搜索栏之上——用户来模型库最先要知道的是「还差什么」。
+        self.comp_bar = ComponentBar(self._inst)
+        root.addWidget(self.comp_bar)
 
         # 统一搜索行：范围切换 + 搜索框 + 搜索 + 本地操作
         bar = QHBoxLayout()
@@ -437,6 +443,8 @@ class ModelsPage(QWidget):
             self.tb.setFocus()
 
     def refresh_stats(self):
+        if getattr(self, "comp_bar", None) is not None:
+            self.comp_bar.refresh()
         self.tb.setRowCount(0)
         inst = self._inst()
         if inst:

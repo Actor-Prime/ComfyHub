@@ -1191,5 +1191,16 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
         self.procs.stop_all()
+        # 本地模型服务（可选组件）是独立子进程，必须显式收——否则退出后
+        # llama-server 会留在后台占着端口和内存（2026-11-15 新功能）
+        try:
+            if hasattr(self, "settings_page") and hasattr(
+                    self.settings_page, "card_local"):
+                self.settings_page.card_local.shutdown()
+            else:
+                from app import local_llm
+                local_llm.SERVER.stop()
+        except Exception:
+            pass
         self._stop_watchers()   # 任务监听线程统一退出（2026-11-02 线程化后必须收）
         event.accept()

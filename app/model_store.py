@@ -23,8 +23,12 @@ import time
 import urllib.parse
 import urllib.request
 
-MIRROR = "https://hf-mirror.com"
-HF_OFFICIAL = "https://huggingface.co"
+from app import mirror
+
+# 默认镜像（2026-11-16 起真正生效的端点由 app.mirror 决定，用户可在
+# 「设置 → 网络 → 模型镜像端点」改；这里保留常量只为兼容旧引用与文档）
+MIRROR = mirror.DEFAULT_ENDPOINT
+HF_OFFICIAL = mirror.OFFICIAL_ENDPOINT
 
 # 数据源："mirror"（国内直连）| "hf"（HuggingFace 官方，需代理）
 _source = "mirror"
@@ -36,7 +40,7 @@ def set_source(mode: str):
 
 
 def base_url() -> str:
-    return HF_OFFICIAL if _source == "hf" else MIRROR
+    return HF_OFFICIAL if _source == "hf" else mirror.endpoint()
 
 # ComfyUI models 目录分类 + 文件名关键词预判
 CATEGORIES = ["checkpoints", "loras", "vae", "upscale_models",

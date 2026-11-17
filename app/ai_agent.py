@@ -216,8 +216,161 @@ def _clip(obj) -> str:
     return s2[:budget] + "…(截断)"
 
 
+def _is_local_ai(cfg: dict) -> bool:
+    """当前服务商是不是「本机小模型」
+
+    2026-11-16 实测（qwen3-1.7b / qwen3-vl-2b，22 个工具 schema + 4 条历史）：
+
+        完整系统提示 1886 字 → prompt 3450 tokens → 工具调用命中 3/15
+        精简系统提示  855 字 → prompt 2521 tokens → 18/18
+
+    也就是说 1.7B 不是「不会调工具」，而是被过长的说明稀释了注意力。
+    云端大模型不受影响，所以按服务商分流，别一刀切。
+    """
+    st = ((cfg or {}).get("settings") or {})
+    if str(st.get("ai_provider") or "") == "local":
+        return True
+    base = str(st.get("ai_base_url") or "").lower()
+    return ("127.0.0.1" in base or "localhost" in base or "[::1]" in base)
+
+
+# ---------------- 上下文载荷护栏（2026-11-17 用户截图 400: 8243 > 8192） ----------------
+# 压缩（ai_context.needed）只统计 UI 历史文本，system 提示、工具 schema
+# （约 2100 token）和本轮循环里的工具返回都不在里面——只靠压缩挡不住
+# 「工具读了个大 JSON 把 8k 窗口撑爆」。这里在每轮 _round_chat 前估总载荷，
+# 逼近窗口就把最老的工具返回原地截断（保留 role/tool_call_id，结构仍合法）。
+SHED_KEEP = 200          # 截断后保留的字符数
+SHED_RATIO = 0.85        # 载荷占窗口比例超过它就开截
+
+
+def _est_content(content) -> float:
+    """单条消息 content → 估算 token（str / 多模态数组 / None 都兼容）"""
+    if content is None:
+        return 0.0
+    if isinstance(content, str):
+        return ai_context.est_tokens(content)
+    if isinstance(content, list):
+        # 多模态：只算文本片段，base64 图片按字符数会虚高几个数量级
+        txt = " ".join(str(p.get("text") or "") for p in content
+                       if isinstance(p, dict) and p.get("type") != "image_url")
+        return ai_context.est_tokens(txt)
+    try:
+        return ai_context.est_tokens(json.dumps(content, ensure_ascii=False))
+    except Exception:
+        return ai_context.est_tokens(str(content))
+
+
+def _est_payload(messages, tools=0) -> float:
+    """本轮请求总载荷估算：messages（含 system / 历史 / 工具返回）+ tools schema"""
+    total = 0.0
+    for m in messages or []:
+        m = m or {}
+        total += _est_content(m.get("content"))
+        tc = m.get("tool_calls")
+        if tc:
+            try:
+                total += ai_context.est_tokens(json.dumps(tc, ensure_ascii=False))
+            except Exception:
+                pass
+    if tools:
+        try:
+            total += ai_context.est_tokens(json.dumps(tools, ensure_ascii=False))
+        except Exception:
+            pass
+    return total
+
+
+def _shed_old_tools(messages, window, tools=0, ratio=SHED_RATIO,
+                    keep=SHED_KEEP) -> float:
+    """逼近窗口时把最老的 role=tool 消息 content 原地截断（保结构）
+
+    只动 content 文本，role / tool_call_id 不变 → 请求结构仍合法。
+    每条消息最多截一次（防 while 死循环）。返回被砍掉的估算 token 数。
+    """
+    if not window or not messages:
+        return 0.0
+    budget = window * ratio
+    cut, done = 0.0, set()
+    while _est_payload(messages, tools) > budget:
+        target = None
+        for m in messages:                     # 从最老的开始找
+            if id(m) in done:
+                continue
+            c = (m or {}).get("content")
+            if (m or {}).get("role") == "tool" and isinstance(c, str) \
+                    and len(c) > keep:
+                target = m
+                break
+        if target is None:
+            break                              # 没有可截的了，到此为止
+        done.add(id(target))
+        c = target["content"]
+        new = c[:keep] + "…(旧的工具返回已截断，需要完整内容可让 AI 重新查询)"
+        cut += max(0.0, ai_context.est_tokens(c) - ai_context.est_tokens(new))
+        target["content"] = new
+    return cut
+
+
+_LOCAL_RULES = """【硬规则】
+1. 问实例状态、队列、日志、模型、工作流时，**先调对应工具再回答**，禁止凭记忆或推测。
+2. 历史消息里出现过的「已启动 / ready / 可访问 127.0.0.1」**一律不算数**，
+   必须本次真正调用过工具、且返回值显示成功，才允许这样说。
+3. 工具返回的路径、版本号、显存、队列深度**原样引用**，不要推算、不要编号、不要编造。
+4. 出图结果只认 wait_job / get_job 的 images 数组里的路径，**逐字复制**；
+   images 为空或只有 missing_images / stale_images 时，如实说「这次没有生成新文件」并给原因，
+   不许说「出图完成」。
+5. 工具报错时如实转述 error 字段，不要编造原因。
+6. 需要用户在 2~4 个选项里选择或确认时（如「要不要启动实例」），调 ask_user；
+   开放式问题用文字提问，一次只问一件事。
+7. 用户没明确说「启动 / 重启 / 停止」时，**只报告状态，不要自己启停实例**。
+   查状态（get_health）和拉实例是两件事——用户问「现在什么状态」只是想知道情况。
+   实例确实没跑时，先如实说，再问一句要不要启动。
+
+【工作流】
+· 不许凭空编造工作流名或节点名：先 list_workflows / list_templates 看真实的。
+· 改之前先 inspect_workflow 确认改哪个节点；用 patch_workflow / apply_template 只改副本，
+  不覆盖原文件，也不增删节点、不改连线。
+· 跑新工作流前建议 check_workflow 看缺什么模型。
+· 出图参数以工作流里的实际设置为准；用户没要求就别动尺寸、步数、采样器。
+· 提示词用英文视觉描述（主体/风格/光线/镜头/画质），不出现角色名、作品名、作者名。
+
+原则：一次只改必要的东西；不确定就说不确定。"""
+
+
+def _system_prompt_local(ctx) -> str:
+    """本机小模型用的精简系统提示（约 850 字）
+
+    刻意不塞：环境画像（显卡/torch/磁盘）、技能包正文、工具说明文本、会话画像
+    ——那几块加起来三千多 token，实测会把 1.7B/2B 的工具调用能力打掉
+    （命中 18/18 → 3/15）。需要实时数据时让它调 get_health 就好。
+
+    用户自己写的助手设定保留（那是他的原话），但截到 400 字，避免又把长度撑回去。
+    """
+    inst = (ctx.inst or {})
+    raw = ""
+    try:
+        raw = str(((getattr(ctx, "cfg", {}) or {}).get("settings") or {})
+                  .get("ai_persona") or "")
+    except Exception:
+        raw = ""
+    head = ""
+    if raw.strip():
+        head = "【用户设定的助手风格】\n" + raw.strip()[:400] + "\n\n"
+    return (head +
+            "你是 ComfyHub 内置的 ComfyUI 管理助手。回答用简体中文，"
+            "先给结论再给步骤，简洁直接。\n"
+            "当前实例：%s（端口 %s，目录 %s）。需要实时数据时调 get_health。\n\n"
+            % (inst.get("name") or "未命名", inst.get("port") or "?",
+               inst.get("comfyui_path") or "未知")
+            + _LOCAL_RULES)
+
+
 def _system_prompt(ctx, skills_text: str = "", profile_text: str = "",
                    tools_text: str = "") -> str:
+    # 本机小模型走精简版（2026-11-16）：长提示会把工具调用能力打掉，实测见
+    # _is_local_ai 的注释。云端服务商仍用完整版，那边上下文和注意力都够。
+    if _is_local_ai(getattr(ctx, "cfg", {}) or {}):
+        return _system_prompt_local(ctx)
     inst = ctx.inst
     # 助手设定（2026-11-06）：设置页可改；没写就用出厂默认，**不留空**
     raw = ""
@@ -257,6 +410,12 @@ def _system_prompt(ctx, skills_text: str = "", profile_text: str = "",
         "参数名不支持时先 list_workflows 看真实文件名再重试。\n"
         "7. 需要用户在 2~4 个明确选项里选择/确认时（如「要不要启动」），调 ask_user 工具，"
         "选项按钮会出现在你的问题下方，用户点了自动回复；开放性问题直接文字提问。\n"
+        # 2026-11-16 实测：本地 2B 模型会把历史里那句「实例已成功启动，状态为 ready」
+        # 当成答案直接复述，于是一边 AI 说已启动、一边工作台显示未运行，用户被误导。
+        "8. **禁止复述历史里的状态结论**：像「实例已启动」「状态为 ready」"
+        "「可访问 http://127.0.0.1:8188」这种话，只有在**本次对话里真正调用过** "
+        "control_instance 或 get_health、且返回值显示成功之后才允许说。"
+        "没调工具就先调工具，不要凭记忆回答状态类问题。\n"
         "\n【剧本 A：根据用户给的图片生成同风格图】\n"
         "1) 先看图，用一句话提炼「风格 + 主体 + 配色 + 构图 + 画质词」，这是给生成模型的提示词；\n"
         "2) list_workflows 看有哪些工作流（**不要凭空编造工作流名**），必要时 check_workflow 确认能跑；\n"
@@ -478,7 +637,7 @@ def run_agent(cfg: dict, inst: dict, user_text: str, history: list,
         emit("error", text="AI 接入未启用：请到「系统设置 → AI 接入」填写接口地址与 API Key")
         return
     ctx = ai_tools.build_ctx(cfg, inst, mainwin=mainwin, log=log, profile=profile,
-                             chat_id=chat_id)
+                             chat_id=chat_id, cancel=stop_flag)
 
     # ---- 模型画像：思考强度 / 输出上限 / 上下文条数（2026-11-03）----
     prof = ai_models.detect(str(st.get("ai_model") or ""), str(st.get("ai_base_url") or ""))
@@ -499,6 +658,16 @@ def run_agent(cfg: dict, inst: dict, user_text: str, history: list,
     # 默认与设置页保持一致（原来是 "off"，用户界面上显示 mid 却根本没压，属于 bug）
     lvl = str(st.get("ai_compress") or "mid")
     window = int(getattr(prof, "ctx_tokens", 0) or 0)      # 未知模型给 0 → 走保守默认
+    # 本机小模型：画像表按名字前缀命中（qwen3 → 131072）会虚标，而 llama-server
+    # 实际只开了 -c 8192 → 压缩永远触发不了（2026-11-17 用户截图 8243>8192 的根因）。
+    # 本机一律以 llama-server 实际窗口为准：启动过取 SERVER.ctx，没启动过取默认值。
+    if _is_local_ai(cfg):
+        try:
+            from app import local_llm
+            window = int(getattr(local_llm.SERVER, "ctx", 0) or 0) \
+                or int(local_llm.DEFAULT_CTX)
+        except Exception:
+            window = 8192
     summary = (summary or "").strip()
     upto = max(0, int(summary_upto or 0))
     if ai_context.needed(hist, upto, lvl, window):
@@ -584,6 +753,13 @@ def run_agent(cfg: dict, inst: dict, user_text: str, history: list,
         for _att in range(RETRY_MAX + 1):
             try:
                 _r0 = time.time()
+                # 载荷护栏（2026-11-17）：system + 工具 schema + 历史 + 工具返回
+                # 逼近窗口就把最老的工具返回原地截断，别等服务端 400 拒收
+                if window:
+                    _shed = _shed_old_tools(messages, window, tools)
+                    if _shed:
+                        log(f"[AI] 载荷 {int(_est_payload(messages, tools))} token "
+                            f"接近窗口 {window}，截断旧工具返回约 {int(_shed)} token")
                 msg = _round_chat(st, messages, tools, extra=extra,
                                   max_tokens=max_tokens, emit=_emit_r, log=log)
                 _acc_usage(msg.get("_usage") or _est_usage(messages, msg))
@@ -600,8 +776,15 @@ def run_agent(cfg: dict, inst: dict, user_text: str, history: list,
                 if not _can:
                     break
                 _wait = RETRY_WAITS_S[min(_att, len(RETRY_WAITS_S) - 1)]
-                emit("notice", text=f"连接中断，{_wait:.0f} 秒后自动重试"
-                                    f"（第 {_att + 1}/{RETRY_MAX} 次）")
+                # D2（2026-11-17）：按错误类型分流文案——HTTP 5xx/429 时
+                # 服务端是通的，说「连接中断」文不对题（用户截图实锤）
+                _st = int(getattr(e, "status", 0) or getattr(e, "code", 0) or 0)
+                if _st:
+                    emit("notice", text=f"服务端返回 {_st}，{_wait:.0f} 秒后自动重试"
+                                        f"（第 {_att + 1}/{RETRY_MAX} 次）")
+                else:
+                    emit("notice", text=f"连接中断，{_wait:.0f} 秒后自动重试"
+                                        f"（第 {_att + 1}/{RETRY_MAX} 次）")
                 time.sleep(_wait)
 
         if _err is not None:
@@ -622,7 +805,22 @@ def run_agent(cfg: dict, inst: dict, user_text: str, history: list,
                 emit("error", text="接口返回空内容（若为推理型模型可加大 max_tokens 或换普通对话模型）")
             return
 
-        # 把 assistant 的工具调用消息原样回填，再逐个执行
+        # 把 assistant 的工具调用消息回填，再逐个执行。
+        # C1（2026-11-17 用户截图）：本机小模型偶发生成语法损坏的 arguments
+        # （如 column 9719 处缺括号），坏 JSON 原样回填后，服务端渲染历史时
+        # json::parse 必然失败 → 500，而重试喂的是同一份历史 → 2 次重试全灭。
+        # 回填前逐个校验，坏的替换成 "{}"，服务端永远看不到坏 JSON。
+        _bad_arg_objs = set()
+        for _c in calls:
+            _fn = _c.get("function") or {}
+            _raw = _fn.get("arguments")
+            if isinstance(_raw, str) and _raw.strip():
+                try:
+                    json.loads(_raw)
+                except Exception:
+                    _bad_arg_objs.add(id(_c))
+                    _fn["arguments"] = "{}"
+                    _c["function"] = _fn
         messages.append({"role": "assistant",
                          "content": content or None,
                          "tool_calls": calls})
@@ -654,6 +852,13 @@ def run_agent(cfg: dict, inst: dict, user_text: str, history: list,
             sig = f"{name}|{json.dumps(args, ensure_ascii=False, sort_keys=True)}"
             repeat_seen[sig] = repeat_seen.get(sig, 0) + 1
             content_txt = _clip(result)
+            # C2：参数是坏 JSON（已按空参执行）——明确告诉模型哪错了、
+            # 该怎么改，否则它会拿着同样的坏参数再调一遍（截图里的死循环）
+            if id(call) in _bad_arg_objs:
+                content_txt = ("[系统提示] 上一次工具调用的参数不是合法 JSON"
+                               "（已按空参数执行，上面结果可能不完整）。"
+                               "请重新生成完整、合法的 JSON 参数后再调用，"
+                               "不要重复原参数。\n\n") + content_txt
             if repeat_seen[sig] >= 3:
                 content_txt += ("\n\n[系统提示] 你已经用完全相同的参数调用这个工具 "
                                 f"{repeat_seen[sig]} 次，返回结果不会变。"
@@ -668,6 +873,10 @@ def run_agent(cfg: dict, inst: dict, user_text: str, history: list,
         "content": "（系统提示）工具调用轮数已用尽，请不要调用任何工具。"
                    "请立刻用现有信息给出结论：已经查到什么、还缺什么、"
                    "建议我下一步怎么做；不确定的地方要明说，不要编造。"})
+    if window:
+        _shed = _shed_old_tools(messages, window, 0)
+        if _shed:
+            log(f"[AI] 收尾轮前截断旧工具返回约 {int(_shed)} token")
     try:
         msg = _round_chat(st, messages, [], extra=extra,
                           max_tokens=max_tokens, emit=emit, log=log)

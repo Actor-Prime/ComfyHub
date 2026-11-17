@@ -306,7 +306,16 @@ def main():
           pg5.lb_saved.text())
 
     print(f"\n===== AI 服务商预设 =====\n通过 {PASS} / 失败 {FAIL}")
-    sys.exit(1 if FAIL else 0)
+    # QThread 收尾崩溃规避（同 test_ai_stop 排查记录）：
+    # SettingsPage 内有 QThread 子对象，os._exit / sys.exit 走 DllMain detach
+    # 时 Qt 析构链会 0xC0000409 或 segfault。TerminateProcess 直接杀进程，
+    # 不跑任何清理，先 flush 保证输出不丢。
+    sys.stdout.flush()
+    sys.stderr.flush()
+    import ctypes
+    _code = 1 if FAIL else 0
+    ctypes.windll.kernel32.TerminateProcess(
+        ctypes.windll.kernel32.GetCurrentProcess(), _code)
 
 
 if __name__ == "__main__":

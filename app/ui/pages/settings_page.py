@@ -20,6 +20,7 @@ from app.config import save_config, APP_VERSION
 from app.ui import theme
 from app.bootstrap import PYPI_MIRRORS
 from app.i18n import T
+from app.ui.toast import show_toast
 
 
 class _AiTestWorker(QThread):
@@ -40,6 +41,27 @@ class _AiTestWorker(QThread):
             res = {"ok": False, "models": [], "model": "", "latency_ms": 0,
                    "reply": "", "msg": _as.describe_error(e, one_line=True)}
         self.sig_done.emit(res)
+
+
+class _MirrorTestWorker(QThread):
+    """后台测模型镜像端点连通性（2026-11-16）
+
+    HTTP 请求绝不能放 UI 线程：端点不通时会卡满超时，整个设置页会像死机。
+    """
+
+    sig_done = Signal(object)
+
+    def __init__(self, base: str, parent=None):
+        super().__init__(parent)
+        self._base = base
+
+    def run(self):
+        from app import mirror
+        try:
+            ok, msg, ms = mirror.probe(self._base)
+        except Exception as e:      # 兜底：任何异常都变成可展示的结果
+            ok, msg, ms = False, mirror.describe_error(e), 0
+        self.sig_done.emit({"ok": ok, "msg": msg, "ms": ms})
 
 
 def _mcp_snippets() -> tuple:
@@ -301,6 +323,30 @@ class SettingsPage(QWidget):
         self.ed_gitproxy = QLineEdit(st.get("git_proxy", ""))
         self.ed_gitproxy.setPlaceholderText("git clone 专用代理（留空则同上）")
         f1.addRow("Git Clone 代理:", self.ed_gitproxy)
+
+        # ---- 模型镜像端点（2026-11-16）----
+        # 原先 HF 下载端点写死在 code 里（hf-mirror.com），用户换自建反代/公司内网
+        # 镜像只能改代码重编译。这里开放成设置项，留空即用默认。
+        from app import mirror as _mirror
+        row_hf = QHBoxLayout()
+        self.ed_hf = QLineEdit(st.get(_mirror.SETTINGS_KEY, "") or "")
+        # placeholder 只写纯短语：i18n 是按整句查表，带上 %s 拼出来的地址就永远查不到
+        self.ed_hf.setPlaceholderText("留空用默认镜像；可填自建反代或公司内网镜像")
+        self.ed_hf.textChanged.connect(self._on_hf_edited)
+        row_hf.addWidget(self.ed_hf)
+        self.b_hf_test = QPushButton("测试")
+        self.b_hf_test.setFixedWidth(64)
+        self.b_hf_test.clicked.connect(self._test_hf)
+        row_hf.addWidget(self.b_hf_test)
+        b_hf_reset = QPushButton("恢复默认")
+        b_hf_reset.setFixedWidth(88)
+        b_hf_reset.clicked.connect(lambda: self.ed_hf.setText(""))
+        row_hf.addWidget(b_hf_reset)
+        f1.addRow("模型镜像端点:", row_hf)
+        self.lb_hf = QLabel("")
+        self.lb_hf.setWordWrap(True)
+        f1.addRow("", self.lb_hf)
+        self._refresh_hf_label()
         root.addWidget(g1)
 
         # ---- 目录：共享工具（便携 Python/MinGit/torch）安装位置 ----
@@ -623,6 +669,14 @@ class SettingsPage(QWidget):
         f_ai.addRow("", self.b_ai_mcp)
         root.addWidget(g_ai)
 
+        # 本地模型（可选组件）2026-11-15：
+        # 独立成卡片而不是塞进上面表单——安装/下载是"动作"，不是"配置项"，
+        # 混在表单里会让「保存」的语义变模糊（下载完并不需要点保存）。
+        from app.ui.pages.local_llm_card import LocalLlmCard
+        self.card_local = LocalLlmCard(self.cfg)
+        self.card_local.sig_apply.connect(self._apply_local_provider)
+        root.addWidget(self.card_local)
+
         # 保存按钮不再放在滚动内容里（2026-11-06 用户要求）：
         # 页面很长，滚到中间就看不到按钮了；改为页面底部常驻栏（见 _build 末尾）
         root.addSpacing(4)
@@ -756,6 +810,62 @@ class SettingsPage(QWidget):
     # ------------------------------------------------------------ 反馈与诊断
     def _open_feedback(self):
         FeedbackDialog(self).exec()
+
+    # ------------------------------------------------------------ 模型镜像端点
+    def _refresh_hf_label(self, msg: str = "", ok: bool | None = None):
+        """把「当前生效端点」写到说明行；带 msg 时优先显示测试结果
+
+        文案一律按「短语 T() + 动态值」拼开：整句含地址/耗时的话，
+        i18n 整串查表永远命中不了，英文模式会一直漏译。
+        """
+        from app import mirror as _mirror
+        if not msg:
+            cur = _mirror.display()
+            mark = T("（默认）") if _mirror.is_default() else ""
+            pending = _mirror.normalize(self.ed_hf.text()) or _mirror.DEFAULT_ENDPOINT
+            if pending == cur:
+                self.lb_hf.setText("%s：%s%s" % (T("当前生效"), cur, mark))
+            else:
+                self.lb_hf.setText("%s：%s" % (T("保存后生效"), pending))
+            self.lb_hf.setStyleSheet("color:#888;")
+            return
+        if ok is None:
+            self.lb_hf.setStyleSheet("color:#888;")
+        else:
+            self.lb_hf.setStyleSheet("color:%s;" % (
+                theme.fg("#4cd47c") if ok else theme.fg("#e8635a")))
+        self.lb_hf.setText(msg)
+
+    def _on_hf_edited(self, _text: str):
+        # 用户改了输入就丢掉上次的测试结论，免得拿旧结果盖住新地址
+        self._refresh_hf_label()
+
+    def _test_hf(self):
+        from app import mirror as _mirror
+        raw = self.ed_hf.text().strip()
+        ok, norm, err = _mirror.validate(raw)
+        if not ok:
+            self._refresh_hf_label("⚠️ %s" % T(err), ok=False)
+            return
+        if getattr(self, "_hf_worker", None) and self._hf_worker.isRunning():
+            return          # 上一轮还没回来，别并排跑两个
+        self.b_hf_test.setEnabled(False)
+        self._refresh_hf_label("%s %s …" % (T("正在测试"), norm))
+        w = _MirrorTestWorker(norm, self)
+        w.sig_done.connect(self._on_hf_tested)
+        self._hf_worker = w
+        w.start()
+
+    def _on_hf_tested(self, res):
+        self.b_hf_test.setEnabled(True)
+        ok = bool(res.get("ok"))
+        msg = str(res.get("msg") or "")
+        ms = int(res.get("ms") or 0)
+        if ok:
+            tail = " · %d ms" % ms if ms else ""
+            self._refresh_hf_label("✅ %s%s" % (T(msg), tail), ok=True)
+        else:
+            self._refresh_hf_label("❌ %s" % T(msg), ok=False)
 
     # ------------------------------------------------------------ 保存
     def _pick_tools_dir(self):
@@ -901,6 +1011,33 @@ class SettingsPage(QWidget):
     def _on_provider_changed(self, _idx: int = 0):
         self._apply_provider(self.cb_ai_provider.currentData() or "custom")
 
+    def _apply_local_provider(self, pid: str, base: str, model: str):
+        """本地服务就绪 → 把服务商三项填进表单（仍需用户点底部保存）
+
+        不直接写 cfg：下载/启动只是运行时动作，静默改用户配置属于越权。
+        """
+        i = self.cb_ai_provider.findData(pid)
+        if i >= 0:
+            self.cb_ai_provider.blockSignals(True)
+            self.cb_ai_provider.setCurrentIndex(i)
+            self.cb_ai_provider.blockSignals(False)
+        if base:
+            # 端口被占时组件会自动顺延，必须按实际地址回填
+            self.ed_ai_base.setText(base)
+            self.ed_ai_base.setCursorPosition(0)
+        if model:
+            j = self.cb_ai_model.findText(model)
+            if j < 0:
+                self.cb_ai_model.addItem(model)
+                j = self.cb_ai_model.count() - 1
+            self.cb_ai_model.setCurrentIndex(j)
+        if not self.ed_ai_key.text().strip():
+            # 本地服务不校验 Key，但 ai_assist.enabled() 要求非空 → 填占位值
+            self.ed_ai_key.setText("local")
+        self.ck_ai.setChecked(True)
+        self.lb_ai_prov_hint.setText(
+            "已填入本地模型地址与模型名，点底部「保存设置」后生效")
+
     def _apply_provider(self, pid: str, init: bool = False):
         """切服务商：预设 → 自动填地址 + 候选模型（地址只读灰底）；
         自定义 → 地址可编辑、不覆盖用户已填内容。
@@ -995,8 +1132,13 @@ class SettingsPage(QWidget):
                                             res.get("model", ""),
                                             res.get("reply", "") or "（空）"))
         else:
-            self.lb_ai_state.setStyleSheet("color:#e8635a;")
-            self.lb_ai_state.setText(res.get("msg") or "连接失败")
+            # 2026-11-16 用户反馈：长串报错塞在表单下面的说明行里，和页面文案
+            # 混在一起，容易被当成提示文字忽略。改成浮层提示条，状态行只留一句短的。
+            self.lb_ai_state.setStyleSheet(
+                "color:%s;" % theme.fg("#e8635a"))
+            self.lb_ai_state.setText(T("连接失败（详情见提示）"))
+            show_toast(self.window(), res.get("msg") or T("连接失败"),
+                       level="error")
 
     def _open_mcp_dialog(self):
         """方案 B：外部 Agent 接入配置片段（2026-11-03）"""
@@ -1046,18 +1188,30 @@ class SettingsPage(QWidget):
     # 保存前改动确认用的字段名（2026-11-06）
     _SAVE_LABELS = {
         "mirror": "PyPI 镜像", "gh_proxy": "GitHub 代理", "git_proxy": "Git Clone 代理",
+        "hf_endpoint": "模型镜像端点",
         "tools_dir": "共享工具目录", "close_behavior": "关闭按钮行为",
         "ai_enabled": "AI 接入", "ai_provider": "AI 服务商",
         "ai_base_url": "接口地址", "ai_api_key": "API Key",
         "ai_model": "模型名", "ai_think": "思考强度", "ai_max_tokens": "最大输出",
         "ai_ctx_msgs": "上下文条数", "ai_compress": "上下文压缩", "ai_persona": "助手设定",
         "ai_direct": "AI 直连", "theme": "主题", "bg_image": "背景图",
+        "local_llm_model": "本地模型",
         "bg_opacity": "面板不透明度", "bg_blur": "背景模糊", "lang": "界面语言",
         "bg_zoom": "背景缩放", "bg_off_x": "背景横向位置", "bg_off_y": "背景纵向位置",
     }
 
     def _save(self):
         from app.ui.changes_dialog import diff_changes, confirm_changes
+        from app import mirror as _mirror
+        # 模型镜像端点校验：留空 = 用默认；填了就必须是合法地址
+        _hf_ok, _hf_norm, _hf_err = _mirror.validate(self.ed_hf.text())
+        if not _hf_ok:
+            QMessageBox.warning(self, "ComfyHub", _hf_err)
+            self.ed_hf.setFocus()
+            return
+        # 等于默认就不落盘：否则"本来就是默认"会被记成一次改动，
+        # 下次打开设置总弹出"模型镜像端点：空 → hf-mirror.com"的确认框
+        new_hf = "" if _hf_norm == _mirror.DEFAULT_ENDPOINT else _hf_norm
         # 工具目录校验：非空必须是绝对路径（防手滑相对路径落到诡异位置）
         new_tools = self.ed_tools.text().strip().rstrip("\\/")
         if new_tools and not os.path.isabs(new_tools):
@@ -1078,6 +1232,7 @@ class SettingsPage(QWidget):
             "mirror": self.cb_mirror.currentText(),
             "gh_proxy": self.ed_ghproxy.text().strip(),
             "git_proxy": self.ed_gitproxy.text().strip(),
+            "hf_endpoint": new_hf,
             "tools_dir": new_tools,
             "close_behavior": self.cb_close.currentData() or "ask",
             "ai_enabled": self.ck_ai.isChecked(),
@@ -1095,6 +1250,7 @@ class SettingsPage(QWidget):
             "ai_compress": str(self.cb_ai_compress.currentData() or "mid"),
             "ai_persona": self.ed_ai_persona.toPlainText().strip()[:4000],
             "ai_direct": bool(self.ck_ai_direct.isChecked()),
+            "local_llm_model": (self.card_local.cb_model.currentData() or ""),
             "theme": self.cb_theme.currentData() or "dark",
             "bg_image": self._bg_value,
             "bg_zoom": round(float(self._bg_zoom), 4),
@@ -1117,6 +1273,9 @@ class SettingsPage(QWidget):
         st.update(pending)
         old_lang = str(old.get("lang", "zh"))
         save_config(self.cfg)
+        # 立即生效（2026-11-16）：下载/搜索从这一刻起走新端点，不必重启
+        _mirror.set_endpoint(new_hf)
+        self._refresh_hf_label()
         self.sig_saved.emit()       # 主窗接到后重设 QSS + 背景层
         try:                        # 底栏给个即时反馈，省掉一次弹窗打扰
             import datetime as _dt

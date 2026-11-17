@@ -68,13 +68,118 @@ check("1f 缺 widget 取 object_info 默认", prompt["2"]["inputs"]["batch_size"
 check("1g Reroute 节点不出现在 prompt", "1" not in prompt)
 check("1h 动态输入补线不误报", isinstance(warns, list))
 
+# 1i/1j 子图边界输入未连线 → 用实例 widget 值兜底
+# （2026-11-18 H3 视频工作流模拟实测：6 个纯 widget 输入不在实例 inputs
+#  里，旧版抛「子图输入未连线」，run_workflow 直接失败）
+SG_WF = {
+    "nodes": [
+        {"id": 140, "type": "SG1",
+         "inputs": [{"name": "vae_name", "link": None}],
+         "outputs": [{"name": "OUT", "links": [1]}],
+         "widgets_values": ["prompt text", "vae.safetensors"]},
+        {"id": 2, "type": "SaveImage",
+         "inputs": [{"name": "images", "link": 1}],
+         "widgets_values": ["prefix"],
+         "outputs": []},
+    ],
+    "links": [[1, 140, 0, 2, 0, "OUT"]],
+    "definitions": {"subgraphs": [{
+        "id": "SG1",
+        "inputs": [{"name": "prompt", "type": "STRING"},
+                   {"name": "vae_name", "type": "COMBO"}],
+        "outputs": [{"name": "OUT", "linkIds": [90]}],
+        "nodes": [
+            {"id": 5, "type": "VAELoader",
+             "inputs": [{"name": "vae_name", "link": 77}],
+             "widgets_values": [], "outputs": [{"name": "VAE", "links": None}]},
+            {"id": 6, "type": "TextNode",
+             "inputs": [{"name": "text", "link": 78}],
+             "widgets_values": [], "outputs": [{"name": "x", "links": None}]},
+        ],
+        "links": [
+            {"id": 77, "origin_id": -10, "origin_slot": 1,
+             "target_id": 5, "target_slot": 0},
+            {"id": 78, "origin_id": -10, "origin_slot": 0,
+             "target_id": 6, "target_slot": 0},
+            {"id": 90, "origin_id": 6, "origin_slot": 0,
+             "target_id": -11, "target_slot": 0},
+        ],
+    }]},
+}
+SG_OBJ = {
+    "VAELoader": {"input": {"required": {
+        "vae_name": [["vae.safetensors", "other.safetensors"], {"default": ""}]}}},
+    "TextNode": {"input": {"required": {"text": ["STRING", {"default": ""}]}}},
+    "SaveImage": {"input": {"required": {
+        "images": ["IMAGE"],
+        "filename_prefix": ["STRING", {"default": "ComfyUI"}]}}},
+}
+try:
+    _sp, _sw = build(SG_WF, SG_OBJ)
+    check("1i 子图未连线输入用实例 widget 兜底",
+          _sp.get("140:5", {}).get("inputs", {}).get("vae_name") == "vae.safetensors"
+          and _sp.get("140:6", {}).get("inputs", {}).get("text") == "prompt text"
+          and _sp.get("2", {}).get("inputs", {}).get("images") == ["140:6", 0],
+          json.dumps(_sp, ensure_ascii=False)[:300])
+except Exception as _e:   # noqa: BLE001
+    check("1i 子图未连线输入用实例 widget 兜底", False, repr(_e))
+
+import copy as _copy  # noqa: E402
+_SG_NAMED = _copy.deepcopy(SG_WF)
+del _SG_NAMED["nodes"][0]["widgets_values"]
+_SG_NAMED["nodes"][0]["widgets_values_named"] = {
+    "prompt": "named prompt", "vae_name": "named_vae.safetensors"}
+try:
+    _pn, _ = build(_SG_NAMED, SG_OBJ)
+    check("1j 数组缺位时回落 widgets_values_named",
+          _pn.get("140:5", {}).get("inputs", {}).get("vae_name") == "named_vae.safetensors"
+          and _pn.get("140:6", {}).get("inputs", {}).get("text") == "named prompt",
+          json.dumps(_pn, ensure_ascii=False)[:300])
+except Exception as _e:   # noqa: BLE001
+    check("1j 数组缺位时回落 widgets_values_named", False, repr(_e))
+
+# 1k COMFY_DYNAMICCOMBO_V3 是下拉 widget（2026-11-18 SaveVideo 实测：
+# 不识别 → format 没进 prompt → 后端 missing 'format' 直接失败）
+DV_WF = {
+    "nodes": [
+        {"id": 1, "type": "VidSource", "widgets_values": [],
+         "inputs": [], "outputs": [{"name": "VIDEO", "links": [5]}]},
+        {"id": 92, "type": "SaveVideo",
+         "inputs": [{"name": "video", "link": 5}],
+         "widgets_values": ["video/x", "auto", "auto"], "outputs": []},
+    ],
+    "links": [[5, 1, 0, 92, 0, "VIDEO"]],
+}
+DV_OBJ = {
+    "VidSource": {"input": {"required": {}}},
+    "SaveVideo": {"input": {"required": {
+        "video": ["VIDEO", {}],
+        "filename_prefix": ["STRING", {"default": "video/ComfyUI"}],
+        "format": ["COMFY_DYNAMICCOMBO_V3", {"options": [{"key": "auto"}]}]},
+        "optional": {
+            "codec": ["COMFY_DYNAMICCOMBO_V3", {"options": [{"key": "auto"}]}]}}},
+}
+try:
+    _dp, _ = build(DV_WF, DV_OBJ)
+    check("1k 动态下拉按 widget 消耗",
+          _dp.get("92", {}).get("inputs", {}).get("format") == "auto"
+          and _dp.get("92", {}).get("inputs", {}).get("codec") == "auto"
+          and _dp.get("92", {}).get("inputs", {}).get("filename_prefix") == "video/x",
+          json.dumps(_dp, ensure_ascii=False)[:300])
+except Exception as _e:   # noqa: BLE001
+    check("1k 动态下拉按 widget 消耗", False, repr(_e))
+
 # ================================================== 2. ai_tools
 from app import ai_tools  # noqa: E402
 
 schemas = ai_tools.schemas()
 names = [s["function"]["name"] for s in schemas]
-check("2a 19 个工具 schema 齐全", len(schemas) == 19 and
-      all(s["function"]["parameters"].get("type") == "object" for s in schemas), str(names))
+# 数量会随功能增加，别写死数字（2026-11-15 加了 web_search 就又红一次）；
+# 真正要守住的是「每个工具 schema 完整、名字不重复」
+check("2a 工具 schema 齐全且无重名",
+      len(schemas) >= 19 and len(names) == len(set(names)) and
+      all(s["function"]["parameters"].get("type") == "object"
+          and s["function"].get("description") for s in schemas), str(names))
 check("2b 关键工具在列",
       all(n in names for n in ("get_health", "control_instance", "run_workflow", "get_job",
                                "download_model", "inspect_workflow", "patch_workflow",
@@ -103,8 +208,10 @@ _cap = {}
 _orig_build = ai_tools.build_ctx
 
 
-def _fake_build(cfg, inst, mainwin=None, log=print, profile=None, chat_id=""):
+def _fake_build(cfg, inst, mainwin=None, log=print, profile=None, chat_id="",
+                cancel=None):
     _cap["mainwin"] = mainwin
+    _cap["cancel"] = cancel                  # 长工具取消信号（2026-11-15）
     raise RuntimeError("stop-here")          # 拿到参数就中断，别真发 HTTP
 
 
@@ -246,6 +353,73 @@ r = ai_tools.execute("import_workflow", {"json_text": json.dumps(API_WF), "name"
 check("2c8 导入 API 格式", r.get("ok") and r.get("format") == "api", str(r)[:200])
 r = ai_tools.execute("import_workflow", {"json_text": '{"a": 1}'}, wf_ctx)
 check("2c9 非法格式被拒", r.get("ok") is False and "无法识别" in r.get("error", ""), str(r))
+
+# 2c10~13：API 格式工作流的 inspect/patch（2026-11-18 模拟实测发现：
+# minimal_sd_txt2img.json 是 API 格式，旧版只认 UI 格式 → node_count=0、
+# patch 报「节点不存在」，AI 根本改不了提示词）
+API_FULL = {
+    "6": {"class_type": "CLIPTextEncode",
+          "inputs": {"text": "cyberpunk female warrior", "clip": ["4", 1]}},
+    "7": {"class_type": "CLIPTextEncode",
+          "inputs": {"text": "blurry, low quality", "clip": ["4", 1]}},
+    "3": {"class_type": "KSampler",
+          "inputs": {"seed": 123456, "steps": 20, "cfg": 7.0}},
+}
+with open(os.path.join(WFDIR, "api_full.json"), "w", encoding="utf-8") as f:
+    json.dump(API_FULL, f, ensure_ascii=False)
+r = ai_tools.execute("inspect_workflow", {"name": "api_full.json"}, wf_ctx)
+check("2c10 API 格式 inspect 有节点",
+      r.get("ok") and r.get("node_count") == 3, str(r)[:200])
+_ik = {n["key"]: n for n in r.get("nodes", [])}
+check("2c11 API inspect 用 class_type + inputs",
+      _ik.get("6", {}).get("type") == "CLIPTextEncode"
+      and _ik.get("6", {}).get("inputs", {}).get("text") == "cyberpunk female warrior"
+      and "field" in r.get("note", ""),
+      str(_ik.get("6")) + " | " + str(r.get("note"))[:80])
+r = ai_tools.execute("patch_workflow", {"name": "api_full.json", "ops": [
+    {"node": "6", "field": "text", "value": "snowy night, silver-white fox"},
+    {"node": "3", "field": "seed", "value": 42},
+]}, wf_ctx)
+check("2c12 API patch 按字段名改 inputs",
+      r.get("ok") and r.get("name") == "api_full_ai.json", str(r)[:250])
+_acopy = json.load(open(os.path.join(WFDIR, "api_full_ai.json"), encoding="utf-8"))
+check("2c13 API 副本写入新值、原文件不动",
+      _acopy["6"]["inputs"]["text"] == "snowy night, silver-white fox"
+      and _acopy["3"]["inputs"]["seed"] == 42
+      and API_FULL["6"]["inputs"]["text"] == "cyberpunk female warrior",
+      str(_acopy["6"]["inputs"]))
+# class_type 唯一匹配兜底 / 多个时要报清楚
+r = ai_tools.execute("patch_workflow", {"name": "api_full.json", "ops": [
+    {"node": "CLIPTextEncode", "field": "text", "value": "x"}]}, wf_ctx)
+check("2c14 class_type 多个匹配 → 指明 key 让模型挑",
+      r.get("ok") is False and "多个" in r.get("error", ""), str(r)[:200])
+API_ONE = {"9": {"class_type": "EmptyLatentImage", "inputs": {"width": 512}}}
+with open(os.path.join(WFDIR, "api_one.json"), "w", encoding="utf-8") as f:
+    json.dump(API_ONE, f, ensure_ascii=False)
+r = ai_tools.execute("patch_workflow", {"name": "api_one.json", "ops": [
+    {"node": "EmptyLatentImage", "field": "width", "value": 1024}]}, wf_ctx)
+_oc = json.load(open(os.path.join(WFDIR, "api_one_ai.json"), encoding="utf-8"))
+check("2c15 class_type 唯一匹配兜底生效",
+      r.get("ok") and _oc["9"]["inputs"]["width"] == 1024, str(r)[:200])
+
+# 2c16 patch 同步 widgets_values_named（2026-11-18 H3 实测：数组与 named
+# 值会分叉，只改数组在 named 优先的前端里等于没改）
+UI_NAMED = {
+    "nodes": [{"id": 7, "type": "CLIPTextEncode",
+               "widgets_values": ["old", ""],
+               "widgets_values_named": {"text": "old", "clip_name": ""}}],
+    "links": [],
+}
+with open(os.path.join(WFDIR, "wf_named.json"), "w", encoding="utf-8") as f:
+    json.dump(UI_NAMED, f, ensure_ascii=False)
+r = ai_tools.execute("patch_workflow", {"name": "wf_named.json",
+                                        "ops": [{"node": "7", "index": 0,
+                                                 "value": "new prompt"}]}, wf_ctx)
+_nc = json.load(open(os.path.join(WFDIR, "wf_named_ai.json"), encoding="utf-8"))
+check("2c16 patch 同步 widgets_values_named",
+      r.get("ok") and _nc["nodes"][0]["widgets_values"][0] == "new prompt"
+      and _nc["nodes"][0]["widgets_values_named"]["text"] == "new prompt",
+      str(_nc["nodes"][0]))
 
 # wait_job：轮询到出图（2026-11-06 起要求文件真的存在才算数）
 _hist = {"pid1": {"status": {"status_str": "success", "messages": []},
@@ -507,6 +681,77 @@ check("5c1 delta 建流式卡片", card is not None and card["text"] == "实例�
 page._on_event({"kind": "assistant", "text": "实例正常，显存充足"})
 check("5c2 收尾写入全文", card["text"] == "实例正常，显存充足", card["text"])
 check("5c3 收尾后复制按钮可用", card["copy"].isEnabled())
+
+# ---- 5c4~5c8：error 必须收掉流式卡（2026-11-17 用户截图：卡片永停「生成中…」）----
+page._on_event({"kind": "delta", "text": "正在 patch "})
+page._on_event({"kind": "delta", "text": "workflow..."})
+page._stream_flush()
+check("5c4 出错前流式卡开着", page._stream is not None
+      and "生成中" in page._last_card["cap"].text(),
+      page._last_card["cap"].text())
+page._on_event({"kind": "error", "text": "上下文已满（8243 > 8192 tokens）",
+                "raw": "HTTP 400: ..."})
+check("5c5 error 后流式卡已收尾", page._stream is None)
+check("5c6 标题不再停在「生成中…」",
+      "生成中" not in page._last_card["cap"].text(),
+      page._last_card["cap"].text())
+check("5c7 标题标「已中断」", "已中断" in page._last_card["cap"].text(),
+      page._last_card["cap"].text())
+check("5c8 部分输出保留", "patch" in page._last_card["text"],
+      page._last_card["text"])
+# 流式卡没开着时再收一次 error 不炸
+page._on_event({"kind": "error", "text": "又错了", "raw": ""})
+check("5c9 无流式卡的 error 不异常", page._stream is None)
+
+# ---- 5c10~5c16：流式输出不许拽住用户上翻（2026-11-17 用户反馈）----
+# 旧实现：_stream_flush 每 60ms 无条件 _scroll_bottom → 滚轮上翻必被拽回
+from PySide6.QtTest import QTest as QTest2  # noqa: E402
+
+page.resize(700, 480)
+for _i in range(14):                       # 铺满历史，让滚动条有真实行程
+    page._ai_card("历史消息 %d " % _i + "内容" * 40)
+QTest2.qWait(80)                           # 放行布局重排 + 0/60ms 补滚
+sb = page.scroll.verticalScrollBar()
+check("5c10 滚动条有行程（可上滚）", sb.maximum() > 300, str(sb.maximum()))
+
+# 在底部时：流式刷新应继续跟随贴底
+sb.setValue(sb.maximum())
+page._on_event({"kind": "delta", "text": "正在生成" + "输出" * 60})
+page._stream_flush()
+QTest2.qWait(80)
+check("5c11 在底部时流式跟随贴底",
+      sb.value() >= sb.maximum() - 4, f"{sb.value()}/{sb.maximum()}")
+
+# 用户上翻后：后续流式刷新 + 预约补滚都不许拽回
+sb.setValue(sb.maximum() // 2)             # 模拟滚轮上翻（valueChanged → 解除贴底）
+QTest2.qWait(70)                           # 放行上一帧预约的 0/60ms 补滚
+_mid = sb.value()
+check("5c12 上翻到位", 0 < _mid < sb.maximum(), str(_mid))
+page._on_event({"kind": "delta", "text": "继续" + "输出" * 60})
+page._stream_flush()
+QTest2.qWait(100)                          # 放行本次 flush 预约的补滚 + 流式定时器
+check("5c13 上翻后流式与补滚都不拽回", abs(sb.value() - _mid) <= 4,
+      f"{sb.value()} vs {_mid}")
+
+# 收尾 finalize 同样不拽
+page._stream_finalize("完整回答" + "字" * 120)
+QTest2.qWait(80)
+check("5c14 收尾不拽回", abs(sb.value() - _mid) <= 4, str(sb.value()))
+
+# 贴底窗口内的补滚：用户抢先上翻 → singleShot 到点必须失效
+sb.setValue(sb.maximum())
+page._pin_bottom(800)                      # 预约 0/60ms 两次补滚
+sb.setValue(sb.maximum() // 3)             # 用户在窗口内上翻 → 解除贴底
+QTest2.qWait(100)                          # 让两个 singleShot 真正到点
+check("5c15 窗口内上翻后补滚失效", abs(sb.value() - sb.maximum() // 3) <= 4,
+      f"{sb.value()} vs {sb.maximum() // 3}")
+
+# 用户没动时补滚照常生效（贴底语义不回归）
+sb.setValue(sb.maximum())
+page._pin_bottom(800)
+QTest2.qWait(100)
+check("5c16 未上翻时补滚照常贴底", sb.value() >= sb.maximum() - 4,
+      f"{sb.value()}/{sb.maximum()}")
 page.close()
 
 # ================================================== 5b. 设置页三个新控件
@@ -819,6 +1064,98 @@ check("9m 只带摘要之后的原文",
               if m.get("role") == "user"),
       "问题0 不应出现在上下文里")
 
+# 压缩只算 UI 历史，system + 工具 schema + 工具返回必须由 _shed_old_tools 兜底
+_tools9 = [{"type": "function", "function": {
+    "name": "patch_workflow",
+    "parameters": {"type": "object",
+                   "properties": {"a": {"type": "string", "description": "d" * 500}}}}}]
+_msgs9 = [
+    {"role": "system", "content": "S" * 10000},
+    {"role": "user", "content": "改工作流"},
+    {"role": "assistant", "content": None,
+     "tool_calls": [{"id": "c1", "function": {"name": "x", "arguments": "{}"}}]},
+    {"role": "tool", "tool_call_id": "c1", "content": "J" * 15000},
+    {"role": "assistant", "content": None,
+     "tool_calls": [{"id": "c2", "function": {"name": "x", "arguments": "{}"}}]},
+    {"role": "tool", "tool_call_id": "c2", "content": "K" * 15000},
+]
+_p_before = _ag2._est_payload(_msgs9, _tools9)
+check("9n 载荷估算含 tools schema", _p_before > 10000, str(int(_p_before)))
+_cut9n = _ag2._shed_old_tools(_msgs9, 8192, _tools9)
+_p_after = _ag2._est_payload(_msgs9, _tools9)
+check("9o 超窗口触发截断", _cut9n > 0 and _p_after <= 8192 * 0.85,
+      f"cut={int(_cut9n)} after={int(_p_after)}")
+_t9 = [m for m in _msgs9 if m["role"] == "tool"]
+check("9p 截断保留 tool_call_id 结构",
+      all(m.get("tool_call_id") for m in _t9)
+      and all(len(m["content"]) <= 240 for m in _t9),
+      str([len(m["content"]) for m in _t9]))
+check("9q system / user 消息不被动",
+      _msgs9[0]["content"] == "S" * 10000
+      and _msgs9[1]["content"] == "改工作流", "")
+check("9r 二次调用幂等", _ag2._shed_old_tools(_msgs9, 8192, _tools9) == 0, "")
+check("9s 窗口充足不截断",
+      _ag2._shed_old_tools([{"role": "tool", "tool_call_id": "c",
+                             "content": "x" * 500}], 8192, 0) == 0, "")
+check("9t 窗口 0（未知模型）不截断",
+      _ag2._shed_old_tools(_msgs9, 0, _tools9) == 0, "")
+# 没有可截的 tool 消息时必须直接返回（防 while 歸循环）
+import time as _t9u
+_t0 = _t9u.time()
+_ag2._shed_old_tools([{"role": "system", "content": "X" * 200000}],
+                     8192, _tools9)
+check("9u 无可截消息时不死循环", _t9u.time() - _t0 < 1.0,
+      f"{_t9u.time() - _t0:.3f}s")
+# 多模态 content：base64 图片不计入载荷（否则一张图就误判超窗）
+_pmm = _ag2._est_payload(
+    [{"role": "user", "content": [
+        {"type": "text", "text": "看图"},
+        {"type": "image_url",
+         "image_url": {"url": "data:image/png;base64," + "A" * 500000}}]}], 0)
+check("9v base64 图片不计入载荷", _pmm < 50, str(_pmm))
+
+# ---- 9w~9z：本机模型窗口不再被画像表虚标（8243>8192 的根因）----
+import app.local_llm as _llm9  # noqa: E402,F401
+_prof9 = _ag2.ai_models.detect("qwen3.5-4b-uncensored",
+                               "http://127.0.0.1:8080/v1")
+check("9w 画像表确实虚标 131072", _prof9.ctx_tokens == 131072,
+      str(_prof9.ctx_tokens))
+check("9x 本机服务商被识别",
+      _ag2._is_local_ai({"settings": {"ai_provider": "local"}}) is True, "")
+check("9y 云端服务商不误判",
+      _ag2._is_local_ai({"settings": {"ai_base_url": "https://api.x.com/v1"}})
+      is False, "")
+# 端到端：本机 cfg + 约 9k token 历史 → 窗口修正为 8192 后必触发压缩；
+# 若仍虚标 131072 则 9k 远不到 85%，压缩不会发生
+_hist9z = []
+for _i in range(30):
+    _hist9z.append({"role": "user", "content": f"问{_i}：" + "细节" * 130})
+    _hist9z.append({"role": "assistant", "content": f"答{_i}：" + "内容" * 130})
+_seen9z, _ev9z = [], []
+_orig_round9z = _ag2._round_chat
+
+
+def _fake_round9z(_st, messages, tools, **kw):
+    _seen9z.append(list(messages))
+    return {"content": "摘要：压缩过了" if not tools else "（回答）"}
+
+
+_ag2._round_chat = _fake_round9z
+try:
+    _ag2.run_agent({"settings": {"ai_enabled": True, "ai_provider": "local",
+                                 "ai_base_url": "http://127.0.0.1:8080/v1",
+                                 "ai_api_key": "k", "ai_model":
+                                 "qwen3.5-4b-uncensored",
+                                 "ai_compress": "mid", "ai_ctx_msgs": 12}},
+                   {"id": "a", "port": 8188}, "继续", _hist9z,
+                   emit=lambda k, **kw: _ev9z.append((k, kw)),
+                   log=lambda *a: None)
+finally:
+    _ag2._round_chat = _orig_round9z
+check("9z 本机大历史触发压缩（窗口按 8192 算）",
+      any(k == "compress" for k, _ in _ev9z),
+      str([k for k, _ in _ev9z])[:120])
+
 # ================================================== 10. 助手设定 / 直连 / 卡顿提示（2026-11-06）
 # 用户实测：点「帮我启动一下」界面卡在「思考中 64s」——系统代理抖动导致请求无响应
 _ctxp = ai_tools.build_ctx({"settings": {"ai_persona": "回答必须两句话以内；默认 832×1216"}},
@@ -874,11 +1211,16 @@ _pg = _AP({}, _FakeWin())
 _pg._think_start()
 _pg._think_t0 = _t.time() - 50
 _pg._think_tick()
+# 2026-11-16 重构：主行只留状态与秒数，建议挪到副行（_think_sub）。
+# 断言按语义写——「有没有给出可操作建议」，别锁死具体措辞。
 check("10g 长时间无响应给出可操作提示",
-      "停止" in _pg._think_lb.text() and "代理" in _pg._think_lb.text(), _pg._think_lb.text())
+      "停止" in _pg._think_sub.text(), _pg._think_sub.text())
+check("10g2 主行累计等待秒数", "50s" in _pg._think_lb.text(), _pg._think_lb.text())
 _pg._think_t0 = _t.time() - 25
 _pg._think_tick()
-check("10h 20~45s 提示仍在等待", "仍在等待" in _pg._think_lb.text(), _pg._think_lb.text())
+check("10h 25s 说明为什么慢",
+      ("慢" in _pg._think_sub.text() or "等待" in _pg._think_sub.text()),
+      _pg._think_sub.text())
 _pg._think_stop()
 _pg.close()
 
@@ -988,13 +1330,19 @@ _orig_confirm = _cdmod.confirm_changes
 _cfgmod.CONFIG_PATH = os.path.join(_tmpcfg, "config.json")
 # 初始配置必须与控件默认值一致，否则 pending vs old 会产生一堆假差异
 from app.ai_persona import resolve as _persona_resolve  # noqa: E402
+import app.local_llm as _llm_mod  # noqa: E402
 _base_settings = {"mirror": "阿里云", "gh_proxy": "", "git_proxy": "",
                   "tools_dir": "", "close_behavior": "ask", "ai_enabled": False,
                   "ai_base_url": "", "ai_api_key": "", "ai_model": "deepseek-chat",
                   "ai_think": "off", "ai_max_tokens": 4000, "ai_ctx_msgs": 12,
                   "ai_compress": "mid", "ai_persona": _persona_resolve(""),
                   "ai_direct": True, "theme": "dark", "bg_image": "",
-                  "bg_opacity": 72, "lang": "zh"}
+                  "bg_opacity": 72, "lang": "zh",
+                  # 2026-11-15：设置页新增了背景变换与本地模型控件，基线要同步，
+                  # 否则「什么都没改」也会被判成有改动，12f/12g/12i 一起红
+                  "bg_blur": 0, "bg_zoom": 1.0, "bg_off_x": 0.0, "bg_off_y": 0.0,
+                  "ai_provider": "custom",
+                  "local_llm_model": _llm_mod.MODELS[0]["id"]}
 _saved_calls = []
 _spmod.save_config = lambda c: _saved_calls.append(1)
 _sp2 = SettingsPage({"settings": dict(_base_settings)}, _FakeWin())
@@ -1027,6 +1375,83 @@ _sp2.close()
 _cdmod.confirm_changes = _orig_confirm
 _spmod.save_config = _orig_sp_save
 _cfgmod.CONFIG_PATH = _orig_cpath
+
+# ================================================== 13. 坏工具参数清洗（2026-11-17）
+# 用户截图：本机小模型生成坏 JSON arguments → 空参执行报「缺少 name」→
+# 坏 JSON 回填历史 → 服务端渲染历史 500 → 2 次重试同款 500 全灭
+# C1：回填前把坏 JSON 换成 "{}"（服务端永远看不到坏 JSON）
+# C2：tool 结果前注入「参数不是合法 JSON」提示（模型不再拿坏参数死循环）
+_ev13, _exec13, _msgs13, _rounds13 = [], [], [], []
+_orig_exec13 = ai_tools.execute
+_orig_round13 = _ag2._round_chat
+ai_tools.execute = lambda n, a, c: (_exec13.append((n, dict(a)))
+                                    or {"ok": True, "text": "结果"})
+_BAD13 = '{"keyword":"缺括号"'          # 缺右括号，json.loads 必失败
+_GOOD13 = '{"limit": 5}'
+
+
+def _fake_round13(_st, messages, tools, **kw):
+    _msgs13.append(list(messages))
+    _rounds13.append(len(_rounds13))
+    if _rounds13[-1] >= 1:              # 第 2 轮起直接收尾
+        return {"content": "收尾结论"}
+    return {"tool_calls": [
+        {"id": "bad1", "function": {"name": "search_models",
+                                    "arguments": _BAD13}},
+        {"id": "good1", "function": {"name": "list_instances",
+                                     "arguments": _GOOD13}}]}
+
+
+_ag2._round_chat = _fake_round13
+try:
+    _ag2.run_agent({"settings": {"ai_enabled": True, "ai_base_url": "http://x",
+                                 "ai_api_key": "k", "ai_model": "test"}},
+                   {"id": "a", "port": 8188}, "帮我查", [],
+                   emit=lambda k, **kw: _ev13.append((k, kw)))
+finally:
+    _ag2._round_chat = _orig_round13
+    ai_tools.execute = _orig_exec13
+
+# 收集回填进历史的 assistant.tool_calls 与 tool 结果消息
+_bad_call = _good_call = None
+_tool_msgs = {}
+for msgs in _msgs13:
+    for m in msgs:
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            for c in m["tool_calls"]:
+                if c.get("id") == "bad1":
+                    _bad_call = c
+                elif c.get("id") == "good1":
+                    _good_call = c
+        if m.get("role") == "tool":
+            _tool_msgs[m.get("tool_call_id")] = m.get("content") or ""
+
+check("13a C1 坏 arguments 被洗成合法空 JSON",
+      _bad_call is not None
+      and _bad_call["function"]["arguments"] == "{}"
+      and isinstance(json.loads(_bad_call["function"]["arguments"]), dict),
+      str(_bad_call))
+check("13b C1 好 arguments 原样保留",
+      _good_call is not None
+      and _good_call["function"]["arguments"] == _GOOD13, str(_good_call))
+check("13c C1 服务端视角历史里没有坏 JSON",
+      all(isinstance(json.loads(c["function"]["arguments"]), (dict, list))
+          for msgs in _msgs13 for m in msgs
+          if m.get("role") == "assistant" and m.get("tool_calls")
+          for c in m["tool_calls"]), "存在坏 JSON")
+check("13d 坏参按空参执行并真实调用了工具",
+      ("search_models", {}) in _exec13, str(_exec13))
+check("13e 好参正常解析执行",
+      ("list_instances", {"limit": 5}) in _exec13, str(_exec13))
+check("13f C2 坏参的 tool 结果带「不是合法 JSON」提示",
+      "不是合法 JSON" in _tool_msgs.get("bad1", ""), _tool_msgs.get("bad1", ""))
+check("13g C2 提示要求重新生成合法 JSON",
+      "合法的 JSON" in _tool_msgs.get("bad1", ""), _tool_msgs.get("bad1", ""))
+check("13h C2 好参的 tool 结果不带该提示",
+      "不是合法 JSON" not in _tool_msgs.get("good1", ""),
+      _tool_msgs.get("good1", ""))
+check("13i 全程无 error 事件", not any(k == "error" for k, _ in _ev13),
+      str([k for k, _ in _ev13]))
 
 # --------------------------------------------------
 print("-" * 60)
