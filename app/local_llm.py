@@ -172,15 +172,46 @@ MODELS = [
 _BY_ID = {m["id"]: m for m in MODELS}
 
 
+# GitHub release 的国内加速代理（2026-11-19 用户反馈「组件下载一直 0M」）
+#
+# 现场：组件包（llama.cpp 的 zip，25~38MB）只托管在 GitHub Releases。国内直连实测
+# 65 KB/s（本机 38MB 的 Vulkan 包下了 17 分钟），且经常出现「连上了但长时间不给
+# 数据」——下载器 20 秒超时、重试 8 次，全程进度条都是 0，用户以为卡死。
+# 模型走 hf-mirror 不受影响，所以只有「组件」这一步会卡。
+#
+# 做法：把代理地址追加在官方源**之后**当备选，单源失败/卡死才接上，官方源永远排第一。
+# 安全性：下载完仍按 BIN_VARIANTS 里固定的 sha256 校验，代理返回错内容会被当场抓住。
+# 实测（2026-11-19，本机国内网络）：gh-proxy.com 185 KB/s、ghproxy.net 24 KB/s、
+# ghfast.top 已失效。
+GITHUB_MIRRORS = (
+    "https://gh-proxy.com/",
+    "https://ghproxy.net/",
+)
+
+
+def _is_github_release(url: str) -> bool:
+    u = str(url or "").lower()
+    return "github.com/" in u and "/releases/download/" in u
+
+
 def _endpoint_urls(urls) -> list:
     """下载前按用户当前镜像端点改写地址（2026-11-16）。
 
     上面 BIN / MODELS 表里写的是默认镜像的直链，便于阅读与固定 sha256；
     真正去哪儿取由 app.mirror.endpoint() 决定，用户可在设置里改成自建反代。
-    非 HF 域名（如 llama.cpp 的 GitHub release）原样返回。
+    非 HF 域名（如 llama.cpp 的 GitHub release）保持原样，但会**追加**国内加速
+    代理作为备选源（官方源仍排第一，见 GITHUB_MIRRORS 上方说明）。
     """
     from app import mirror
-    return [mirror.rewrite(u) for u in (urls or [])]
+    out = [mirror.rewrite(u) for u in (urls or [])]
+    extra = []
+    for u in out:
+        if _is_github_release(u):
+            extra.extend(m + u for m in GITHUB_MIRRORS)
+    # 代理**排在官方源前面**：本机实测 185 KB/s vs 直连 65 KB/s，差 2.8 倍。
+    # 代理不可用（企业内网白名单、代理挂掉）时 download_multi 会自然落到官方源，
+    # 所以顺序反过来不影响可用性，只影响「多快能下完」。
+    return [u for u in extra if u not in out] + out
 
 
 # ---------------------------------------------------------------- 路径

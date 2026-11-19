@@ -19,7 +19,8 @@ import time
 
 from PySide6.QtCore import (QBuffer, QEvent, QRect, QSettings, QSize, Qt, QThread,
                             QTime, QTimer, Signal)
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtGui import (QColor, QIcon, QImage, QPainter, QPalette,
+                       QPen, QPixmap)
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog,
                                QDialogButtonBox, QFormLayout, QFrame,
                                QHBoxLayout, QInputDialog, QLabel,
@@ -30,6 +31,37 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog,
 
 from app import ai_agent, ai_chat_store, ai_skills
 from app.i18n import T
+from app.ui import theme
+
+
+def _send_icon(kind: str, color: str) -> QIcon:
+    """自绘「发送 / 停止」图标（2026-11-20）
+
+    为什么不用字符：`■`(U+25A0) 在 Microsoft YaHei UI 里被渲染成一根细竖条，
+    完全认不出是「停止」；`↑`(U+2191) 又偏细偏小。两者放在同一个 32px 圆里
+    视觉重量差太多，切换时像换了个控件。自绘之后线宽、大小、圆角都能精确对齐。
+    """
+    from PySide6.QtCore import QRectF, Qt as _Qt
+    pm = QPixmap(48, 48)          # 2x 采样，高 DPI 下不糊
+    pm.fill(_Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    col = QColor(color)
+    if kind == "stop":
+        p.setPen(_Qt.NoPen)
+        p.setBrush(col)
+        p.drawRoundedRect(QRectF(15, 15, 18, 18), 3.5, 3.5)
+    else:
+        pen = QPen(col, 4.5)
+        pen.setCapStyle(_Qt.RoundCap)
+        pen.setJoinStyle(_Qt.RoundJoin)
+        p.setPen(pen)
+        p.setBrush(_Qt.NoBrush)
+        p.drawLine(24, 34, 24, 16)      # 竖杆
+        p.drawLine(16, 24, 24, 16)      # 左斜
+        p.drawLine(32, 24, 24, 16)      # 右斜
+    p.end()
+    return QIcon(pm)
 
 
 def _fmt_usage(u) -> str:
@@ -317,6 +349,7 @@ class AiPage(QWidget):
         self._t_send = 0.0          # 本轮发送时刻（算耗时 + 气泡时间戳）
         self._atts = []             # 待发送附件：[{kind:'image'|'text',...}]
         self._stream = None         # 流式中的卡片状态
+        self._busy = False          # 生成中：发送键显示 ■、点击=停止
         self._stream_timer = None
         self._chat_id = ""          # 当前会话 id（2026-11-06 多会话持久化）
         self._summary = ""          # 早期对话压缩摘要（2026-11-06）
@@ -360,7 +393,20 @@ class AiPage(QWidget):
         b_new.setCursor(Qt.PointingHandCursor)
         b_new.setToolTip("开一个新对话（当前对话自动保存）")
         b_new.clicked.connect(self._new_chat)
-        side_root.addWidget(b_new)
+        # 2026-11-20 用户反馈「左右两栏都设计为可收缩」：原来只能点标题栏那个
+        # 「☰ 会话」，隔得远又看不出控制的是左栏。这里在栏内给一个明确的收起键。
+        row_new = QHBoxLayout()
+        row_new.setSpacing(6)
+        row_new.setContentsMargins(0, 0, 0, 0)
+        row_new.addWidget(b_new, 1)
+        self.b_side_close = QPushButton("«")
+        self.b_side_close.setObjectName("ComposerGhost")
+        self.b_side_close.setFixedSize(30, 30)
+        self.b_side_close.setCursor(Qt.PointingHandCursor)
+        self.b_side_close.setToolTip("收起左侧会话列表")
+        self.b_side_close.clicked.connect(self._toggle_side)
+        row_new.addWidget(self.b_side_close, 0, Qt.AlignVCenter)
+        side_root.addLayout(row_new)
 
         # 会话检索（2026-11-13）：列表只显示标题前 24 字，长对话靠首条消息检索回来。
         # 只重渲染不过滤磁盘：list_chats 每次要读全部 json，输入时不能反复读。
@@ -447,6 +493,15 @@ class AiPage(QWidget):
         # 「这里应该自动换行/调整宽度，而不是出现横向滑块」）。宽度由
         # _msg_avail() 统一推算，这条策略只是兜底——真漏算了也宁可变窄，不横滚。
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # ★ 竖滚动条常显（2026-11-19 用户反馈「这个 UI 怎么一动一动的」）
+        #
+        # 默认 AsNeeded 会形成死循环：
+        #   内容略微超出一屏 → 冒出竖滚动条 → 视口窄 12px
+        #   → eventFilter 收到视口 Resize → 80ms 后 _relayout_messages
+        #   → 按窄宽度重算气泡固定宽高（变窄通常变高）→ 又超出更多 …
+        # 每循环一次整个消息区就上下位移 1~2px，肉眼看到的就是持续抖动。
+        # 常显之后视口宽度恒定，这个环从根上断开；代价只是右侧常驻一条细条。
+        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         self.flow_host = QWidget()
         self.flow = QVBoxLayout(self.flow_host)
         self.flow.setContentsMargins(self.FLOW_PAD_L, 6, self.FLOW_PAD_R, 6)
@@ -483,36 +538,53 @@ class AiPage(QWidget):
         self.att_host.setVisible(False)
         root.addWidget(self.att_host)
 
-        # ---- 输入区（2026-11-08：套一层输入卡，按钮与输入框成为一个整体）----
+        # ---- 输入区（2026-11-20 参考 WorkBuddy 改为「上下两层」）----
+        # 上层是输入框，下层是工具栏（会话设定 / 停止 / 圆形发送），
+        # 比原来「一行塞三按钮」更像现代的 AI 对话框，也解决了按钮与输入框
+        # 底对齐后上方留 30px 死白的问题。
         composer = QFrame()
         composer.setObjectName("ComposerCard")
         composer.setAttribute(Qt.WA_StyledBackground, True)
-        row = QHBoxLayout(composer)
-        row.setContentsMargins(10, 10, 10, 10)
-        row.setSpacing(8)
+        cbox = QVBoxLayout(composer)
+        cbox.setContentsMargins(12, 8, 10, 8)
+        cbox.setSpacing(4)
         self.ed = QTextEdit()
-        self.ed.setFixedHeight(64)
+        self.ed.setFixedHeight(56)
+        self.ed.setObjectName("ComposerInput")
         self.ed.setPlaceholderText("问点什么…（回车发送，Shift+回车换行；可直接粘贴图片或工作流 JSON）")
         self.ed.installEventFilter(self)
-        row.addWidget(self.ed, 1)
+        self._apply_placeholder_style()
+        cbox.addWidget(self.ed, 1)
+
+        bar = QHBoxLayout()
+        bar.setSpacing(8)
+        bar.setContentsMargins(0, 0, 0, 0)
         self.b_skills = QPushButton("⚙ 会话设定")
-        self.b_skills.setFixedHeight(34)
+        self.b_skills.setObjectName("ComposerGhost")
+        self.b_skills.setFixedHeight(30)
         self.b_skills.setCursor(Qt.PointingHandCursor)
         self.b_skills.setToolTip("给这条对话固定一套工作台：用途 / 实例 / 工作流 / 模型 / 技能")
         self.b_skills.clicked.connect(self._pick_session)
-        row.addWidget(self.b_skills, 0, Qt.AlignBottom)
-        self.b_stop = QPushButton("停止")
-        self.b_stop.setFixedSize(64, 34)
-        self.b_stop.setEnabled(False)
-        self.b_stop.clicked.connect(self._stop)
-        row.addWidget(self.b_stop, 0, Qt.AlignBottom)
-        self.b_send = QPushButton("发送")
-        self.b_send.setFixedSize(78, 34)
-        self.b_send.setProperty("accent", True)
-        self.b_send.clicked.connect(self._send)
-        row.addWidget(self.b_send, 0, Qt.AlignBottom)
+        bar.addWidget(self.b_skills, 0, Qt.AlignVCenter)
+        bar.addStretch(1)
+        # 圆形发送键（参考 WorkBuddy）兼「停止」（2026-11-20 用户要求合并）：
+        # 空闲显示 ↑（发送），生成中显示 ■（停止），一个按钮两种状态。
+        # 选 ■ 而不是 ⏸/✕：■ 是媒体播放器的通用停止符号，且与 ↑ 同属简单
+        # 几何形，切换时视觉重量一致，不会像「↑ → 方形停止块」那样突兀。
+        self.b_send = QPushButton("")
+        self.b_send.setObjectName("ComposerSend")
+        self.b_send.setFixedSize(32, 32)
+        self.b_send.setCursor(Qt.PointingHandCursor)
+        self.b_send.setToolTip("发送（回车）")
+        self.b_send.setIcon(_send_icon("send", "#ffffff"))
+        self.b_send.setIconSize(QSize(18, 18))
+        self.b_send.clicked.connect(self._on_send_click)
+        bar.addWidget(self.b_send, 0, Qt.AlignVCenter)
+        cbox.addLayout(bar)
         root.addWidget(composer)
         self._composer = composer
+        # 输入卡自己接鼠标 → 点内边距/空白也能立刻开始输入（见 eventFilter）
+        composer.installEventFilter(self)
 
         outer.addStretch(1)
         outer.addWidget(self.side)
@@ -541,17 +613,27 @@ class AiPage(QWidget):
         self.right_handle.setFixedWidth(18)
         self.right_handle.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         self.right_handle.clicked.connect(self._toggle_right)
+        # 2026-11-20：原来写死深色 rgba，浅色主题下把手是一条深色窄条（与气泡
+        # 同一个毛病：rgba 形式不进 _LIGHT_MAP）。按当前模式给值。
+        _lt = theme.current_mode() == "light"
         self.right_handle.setStyleSheet(
-            "QToolButton#AiDrawHandle { background: rgba(27,32,41,0.92);"
-            " color:#8a93a3; border:none; border-radius:9px; font-size:14px; }"
-            "QToolButton#AiDrawHandle:hover { background:#262e3a; color:#e6edf7; }")
+            "QToolButton#AiDrawHandle { background: %s;"
+            " color:%s; border:none; border-radius:9px; font-size:14px; }"
+            "QToolButton#AiDrawHandle:hover { background:%s; color:%s; }"
+            % ("rgba(246,244,236,0.94)" if _lt else "rgba(27,32,41,0.92)",
+               "#6d685d" if _lt else "#8a93a3",
+               "#e7e4da" if _lt else "#262e3a",
+               "#1f1b14" if _lt else "#e6edf7"))
 
         self.side_r = QWidget()
         self.side_r.setObjectName("AiRight")
         self.side_r.setAttribute(Qt.WA_StyledBackground, True)
         self.side_r.setFixedWidth(304)
+        # 右栏底色按主题分支（同气泡：rgba 不进 _LIGHT_MAP）
+        self._bg_right = ("rgba(246,244,236,0.94)" if _lt
+                          else "rgba(27,32,41,0.92)")
         self.side_r.setStyleSheet(
-            "QWidget#AiRight { background: rgba(27,32,41,0.92);"
+            "QWidget#AiRight { background: " + self._bg_right + ";"
             " border-radius: 12px; }"
             "QTabWidget#AiRightTab::pane { border:none; }"
             "QTabWidget#AiRightTab QTabBar::tab { background:transparent;"
@@ -715,7 +797,7 @@ class AiPage(QWidget):
             _refresh_right_safe(self)
         # 抽屉一开一合会改变聊天区宽度，但 AiPage 自身尺寸没变、resizeEvent 不会来，
         # 历史气泡用的是 setFixedWidth → 不重排就会被右边裁掉字（2026-11-12 实测）。
-        QTimer.singleShot(0, self._relayout_messages)
+        QTimer.singleShot(0, lambda: self._relayout_messages(force=True))
         if remember:
             try:
                 QSettings("LeiMengStudio", "ComfyHub").setValue(
@@ -841,15 +923,23 @@ class AiPage(QWidget):
         if info is not None and info.get("mode"):
             custom = custom and info.get("mode") == "custom"
         self._custom_bg = custom
+        self._apply_placeholder_style()      # 主题切了，占位符颜色也要跟着换
         # 2026-11-07：全局 QSS 的 `QWidget{background-color:...}` 会给每个消息行容器
         # 刷上一层不透明/半透明底色，自定义背景下就成了一条条"横带"（用户报障）。
         # 行容器统一 objectName=ChatRow，这里恒置透明；气泡/卡片自己带样式不受影响。
         rows = ("QWidget#ChatRow{background:transparent;}"
                 "QLabel#ChatBody{background:transparent;}")
         # 顶部状态条：必须是有边有角的容器，否则状态文字和下拉框裸飘在背景图上
+        # 2026-11-20 P0：自定义背景下同样写死了深色，浅色主题下会变成深色条压米白，
+        # 与气泡一起按当前模式分支（原因见 _card_qss 的说明）。
+        light = theme.current_mode() == "light"
         if custom:
-            rows += ("QWidget#AiHead{background:rgba(14,17,22,0.50);"
-                     "border:1px solid rgba(255,255,255,0.10); border-radius:10px;}")
+            if light:
+                rows += ("QWidget#AiHead{background:rgba(255,255,255,0.84);"
+                         "border:1px solid rgba(0,0,0,0.07); border-radius:10px;}")
+            else:
+                rows += ("QWidget#AiHead{background:rgba(14,17,22,0.50);"
+                         "border:1px solid rgba(255,255,255,0.10); border-radius:10px;}")
         else:
             rows += ("QWidget#AiHead{background:rgba(127,127,127,0.06);"
                      "border:1px solid rgba(127,127,127,0.14); border-radius:10px;}")
@@ -874,13 +964,54 @@ class AiPage(QWidget):
         self._restyle_cards()
 
     # -------------------------------------------------- 卡片/气泡外观（2026-11-07）
+    def _apply_placeholder_style(self):
+        """占位符颜色跟随主题（2026-11-20 P2）
+
+        Qt 的占位符颜色是 QPalette::PlaceholderText 角色，QSS 里**没有**对应属性
+        （写 `color:` 只影响正文，占位符仍用默认的淡灰）。默认值在 14px 下几乎
+        看不见，用户会以为输入框是空壳、点了没反应。浅色主题用偏深的暖灰。
+        """
+        if not hasattr(self, "ed"):
+            return
+        light = theme.current_mode() == "light"
+        pal = self.ed.palette()
+        pal.setColor(QPalette.PlaceholderText,
+                     QColor("#6f6a5e") if light else QColor("#8b97a8"))
+        self.ed.setPalette(pal)
+
+    def _set_composer_focus(self, on: bool):
+        """输入卡聚焦高亮（2026-11-20 P2）
+
+        输入框拿到焦点时把输入卡描边点亮，用户一眼能确认「现在能打字了」——
+        之前点了空白处没反应，界面也没有任何聚焦提示，很难判断状态。
+        QSS 用属性选择器 #ComposerCard[focused="true"]，改属性后必须 repolish 才生效。
+        """
+        c = getattr(self, "_composer", None)
+        if c is None:
+            return
+        c.setProperty("focused", "true" if on else "false")
+        c.style().unpolish(c)
+        c.style().polish(c)
+
     def _card_qss(self) -> str:
-        """AI 消息卡：自定义背景下用深一档的实色 + 细描边，边界清楚但不抢背景
+        """AI 消息卡：自定义背景下用「实色 + 细描边」，边界清楚但不抢背景
 
         之前卡片只有 8% 灰 + 0.18 描边，叠在背景图上完全看不见——
         正文和按钮就像裸飘着，用户反馈"没有边框、没有圆角、色差断层"。
+
+        ★ 2026-11-20 P0（用户反馈「UI 不好看」）：
+        原来这里有自定义背景时**写死深色** rgba(14,17,22,0.56) + 白描边。
+        theme._LIGHT_MAP 靠「十六进制色值替换」做深→浅翻转，rgba() 形式根本
+        不在映射表里，所以浅色主题下永远是深色气泡压在米白页面上——两套配色
+        拼在一起，这是"不好看"的主因。现在按当前模式分支。
         """
+        from app.ui import theme as _theme
+        light = _theme.current_mode() == "light"
         if getattr(self, "_custom_bg", False):
+            if light:
+                return ("QFrame#aiCard{background:rgba(255,255,255,0.86);"
+                        "border:1px solid rgba(0,0,0,0.08);"
+                        "border-radius:12px;}")
             return ("QFrame#aiCard{background:rgba(14,17,22,0.56);"
                     "border:1px solid rgba(255,255,255,0.12);"
                     "border-radius:12px;}")
@@ -911,6 +1042,17 @@ class AiPage(QWidget):
         """
         if obj is getattr(self, "_vp", None) and event.type() == QEvent.Resize:
             self._schedule_relayout()
+        # 点输入卡的空白处也要能直接开始打字（2026-11-19 用户反馈
+        # 「有些区域点击并没有进入到可输入状态」）：
+        # 输入卡四周有 10px 内边距、按钮只有 34px 高且底对齐，按钮上方还有一段空白，
+        # 这些地方都是 composer 自己在接鼠标，点下去只会让窗口失焦，输入框拿不到焦点。
+        # 子控件（输入框 / 按钮）会先吃掉自己的点击，所以这里只处理真正的空白区。
+        if obj is getattr(self, "_composer", None) \
+                and event.type() == QEvent.MouseButtonPress:
+            if hasattr(self, "ed"):
+                self.ed.setFocus()
+        if obj is getattr(self, "ed", None)                 and event.type() in (QEvent.FocusIn, QEvent.FocusOut):
+            self._set_composer_focus(event.type() == QEvent.FocusIn)
         if obj is getattr(self, "ed", None) and event.type() == QEvent.KeyPress:
             if (event.key() == Qt.Key_V and event.modifiers() & Qt.ControlModifier
                     and self._try_paste_attachment()):
@@ -1107,7 +1249,7 @@ class AiPage(QWidget):
         body.setFixedHeight(
             self._rich_height(html, cw, body.font()) + 6)
 
-    def _relayout_messages(self):
+    def _relayout_messages(self, force: bool = False):
         """窗口尺寸变化后重排已有消息（2026-11-07 用户报障）
 
         历史对话在 __init__ 里渲染，那一刻页面还是 640x480 的默认尺寸，
@@ -1117,6 +1259,14 @@ class AiPage(QWidget):
         """
         if getattr(self, "_stream", None):
             return                              # 流式中别动，等结束
+        # 幂等保护：宽度没变就不用重算（2026-11-19 抖动修复的配套措施）。
+        # _relayout 自己会改卡片固定宽高 → 改内容总高 → 可能影响滚动条 →
+        # 又触发一次 Resize，宽度相同却反复重排就是在空转。
+        # force=True 用于「刚渲染完历史消息」这种内容变了但宽度没变的情况。
+        cw_now = self._card_body_width()
+        if not force and cw_now == getattr(self, "_last_relayout_w", -1):
+            return
+        self._last_relayout_w = cw_now
         rows = []
         for i in range(self.flow.count()):
             it = self.flow.itemAt(i)
@@ -1468,6 +1618,40 @@ class AiPage(QWidget):
         self.ed.setPlainText(text)
         self._send()
 
+    def _on_send_click(self):
+        """发送键兼停止键：生成中点是停止，否则是发送（2026-11-20 用户要求）
+
+        合并的理由：原来「停止」是常驻的禁用态矩形按钮，既占位置又让人以为坏了；
+        而「发送」和「停止」在语义上是同一个动作的两个方向，合成一个键最省心。
+        """
+        if getattr(self, "_busy", False):
+            self._stop()
+        else:
+            self._send()
+
+    def _set_busy(self, on: bool):
+        """切换发送键的两种外观
+
+        · 空闲：↑ + 蓝底（强调可点）
+        · 生成中：■ + 中性深底（表示「点这里中断」）
+        图标始终是简单几何形、尺寸不变，所以状态切换时按钮本身不会跳。
+        """
+        self._busy = bool(on)
+        # 图标颜色要跟底色反着来：空闲是蓝底配白图标；停止态是中性底，
+        # 浅色主题下该底是浅灰，图标必须转深色，否则白方块糊在浅灰上看不见。
+        _lt = theme.current_mode() == "light"
+        if on:
+            col = "#1f1b14" if _lt else "#e6edf7"
+        else:
+            col = "#ffffff"
+        self.b_send.setIcon(_send_icon("stop" if on else "send", col))
+        self.b_send.setIconSize(QSize(18, 18))
+        self.b_send.setToolTip(T("停止生成") if on else T("发送（回车）"))
+        self.b_send.setProperty("busy", "true" if on else "false")
+        self.b_send.setEnabled(True)      # 永远可点：要么发送要么停止
+        self.b_send.style().unpolish(self.b_send)
+        self.b_send.style().polish(self.b_send)
+
     def _send(self):
         text = self.ed.toPlainText().strip()
         if not text or self._worker is not None:
@@ -1504,8 +1688,7 @@ class AiPage(QWidget):
         self._worker.sig_event.connect(lambda ev, _w=self._worker:
                                        self._on_event(ev, _w))
         self._worker.sig_done.connect(lambda _w=self._worker: self._on_done(_w))
-        self.b_send.setEnabled(False)
-        self.b_stop.setEnabled(True)
+        self._set_busy(True)          # 合并键切到「停止」态
         self._think_start()
         self._worker.start()
 
@@ -1536,8 +1719,7 @@ class AiPage(QWidget):
         self._zombies.append(w)          # 线程还没结束，保住引用直到它自己退出
         self._worker = None
         self._think_stop()
-        self.b_send.setEnabled(True)
-        self.b_stop.setEnabled(False)
+        self._set_busy(False)
         self._notice(T("已停止本轮回答（未完成的输出不保留）。"
                        "可以点消息上的「重发」再试一次。"))
         self._pin_bottom(1200)
@@ -2076,8 +2258,7 @@ class AiPage(QWidget):
             if w is not self._worker:
                 return                # 旧线程迟到的 done，别干扰新会话
         self._think_stop()
-        self.b_send.setEnabled(True)
-        self.b_stop.setEnabled(False)
+        self._set_busy(False)
         self._worker = None
         self._save_chat()
         self._reload_chat_list(select=self._chat_id)   # 刷新标题/条数
@@ -2169,7 +2350,7 @@ class AiPage(QWidget):
         cap_txt = "AI 助手 · " + model + " · " + stamp
         card["cap"].setText(cap_txt)
         card["cap"].setToolTip(cap_txt)
-        self._relayout_messages()      # 流式期间 resize 被跳过，收尾补一次重排
+        self._relayout_messages(force=True)   # 内容刚变（宽度没变），必须强制
 
     def _stream_flush_direct(self, text: str):
         card = getattr(self, "_last_card", None)
@@ -2448,25 +2629,38 @@ class AiPage(QWidget):
                     txt += T(" · 上下文 %s") % ctx
                 self._set_ai_state("#4cd47c", txt)
             else:
-                self._set_ai_state(
-                    "#e8635a",
-                    T("本地模型未启动（设置页 → 本地模型 → 启动本地服务）"))
+                # 2026-11-20：原来把「（设置页 → 本地模型 → 启动本地服务）」整段塞在
+                # 状态条里，文字太长会把同行末尾挤出可视区（截图里「启动本地服务」的
+                # 右括号被裁掉）。状态条只留结论，操作指引放 tooltip。
+                self._set_ai_state("#e8635a", T("本地模型未启动"))
+                self.lb_ai.setToolTip(
+                    T("到「设置 → 本地模型」卡片里点「启动本地服务」"))
         elif model:
             self._set_ai_state("#4cd47c", T("云端 · %s") % model)
         else:
             self._set_ai_state("#888", T("未指定模型"))
 
     def refresh_inst(self):
-        """显示实例信息并**异步探测端口**：状态点必须反映"真的在跑"，不是"配置里有" """
+        """显示实例信息并**异步探测端口**：状态点必须反映"真的在跑"，不是"配置里有"
+
+        ⚠️ 2026-11-20 修「界面还是跳动」（用户连续两次反馈）：
+        原实现是**先** setText("名字 · :端口")，**再去**异步 TCP 探测，探测回来
+        才补上「（未启动）」后缀。于是每一轮刷新都是「文字先缩 →几十毫秒后→ 再伸」，
+        肉眼看到的就是状态条在一下一下地抽动；两帧相隔 1ms 的截图正好抓到中间态
+        （一张有「（未启动）」、一张没有，且末尾「）」被挤掉）。
+
+        现在：**探测完成才一次性写入最终文本**，中间不产生「短文本」帧。
+        """
         inst = self._inst()
         if not inst:
             self.lb_inst.setText("未选择实例")
             self.lb_dot.setStyleSheet("color:#888; font-size:11px;")
             return
-        self.lb_inst.setText(f"{inst.get('name', '?')} · :{inst.get('port')}")
-        self._probe_port(int(inst.get("port") or 8188))
+        name = str(inst.get("name") or "?")
+        port = int(inst.get("port") or 8188)
+        self._probe_port(port, label="%s · :%s" % (name, port))
 
-    def _probe_port(self, port: int):
+    def _probe_port(self, port: int, label: str = ""):
         from PySide6.QtNetwork import QTcpSocket
         sock = QTcpSocket(self)
         done = {"v": False}
@@ -2477,7 +2671,9 @@ class AiPage(QWidget):
             done["v"] = True
             color = "#4cd47c" if ok else "#e24b4a"
             self.lb_dot.setStyleSheet(f"color:{color}; font-size:11px;")
-            base = self.lb_inst.text().split("（")[0]
+            # label 由调用方传进来：不再依赖「从现有文本里 split 掉后缀」，
+            # 避免上一次探测的旧后缀被当成 base 反复拼接
+            base = label or self.lb_inst.text().split("（")[0]
             self.lb_inst.setText(base if ok else base + "（未启动）")
             self.lb_inst.setStyleSheet(
                 "color:#a9b1bd; font-size:12px;" if ok
@@ -2501,7 +2697,7 @@ class AiPage(QWidget):
         # 首次显示后强制重排一次，按真实聊天区宽度重算。
         if not getattr(self, "_relayout_done", False):
             self._relayout_done = True
-            QTimer.singleShot(0, self._relayout_messages)
+            QTimer.singleShot(0, lambda: self._relayout_messages(force=True))
             # 重排会改气泡高度 → 滚到底也要跟着重算一次
             QTimer.singleShot(0, lambda: self._pin_bottom(800))
         self.refresh_ai_state()

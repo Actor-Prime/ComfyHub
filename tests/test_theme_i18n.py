@@ -50,8 +50,12 @@ from app import i18n
 check("1a dark 原样返回模板", th.build_qss("dark") == th.DARK_QSS)
 
 light = th.build_qss("light")
-check("1b light 换成浅底", "#f7f8fa" in light and "#1e2229" not in light)
-check("1c light 文本转深色", "#1f2430" in light and "#d8dee6" not in light)
+# 2026-11-20 修正：原断言写的是冷白 #f7f8fa / 冷黑 #1f2430，而主题早已改成
+# 暖白系（_LIGHT_MAP 把 #12151a → #edeae1、#e6edf7 → #1f1b14）。
+# 这两条因此长期假红，与任何功能改动无关。改为断言**当前实际生效的值**，
+# 同时保留「不许残留深色值」这层真正要防的意图。
+check("1b light 换成浅底", "#faf8f2" in light and "#1e2229" not in light)
+check("1c light 文本转深色", "#1f1b14" in light and "#d8dee6" not in light)
 
 custom = th.build_qss("custom", 0.5)
 check("1d custom 面板转 rgba", "rgba(" in custom)
@@ -107,7 +111,8 @@ check("2f 非法模式回落 dark",
 
 info = th.apply_theme(app, {"settings": {"theme": "light"}})
 check("2g apply_theme 返回 resolved", info.get("resolved") == "light", str(info))
-check("2h apply_theme 真的换掉了样式", "#f7f8fa" in app.styleSheet())
+# 2026-11-20：同 1b，原断言用的 #f7f8fa 是改版前的冷白，实际生效值是 #faf8f2
+check("2h apply_theme 真的换掉了样式", "#faf8f2" in app.styleSheet())
 info2 = th.apply_theme(app, {"settings": {"theme": "dark"}})
 check("2i 可以切回深色", info2.get("resolved") == "dark" and app.styleSheet() == th.DARK_QSS)
 

@@ -1357,6 +1357,9 @@ EN_DICT = {
     "模型已就绪": "Model ready",
     "启动本地服务": "Start local service",
     "停止本地服务": "Stop local service",
+    # 2026-11-20：发送键兼停止键（tooltip 文案）
+    "发送（回车）": "Send (Enter)",
+    "停止生成": "Stop generating",
     # 2026-11-19：运行中切换模型 → 一键应用并重启（原先要用户自己按 停止→启动）
     "应用并重启（约 15 秒）": "Apply and restart (~15 s)",
     "已选择「%s」，点上方「应用并重启」生效（当前仍在用「%s」）。":
@@ -1365,6 +1368,19 @@ EN_DICT = {
     "已选择「%s」，但它还没下载，先点「下载模型」再重启服务。":
         "“%s” selected but not downloaded yet. Click “Download model” first, "
         "then restart the service.",
+    # 2026-11-20：插件依赖告警条上的三个按钮/提示长期漏译（test_theme_i18n 6a 报出来）
+    "一键补装": "Install missing",
+    "日志": "Log",
+    "看 ComfyUI 启动日志里报错的那几行": "Show the failing lines in the ComfyUI startup log",
+    # 2026-11-20：状态条文案拆短，操作指引移到 tooltip
+    "本地模型未启动": "Local model not started",
+    "到「设置 → 本地模型」卡片里点「启动本地服务」":
+        "Open Settings → Local model and click “Start local service”.",
+    "关闭（本批插件失败不再提示）": "Dismiss (stop warning about this batch of plugin failures)",
+    "插件加载失败的日志": "Plugin load-failure log",
+    "收起/展开左侧会话列表": "Collapse/expand the chat list",
+    # 2026-11-19：下载 0 字节时的提示，避免用户以为程序卡死
+    "正在连接下载源…": "Connecting to download source…",
     "设为当前 AI 服务商": "Use as current AI provider",
     "移除组件": "Remove component",
     "下载中 %p%": "Downloading %p%",

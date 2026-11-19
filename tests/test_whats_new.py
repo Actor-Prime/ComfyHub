@@ -53,6 +53,20 @@ def main():
     merged3 = whats_new.merge_text([("0.8.1", "第一版"), ("0.8.2", "第二版")])
     check("缺标题自动补小节", "# ComfyHub v0.8.1" in merged3 and "第一版" in merged3)
     check("两版之间有分隔线", merged3.count("---") == 1, merged3.count("---"))
+    # 2026-11-19 用户要求：最新的排最上面（升级后先看「这次更了什么」）
+    check("最新版本排在最上面",
+          merged3.index("第二版") < merged3.index("第一版"), merged3[:60])
+    # 多版聚合：拿全量说明验证（notes2 只有一版，验不出顺序）
+    all_notes = whats_new.collect_notes("0", "0.8.31")
+    merged_all = whats_new.merge_text(all_notes)
+    newest, oldest = all_notes[-1][0], all_notes[0][0]
+    check("多版聚合也是新→旧（%s 在 %s 之前）" % (newest, oldest),
+          merged_all.index("v" + newest) < merged_all.index("v" + oldest),
+          "首=%s 尾=%s" % (newest, oldest))
+    check("collect_notes 仍是升序（展示层才翻转）",
+          [v for v, _ in whats_new.collect_notes("0", "0.8.29")]
+          == sorted([v for v, _ in whats_new.collect_notes("0", "0.8.29")],
+                    key=ver_key))
 
     print("== D. maybe_show 幂等与触发 ==")
     import tempfile

@@ -541,18 +541,68 @@ QGroupBox::title {
 }
 #ActionBar QLabel { color: #8c9aab; font-size: 12px; }
 
-/* ===== AI 输入卡（输入框 + 发送按钮包成一个整体）===== */
+/* ===== AI 输入卡（2026-11-20 参考 WorkBuddy：上层输入、下层工具栏）===== */
 #ComposerCard {
     background: #1b2029;
     border: 1px solid #343e4d;
-    border-radius: 14px;
+    border-radius: 16px;
 }
+/* 2026-11-20 P2：字号 13 → 14，行距放开一点；输入框是每天都用的地方，
+   13px 在这个尺度下显得局促。占位符颜色 QSS 管不到（Qt 的 PlaceholderText
+   是调色板角色），由 ai_page._apply_placeholder_style() 按主题设置。 */
 #ComposerCard QTextEdit {
     background: transparent;
     border: none;
-    padding: 4px 6px;
-    font-size: 13px;
+    padding: 6px 8px;
+    font-size: 14px;
 }
+/* 输入卡聚焦态（2026-11-20 P2）：描边点亮，用户一眼确认「现在能打字了」。
+   颜色用项目既有的强调色 #4c8dff，与 QPushButton:focus 保持一致；
+   强调色在深浅两套主题下通用，故不进 _LIGHT_MAP。 */
+#ComposerCard[focused="true"] {
+    border: 1px solid #4c8dff;
+}
+/* 工具栏上的次要按钮（会话设定 / 停止） */
+QPushButton#ComposerGhost {
+    background: transparent;
+    border: 1px solid #343e4d;
+    border-radius: 8px;
+    color: #94a2b4;
+    font-size: 12px;
+    padding: 0 10px;
+}
+QPushButton#ComposerGhost:hover {
+    background: #232a34;
+    color: #e6edf7;
+    border-color: #3c4757;
+}
+QPushButton#ComposerGhost:disabled {
+    color: #5a636f;
+    border-color: #2a313b;
+}
+/* 圆形发送键 */
+QPushButton#ComposerSend {
+    background: #4c8dff;
+    border: none;
+    border-radius: 16px;
+    color: #ffffff;
+    font-size: 16px;
+    font-weight: bold;
+}
+QPushButton#ComposerSend:hover { background: #5aa0ff; }
+QPushButton#ComposerSend:pressed { background: #3d78e0; }
+QPushButton#ComposerSend:disabled { background: #2a313b; color: #5a636f; }
+/* 生成中 = 停止态（2026-11-20 合并键）：中性深底 + 白方块，
+   与空闲的蓝色形成明确区分，但尺寸完全不变，切换时按钮不跳。
+   ⚠️ ■ 在 16px 下只有 ~8px 宽，配深底看着像一根细竖条，认不出是「停止」，
+   所以深色态单独把字号提到 22px（方块约 15px，在 32px 圆里刚好饱满）。 */
+QPushButton#ComposerSend[busy="true"] {
+    background: #2a313b;
+    color: #e6edf7;
+    font-size: 22px;
+}
+QPushButton#ComposerSend[busy="true"]:hover { background: #343e4d; }
+QPushButton#ComposerSend[busy="true"]:pressed { background: #232830; }
 
 /* ===== 空状态（AI 助手等）===== */
 #EmptyTitle {

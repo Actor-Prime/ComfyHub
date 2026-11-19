@@ -82,9 +82,14 @@ def online_notes(current: str = APP_VERSION, timeout: int = 8) -> str:
 
 
 def merge_text(notes):
-    """多版说明聚合：每版保留自己的 md 标题，版本之间用分隔线。"""
+    """多版说明聚合：每版保留自己的 md 标题，版本之间用分隔线。
+
+    **最新的版本排在最上面**（2026-11-19 用户要求）。数据层 collect_notes 仍按升序
+    返回（区间语义清晰、测试按升序断言），只在这里翻转展示顺序 —— 用户升级后先想看
+    的是「这次更了什么」，不是三个版本前的说明。
+    """
     parts = []
-    for v, text in notes:
+    for v, text in reversed(list(notes)):
         t = text.strip()
         # 文件首行一般已是 "# ComfyHub v0.8.29"，没有就补一个版本小节
         if not t.lstrip("#").lstrip().lower().startswith("comfyhub"):

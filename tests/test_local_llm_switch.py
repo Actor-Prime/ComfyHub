@@ -268,4 +268,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # 显式硬退出：本测试伪造了 QThread 桩，正常走到解释器收尾时 Qt 析构会
+    # 让进程以 127 结束（输出其实已完整、28/28 全过），CI 会误判成失败。
+    try:
+        main()
+    finally:
+        os._exit(1 if FAILS else 0)

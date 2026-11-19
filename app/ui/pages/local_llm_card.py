@@ -11,6 +11,7 @@
 （图标/进度这类"先显示再刷新"的坑在 2026-11-08 踩过）。
 """
 import os
+import time
 
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
@@ -167,6 +168,7 @@ class LocalLlmCard(QGroupBox):
         self._probe = None                # 后台读 /props 的线程
         self._probe_tried = 0             # 连续失败上限，防死循环探测
         self._pending = False             # 运行中改了模型选择、尚未重启生效
+        self._dl_t0 = 0.0                 # 本次下载的起算时间（0 字节时给提示用）
         self._timer = QTimer(self)
         self._timer.setInterval(400)
         self._timer.timeout.connect(self._tick)
@@ -420,6 +422,7 @@ class LocalLlmCard(QGroupBox):
             return
         self._kind = kind
         self._mid_dl = mid
+        self._dl_t0 = time.time()          # 用于「还没收到首包」的提示判定
         self.bar.setRange(0, 1000)
         self.bar.setValue(0)
         self.bar.show()
@@ -460,7 +463,12 @@ class LocalLlmCard(QGroupBox):
             return
         if total > 0:
             self.bar.setValue(min(1000, int(got * 1000 / total)))
-            self.bar.setFormat("%s / %s  (%%p%%)" % (_mb(got), _mb(total)))
+            # 0 字节时别只给「0%」——用户会以为程序卡死（2026-11-19 反馈
+            # 「组件卡在下载，一直显示 0M」）。下载器在换源/等首包，不是没反应。
+            if got <= 0 and self._dl_t0 and (time.time() - self._dl_t0) > 6:
+                self.bar.setFormat(T("正在连接下载源…"))
+            else:
+                self.bar.setFormat("%s / %s  (%%p%%)" % (_mb(got), _mb(total)))
 
     def _on_toggle_server(self):
         # 运行中且下拉换了模型 → 一键「应用并重启」：停掉旧模型后继续走启动流程。
