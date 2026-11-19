@@ -16,6 +16,12 @@
 **说明**：以上素材由项目作者通过 AI 绘图工具生成，未从网络下载第三方图片，不含他人署名素材。
 如后续替换为人工绘制或采购素材，须在此表更新来源与授权凭证。
 
+## 二进制运行时
+
+| 文件 | 大小 | 来源 | 日期 | 备注 |
+|---|---|---|---|---|
+| `omp/libomp-intel.dll` | 1,614,192 B | PyTorch 2.9.1+cu130 官方 wheel 的 `torch/lib/libiomp5md.dll`（Intel OpenMP Runtime，上游 llvm-project/openmp，Apache-2.0 WITH LLVM-exception）| 2026-11-18 | 修复 llama.cpp 自带 libomp.dll 在 Intel 12 代+ 混合架构 CPU 上初始化即崩（0xC0000374）。仅在检测到该崩溃时替换，AMD/老 Intel 不受影响。详见 `omp/LICENSE-OpenMP.txt` |
+
 ## 字体
 
 | 用途 | 字体 | 来源 |

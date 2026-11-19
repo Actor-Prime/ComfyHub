@@ -75,6 +75,278 @@ TORCH_VARIANTS = {
 }
 
 
+# ---------------- AMD 架构识别（2026-11-18 起兼容 AMD 独立显卡/核显） ----------------
+# Windows 上让 AMD 卡跑 PyTorch 只有 ROCm 一条正路，而 ROCm 的 wheel 是**按 gfx
+# 架构分发**的（gfx1100 / gfx1101 / gfx1200 / gfx1151 …）。装错架构 = 装了个
+# 看不见显卡的 torch，用户只会看到「装了 5GB 还是 CPU 速度」。所以第一步必须把
+# 「商品名」翻译成「gfx 架构」。
+#
+# 依据 AMD ROCm 兼容矩阵（2026-10 版，Linux/Windows 已统一列表）。
+# **不在表里的卡一律 rocm_ok=False**——官方没点名的卡不能假设能跑，同代也不行
+# （例：Radeon 780M 是 RDNA3，却不在 Windows ROCm 列表内）。
+_AMD_ARCH = (
+    # ---- RDNA 4（gfx1201 / gfx1200）----
+    (("rx 9070 xt", "rx 9070 gre", "rx 9070", "r9700"), "gfx1201", True),
+    (("rx 9060 xt", "rx 9060", "rx 9050"), "gfx1200", True),
+    # ---- RDNA 3 独立显卡（gfx1100 / gfx1101 / gfx1102）----
+    (("rx 7900 xtx", "rx 7900 xt", "rx 7900 gre", "w7900", "w7800"), "gfx1100", True),
+    (("rx 7800 xt", "rx 7700 xt", "rx 7700"), "gfx1101", True),
+    (("rx 7600 xt", "rx 7600"), "gfx1102", True),
+    # ---- RDNA 3.5 核显（Strix Halo / Strix Point）----
+    (("8060s", "8050s", "890m", "880m"), "gfx1151", True),
+    # ---- RDNA 3 核显（Phoenix / Hawk Point）：Windows ROCm 不支持 ----
+    (("780m", "760m", "740m"), "gfx1103", False),
+    # ---- RDNA 2 独立显卡：Windows ROCm 不支持（Linux 才行）----
+    (("rx 6950", "rx 6900", "rx 6800", "rx 6750", "rx 6700", "rx 6650",
+      "rx 6600", "rx 6500", "w6800"), "gfx1030", False),
+    (("680m", "660m"), "gfx1032", False),
+    # ---- RDNA 1 ----
+    (("rx 5700", "rx 5600", "rx 5500"), "gfx1010", False),
+)
+
+# gfx 架构 → ROCm nightly 的 index-url。稳定的 repo.radeon.com 只发 cp312，
+# 而本项目便携 Python 是 3.13，所以只能走 nightly（实测有 cp313-win_amd64）。
+_AMD_ROCM_INDEX = {
+    "gfx1201": "https://rocm.nightlies.amd.com/v2/gfx120X-all/",
+    "gfx1200": "https://rocm.nightlies.amd.com/v2/gfx120X-all/",
+    "gfx1100": "https://rocm.nightlies.amd.com/v2/gfx110X-all/",
+    "gfx1101": "https://rocm.nightlies.amd.com/v2/gfx110X-all/",
+    "gfx1102": "https://rocm.nightlies.amd.com/v2/gfx110X-all/",
+    "gfx1151": "https://rocm.nightlies.amd.com/v2/gfx1151/",
+}
+
+
+def amd_arch_of(name: str) -> tuple:
+    """AMD 显卡商品名 → (gfx 架构, 是否在 Windows ROCm 支持列表)
+
+    返回 ("", False) 表示认不出来。**宁可走 CPU/DirectML 也不猜架构**：
+    猜错会装一个看不见显卡的 torch，比明确告知不支持更糟。
+    """
+    low = str(name or "").lower()
+    if not low:
+        return "", False
+    for keys, arch, ok in _AMD_ARCH:
+        if any(k in low for k in keys):
+            return arch, ok
+    return "", False
+
+
+def amd_rocm_index(arch: str) -> str:
+    """gfx 架构 → ROCm wheel 的 index-url（空串 = 没有可用源）"""
+    return _AMD_ROCM_INDEX.get(str(arch or "").strip().lower(), "")
+
+
+# 「家族冒充」（2026-11-19）：gfx1103 是 Phoenix / Hawk Point 核显（Radeon
+# 780M / 760M / 740M），架构上属于 RDNA3、与 gfx1100 同一 wave32 指令集家族，
+# 只是不在 AMD 的 Windows ROCm 官方列表里。用 gfx110X-all 的 wheel 加
+# HSA_OVERRIDE_GFX_VERSION 让运行时按 gfx1100 的 kernel 走，是社区验证过的路径。
+# ⚠️ 属于实验性：**必须现场实测**，失败要能干净退回 DML/CPU。
+_ROCM_FAMILY_HACK = {
+    "gfx1103": ("gfx1100", "11.0.0"),
+}
+
+
+def rocm_plan(gpu: "GpuInfo") -> dict:
+    """AMD 显卡 → ROCm 安装方案（{} = 不该走 ROCm）
+
+    返回键：
+      arch     实际用于选 wheel 的 gfx 架构（家族冒充时是 gfx1100）
+      index    ROCm wheel 的 index-url
+      hsa      需要注入的 HSA_OVERRIDE_GFX_VERSION（空串 = 不用）
+      native   True = AMD 官方 Windows 列表内的卡
+      variant  install_torch 用的变体名（"rocm-gfx1100"）
+      note     给 UI 显示的一句话（含风险提示）
+    """
+    if str(getattr(gpu, "vendor", "") or "").lower() != "amd":
+        return {}
+    arch = str(getattr(gpu, "arch", "") or "").strip().lower()
+    if not arch:
+        return {}                       # 认不出架构就不猜（猜错=装个看不见显卡的 torch）
+    native = bool(getattr(gpu, "rocm_ok", False))
+    hsa = ""
+    target = arch
+    if not native:
+        hack = _ROCM_FAMILY_HACK.get(arch)
+        if not hack:
+            return {}                   # RDNA2 / RDNA1：Windows ROCm 无解，走 DML/CPU
+        target, hsa = hack
+    idx = amd_rocm_index(target)
+    if not idx:
+        return {}
+    if native:
+        note = "AMD 官方 Windows ROCm 支持，可直接装"
+    else:
+        note = ("不在官方支持列表，按 %s 家族内核运行"
+                "（HSA_OVERRIDE_GFX_VERSION=%s，实验性，需实测）" % (target, hsa))
+    return {"arch": target, "index": idx, "hsa": hsa, "native": native,
+            "variant": "rocm-" + target, "note": note}
+
+
+def is_rocm_variant(variant: str) -> bool:
+    """install_torch 的变体名是否为 ROCm（"rocm-gfx1100"）"""
+    return str(variant or "").lower().startswith("rocm-")
+
+
+# 核显特征：共享系统内存，显存不是独占的，不能按「显存够大就能跑大模型」来判断。
+# 另外实测（RX 9070 XT + 同机 iGPU）：核显 offload 后 pp 从 385 掉到 31 t/s，
+# 所以核显默认不该开 llama.cpp 的 -ngl。
+_IGPU_TOKENS = ("8060s", "8050s", "890m", "880m", "780m", "760m", "740m",
+                "680m", "660m", "radeon(tm) graphics", "radeon graphics",
+                "iris", "uhd graphics", "hd graphics", "xe graphics")
+
+# Vega 核显（Vega 3/6/7/8/11）与 Vega 独显（RX Vega 56/64）名字只差一个数字，
+# 用子串匹配会把 "RX Vega 64" 里的 "vega 6" 当成核显——必须带词尾边界。
+_VEGA_IGPU_RE = re.compile(r"vega\s*(11|8|7|6|3)\b")
+
+
+def is_igpu_name(name: str) -> bool:
+    """显卡名是否为核显（集成显卡 / APU 内建）"""
+    low = str(name or "").lower()
+    if not low:
+        return False
+    if any(k in low for k in _IGPU_TOKENS):
+        return True
+    if "vega" in low:
+        if "rx vega" in low:           # RX Vega 56/64 是独立显卡
+            return False
+        return bool(_VEGA_IGPU_RE.search(low))
+    return False
+
+
+def pick_backend(gpu: "GpuInfo", dml_ok: bool = True) -> str:
+    """该机器最终走哪个加速后端：cuda / rocm / dml / cpu
+
+    2026-11-18 用户口径：不在 Windows ROCm 支持列表的 AMD 卡（RX 6000、780M
+    核显等）用 DirectML 兜底，而不是直接掉回 CPU。
+    """
+    if gpu.vendor == "nvidia":
+        return "cuda"
+    if gpu.vendor == "amd":
+        if gpu.arch and gpu.rocm_ok:
+            return "rocm"
+        return "dml" if dml_ok else "cpu"
+    if gpu.vendor == "intel":
+        return "dml" if dml_ok else "cpu"
+    return "cpu"
+
+
+def reg_cards() -> list:
+    """从注册表枚举所有显示适配器：[(name, pnp_device_id, vram_mb)]
+
+    为什么不用 WMI：
+      · `AdapterRAM` 是 **uint32**，显存超过 4 GB 就回绕（12 GB 卡会报成 4GB 左右
+        的诡异值），而显存正是「能不能跑 SDXL / 大图 / 大模型」的第一判据；
+      · `wmi` 是可选第三方依赖，少装一个包就让整条 AMD 支持失效，不能接受。
+    注册表 `HardwareInformation.qwMemorySize` 是 64 位值，不溢出；winreg 是标准库。
+    读不到就返回空列表，调用方退回默认 CPU。
+    """
+    out = []
+    try:
+        import winreg
+    except ImportError:
+        return out
+    base = (r"SYSTEM\CurrentControlSet\Control\Class"
+            r"\{4d36e968-e325-11ce-bfc1-08002be10318}")
+    try:
+        root = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, base)
+    except OSError:
+        return out
+    try:
+        idx = 0
+        while True:
+            try:
+                sub = winreg.EnumKey(root, idx)
+            except OSError:
+                break                      # 枚举结束
+            idx += 1
+            if not sub.isdigit():
+                continue
+            k = None
+            try:
+                k = winreg.OpenKey(root, sub)
+                try:
+                    name = str(winreg.QueryValueEx(k, "DriverDesc")[0] or "").strip()
+                except OSError:
+                    name = ""
+                if not name:
+                    continue
+                pnp = ""
+                for fld in ("MatchingDeviceId", "HardwareID"):
+                    try:
+                        v = winreg.QueryValueEx(k, fld)[0]
+                        if isinstance(v, (list, tuple)):
+                            v = v[0] if v else ""
+                        if v and not pnp:
+                            pnp = str(v)
+                    except OSError:
+                        pass
+                vram_mb = 0
+                try:
+                    size = winreg.QueryValueEx(
+                        k, "HardwareInformation.qwMemorySize")[0]
+                    if isinstance(size, int) and size > 0:
+                        vram_mb = int(size // (1024 * 1024))
+                except OSError:
+                    pass                   # 虚拟适配器没有这个值，属正常
+                out.append((name, pnp, vram_mb))
+            except OSError:
+                pass
+            finally:
+                if k is not None:
+                    try:
+                        k.Close()
+                    except OSError:
+                        pass
+    finally:
+        try:
+            root.Close()
+        except OSError:
+            pass
+    return out
+
+
+# 厂商判定的名字特征（注册表 DriverDesc 通常是 "AMD Radeon RX 7900 XTX" 这种）
+_VENDOR_RANK = {"nvidia": 0, "amd": 1, "intel": 2}
+# 虚拟/基础显示适配器一律不当显卡（远程桌面、Hyper-V、MS 基本显示）
+_FAKE_GPU_TOKENS = ("microsoft basic display", "remote display", "hyper-v",
+                    "virtual", "parsec", "spacedesk", "idd")
+
+
+def _vendor_of(name: str) -> str:
+    """显卡名 → 厂商（nvidia / amd / intel / 空）"""
+    low = str(name or "").lower()
+    if any(k in low for k in ("nvidia", "geforce", "quadro", "rtx ", "gtx ")):
+        return "nvidia"
+    if any(k in low for k in ("amd", "radeon", "advanced micro devices", "ati ")):
+        return "amd"
+    if any(k in low for k in ("intel", "iris", "uhd graphics", "arc ")):
+        return "intel"
+    return ""
+
+
+def is_fake_gpu(name: str) -> bool:
+    """虚拟 / 基础显示适配器（不能当显卡用来加速）"""
+    low = str(name or "").lower()
+    return any(k in low for k in _FAKE_GPU_TOKENS)
+
+
+def best_card(cards) -> "tuple | None":
+    """从多张卡里挑最该用的那张：独立显卡优先 → 厂商优先级 → 显存大优先
+
+    笔记本常见「AMD 独显 + Intel 核显」或「N 卡 + AMD 核显」双适配器，取错一张
+    就会把独显判成核显、或者拿核显去跑 5GB 的 ROCm 包。
+    """
+    real = [c for c in (cards or []) if not is_fake_gpu(c[0])]
+    if not real:
+        return None
+    def _key(c):
+        name, _pnp, vram = c
+        return (is_igpu_name(name),
+                _VENDOR_RANK.get(_vendor_of(name), 9),
+                -int(vram or 0))
+    return sorted(real, key=_key)[0]
+
+
 # ---------------- 数据类 ----------------
 @dataclass
 class GpuInfo:
@@ -82,15 +354,40 @@ class GpuInfo:
     name: str = ""
     vram_mb: int = 0
     driver: int = 0             # NVIDIA 驱动主版本号
-    torch_variant: str = "cpu"  # cu130 / cu126 / cpu
+    torch_variant: str = "cpu"  # cu130 / cu126 / cpu（NVIDIA 专用，保持既有语义）
+    # ---- AMD / 后端选择（2026-11-18）----
+    arch: str = ""              # AMD 的 gfx 架构（gfx1100 等）；认不出为空
+    rocm_ok: bool = False       # 是否在 AMD Windows ROCm 支持列表
+    is_igpu: bool = False       # 核显（共享内存，不能按显存策划模型）
+    backend: str = "cpu"        # 最终加速后端：cuda / rocm / dml / cpu
 
     @property
     def label(self) -> str:
         if self.vendor == "nvidia":
-            return f"{self.name}（{self.vram_mb}MB，驱动 {self.driver}）→ 推荐 torch {self.torch_variant}"
-        if self.vendor in ("amd", "intel"):
-            return f"{self.name} → 暂用 CPU 版 torch（加速支持开发中）"
-        return "未检测到独立显卡 → CPU 版 torch"
+            # 裸构造的 GpuInfo（或没装 nvidia-smi 时）torch_variant 还停在默认
+            # "cpu"，直接拿它拼文案会写成「推荐 torch cpu」，自相矛盾。
+            tv = self.torch_variant if self.torch_variant != "cpu" else "cu126"
+            return f"{self.name}（{self.vram_mb}MB，驱动 {self.driver}）→ 推荐 torch {tv}"
+        if self.vendor == "amd":
+            kind = "核显" if self.is_igpu else "独显"
+            plan = rocm_plan(self)
+            if plan:
+                # 家族冒充的卡（gfx1103 核显）不能写成「官方支持」
+                tag = ("推荐 ROCm 加速" if plan["native"] else
+                       "可试 ROCm 加速（家族内核兼容，需实测）")
+                return (f"{self.name}（{kind}，{self.vram_mb}MB，{self.arch}）→ {tag}")
+            if self.arch:
+                # 别写「用 DirectML 加速」：torch-directml 只有 cp312 轮子，
+                # 便携 Python 是 3.13，装不上（2026-11-19 实测 PyPI 全量标签）。
+                return (f"{self.name}（{kind}，{self.vram_mb}MB，{self.arch}）"
+                        "→ Windows 无 ROCm 支持，建议按 CPU 推理")
+            return (f"{self.name}（{kind}，{self.vram_mb}MB）"
+                    "→ 未识别型号，按 CPU 推理")
+        if self.vendor == "intel":
+            return (f"{self.name}（{self.vram_mb}MB）"
+                    "→ 无可用加速后端，按 CPU 推理")
+        return "未检测到可用显卡 → CPU 版 torch"
+        return "未检测到可用显卡 → CPU 版 torch"
 
 
 @dataclass
@@ -114,7 +411,7 @@ def detect_gpu() -> GpuInfo:
 
 def _detect_gpu_impl() -> GpuInfo:
     gpu = GpuInfo()
-    # 1) NVIDIA：优先 nvidia-smi
+    # 1) NVIDIA：优先 nvidia-smi（唯一能同时给出显存 + 驱动版本的来源）
     smi = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "System32", "nvidia-smi.exe")
     if os.path.isfile(smi):
         try:
@@ -137,26 +434,56 @@ def _detect_gpu_impl() -> GpuInfo:
                     gpu.torch_variant = "cu130"
                 else:
                     gpu.torch_variant = "cu126"
+                gpu.backend = "cuda"
                 return gpu
         except Exception:
             pass
-    # 2) WMI 兜底：AMD / Intel / 老驱动 N 卡
+    # 2) 注册表枚举（纯标准库，不依赖可选的 wmi 包）：AMD / Intel / 没装 smi 的 N 卡
+    card = best_card(reg_cards())
+    if card is None:
+        card = _best_card_from_wmi()       # 最后手段，显存可能因 uint32 溢出不准
+    if card is not None:
+        _fill_gpu(gpu, card)
+    return gpu
+
+
+def _best_card_from_wmi() -> "tuple | None":
+    """注册表读不到时的兜底：可选的 wmi 包（显存字段是 uint32，>4GB 会失真）"""
     try:
         import wmi  # 可选依赖
-        cards = wmi.WMI().Win32_VideoController()
-        for c in cards:
-            nm = c.Name or ""
-            if "NVIDIA" in nm:
-                gpu.vendor, gpu.name = "nvidia", nm
-                gpu.torch_variant = "cu126"
-                return gpu
-            if "AMD" in nm or "Radeon" in nm:
-                gpu.vendor, gpu.name = "amd", nm
-            elif "Intel" in nm and gpu.vendor == "none":
-                gpu.vendor, gpu.name = "intel", nm
     except Exception:
-        pass
-    return gpu
+        return None
+    try:
+        cards = []
+        for c in wmi.WMI().Win32_VideoController():
+            nm = str(getattr(c, "Name", "") or "").strip()
+            if not nm:
+                continue
+            try:
+                raw = int(getattr(c, "AdapterRAM", 0) or 0)
+            except (TypeError, ValueError):
+                raw = 0
+            vram = raw // (1024 * 1024) if raw > 0 else 0
+            cards.append((nm, str(getattr(c, "PNPDeviceID", "") or ""), vram))
+        return best_card(cards)
+    except Exception:
+        return None
+
+
+def _fill_gpu(gpu: GpuInfo, card) -> None:
+    """把一张卡的结果填进 GpuInfo（含 AMD 架构识别、核显判定、后端选择）"""
+    name, _pnp, vram_mb = card
+    vendor = _vendor_of(name)
+    gpu.name = name
+    gpu.vram_mb = int(vram_mb or 0)
+    gpu.vendor = vendor or "none"
+    gpu.is_igpu = is_igpu_name(name)
+    if vendor == "nvidia":
+        # 没有 nvidia-smi 就拿不到驱动版本，按兼容面最广的 cu126 索引
+        gpu.torch_variant = "cu126"
+    elif vendor == "amd":
+        gpu.arch, gpu.rocm_ok = amd_arch_of(name)
+    gpu.backend = pick_backend(gpu)
 
 
 # ---------------- 下载器（断点续传 + 多源重试） ----------------
@@ -883,10 +1210,16 @@ def _pip_report_wheels(python_exe: str, pkgs: list, index: str,
 
 def _torch_post_check(python_exe: str, variant: str, log=print) -> bool:
     """安装后自检：import 能过 + 版本对得上变体（装 cu 出 +cpu = 失败）。
-    磁盘满时 pip 可能报成功但留下损坏文件；pip"已满足"也可能装了个寂寞。"""
+    磁盘满时 pip 可能报成功但留下损坏文件；pip"已满足"也可能装了个寂寞。
+
+    ROCm 版要单独判定（2026-11-19）：它在 Windows 上装的是 HIP 后端，
+    `torch.version.cuda` 是 **None** —— 只看这个字段会把成功安装误判成
+    「装成了 CPU 版」，白让用户重下 5GB。真正的标记是 `torch.version.hip`。
+    """
     r2 = run([python_exe, "-c",
               "import torch;print(torch.__version__);"
-              "print(getattr(torch.version,'cuda') or 'cpu')"],
+              "print(getattr(torch.version,'cuda') or 'cpu');"
+              "print(getattr(torch.version,'hip') or '')"],
              capture_output=True, text=True, timeout=300)
     if r2.returncode != 0:
         err_tail = ((r2.stderr or "").strip().splitlines() or ["未知错误"])[-1]
@@ -897,9 +1230,17 @@ def _torch_post_check(python_exe: str, variant: str, log=print) -> bool:
             log(f"⚠️ 发现 {len(zeros)} 个 0 字节 DLL（如 {os.path.basename(zeros[0])}）"
                 "——请确认磁盘空间充足后重新点「安装」强制重装")
         return False
-    lines = (r2.stdout or "").strip().splitlines()
-    ver = lines[0].strip() if lines else "?"
-    cuda = lines[1].strip() if len(lines) > 1 else "cpu"
+    lines = [(x or "").strip() for x in (r2.stdout or "").strip().splitlines()]
+    ver = lines[0] if lines else "?"
+    cuda = lines[1] if len(lines) > 1 else "cpu"
+    hip = lines[2] if len(lines) > 2 else ""
+    if is_rocm_variant(variant):
+        if not hip:
+            log(f"❌ 安装后自检：torch {ver} 没有 HIP 运行时（要求 {variant}）"
+                f"——实际是 {'CUDA ' + cuda if cuda != 'cpu' else 'CPU'} 版，安装未生效")
+            return False
+        log(f"✅ torch {ver}（ROCm/HIP {hip}）安装完成并通过导入自检")
+        return True
     if variant != "cpu" and cuda == "cpu":
         log(f"❌ 安装后自检：torch {ver} 仍是 CPU 版（要求 {variant}）——安装未生效")
         return False
@@ -916,8 +1257,12 @@ def install_torch(python_exe: str, variant: str, log=print,
     · cu 变体：已装 CPU 版 → 先卸载再装（防混装）；torch 已装但无法 import
       （安装损坏）→ --force-reinstall 强制重装
     · wheels_dir 存在匹配的本地 wheel 时用 --find-links 秒装（免 2.5GB 慢速下载）
-    · 安装后 import 自检：pip 成功 ≠ 真的能用，损坏要当场抓住"""
-    need_gb = 3.0 if variant == "cpu" else 6.0
+    · 安装后 import 自检：pip 成功 ≠ 真的能用，损坏要当场抓住
+    · ROCm 变体（2026-11-19，形如 "rocm-gfx1100"）：index 由 amd_rocm_index 决定，
+      没有国内镜像可用，只能走 AMD nightlies 直连 + 断点续传"""
+    rocm = is_rocm_variant(variant)
+    # ROCm 的 torch + rocblas/miopen 比 CUDA 版还大（实测 3.5~5GB，解压后更多）
+    need_gb = 3.0 if variant == "cpu" else (10.0 if rocm else 6.0)
     free = _free_gb(os.path.dirname(python_exe) or ".")
     if free is not None and free < need_gb:
         log(f"❌ 磁盘空间不足：{os.path.splitdrive(python_exe)[0] or '目标盘'} "
@@ -925,7 +1270,9 @@ def install_torch(python_exe: str, variant: str, log=print,
             "请清理磁盘后重试（torch 约 6GB，磁盘满会导致安装损坏）。")
         return False
 
-    pkgs = ["torch", "torchvision", "torchaudio"]
+    # ROCm 的 Windows 构建经常没有 torchaudio（nightlies 里不齐），少装一个少踩坑
+    pkgs = ["torch", "torchvision"] if rocm else \
+        ["torch", "torchvision", "torchaudio"]
     force_flags: list = []   # 安装损坏时的强制重装参数
 
     # 检测已装 torch 状态：import 崩了要区分"没装"与"装损坏"（决定 --force-reinstall）
@@ -955,7 +1302,15 @@ def install_torch(python_exe: str, variant: str, log=print,
             return False
         return _torch_post_check(python_exe, variant, log)
 
-    idx = TORCH_VARIANTS[variant]["index"]
+    if rocm:
+        arch = str(variant).split("-", 1)[1]
+        idx = amd_rocm_index(arch)
+        if not idx:
+            log(f"❌ 未知的 ROCm 架构 {arch}（没有对应的 wheel 源）")
+            return False
+        log(f"ROCm 源：{idx}（gfx {arch}）")
+    else:
+        idx = TORCH_VARIANTS[variant]["index"]
     wdir = wheels_dir or os.path.join(os.path.dirname(python_exe), "wheels")
     os.makedirs(wdir, exist_ok=True)
 
@@ -982,11 +1337,16 @@ def install_torch(python_exe: str, variant: str, log=print,
                 # （2026-11 实测 cu130 止步 torch 2.9.1）——新版 wheel 在此 404 会
                 # 快速跳过，旧版可用，故放在末位当补充
                 _pkg = fname.split("-", 1)[0]      # torch / torchvision / torchaudio
-                srcs = [url,
-                        f"https://mirrors.aliyun.com/pytorch-wheels/{variant}/{fname}",
-                        f"https://mirror.sjtu.edu.cn/pytorch-wheels/{variant}/{fname}",
-                        f"https://mirrors.cloud.tencent.com/pytorch-wheels/"
-                        f"whl/{variant}/{_pkg}/{fname}"]
+                if rocm:
+                    # AMD nightlies 没有国内镜像，只能直连；
+                    # download_multi 负责断点续传 + 首选源失败不换源
+                    srcs = [url]
+                else:
+                    srcs = [url,
+                            f"https://mirrors.aliyun.com/pytorch-wheels/{variant}/{fname}",
+                            f"https://mirror.sjtu.edu.cn/pytorch-wheels/{variant}/{fname}",
+                            f"https://mirrors.cloud.tencent.com/pytorch-wheels/"
+                            f"whl/{variant}/{_pkg}/{fname}"]
                 log(f"预下载 wheel：{fname}（断点续传+多源）")
                 if not download_multi(srcs, dest, log=log, expected_sha=sha or None):
                     log(f"❌ {fname} 多源下载失败")
@@ -1164,7 +1524,8 @@ def detect_torch_step(python_exe):
     try:
         r = run([python_exe, "-c",
                  "import torch;print(torch.__version__);"
-                 "print(getattr(torch.version,'cuda') or 'cpu')"],
+                 "print(getattr(torch.version,'cuda') or 'cpu');"
+                 "print(getattr(torch.version,'hip') or '')"],
                 capture_output=True, text=True, timeout=300)
         if r.returncode != 0:
             err = (r.stderr or "") + (r.stdout or "")
@@ -1178,6 +1539,11 @@ def detect_torch_step(python_exe):
         lines = (r.stdout or "").strip().splitlines()
         ver = lines[0].strip() if lines else "?"
         cuda = lines[1].strip() if len(lines) > 1 else "cpu"
+        hip = lines[2].strip() if len(lines) > 2 else ""
+        if hip:
+            # ROCm 版：torch.version.cuda 是 None，必须靠 hip 字段认出来，
+            # 否则会显示成「CPU 版」并反复劝用户重装（2026-11-19）
+            return "ok", f"已装 torch {ver}（ROCm/HIP {hip}）——AMD 显卡加速已就绪", {}
         if cuda == "cpu":
             # 2026-10-31 修：CPU 版只在有 N 卡时算"未达标"——无 N 卡机器上
             # CPU 就是合适版本，不该永远卡"复验未通过"
@@ -1185,7 +1551,11 @@ def detect_torch_step(python_exe):
             if gpu.vendor == "nvidia":
                 return ("cpu", f"已装 torch {ver}（CPU 版）——检测到 {gpu.name}，"
                         "建议更新为 CUDA 版以启用显卡加速", {})
-            return "ok", f"已装 torch {ver}（CPU 版）——未检测到 N 卡，已是合适版本", {}
+            plan = rocm_plan(gpu)
+            if plan:
+                return ("cpu", f"已装 torch {ver}（CPU 版）——检测到 {gpu.name}，"
+                        f"可装 ROCm 版启用显卡加速（{plan['note']}）", {})
+            return "ok", f"已装 torch {ver}（CPU 版）——未检测到受支持的显卡，已是合适版本", {}
         return "ok", f"已装 torch {ver}（CUDA {cuda}）——已就绪", {}
     except Exception as e:
         return "missing", f"torch 检测失败: {e}", {}
@@ -1251,19 +1621,42 @@ def full_setup(target_dir: str, python_exe: str | None, mirror_name: str,
         log("── 步骤 4/4：检测显卡并安装 PyTorch ──")
         gpu = detect_gpu()
         log(f"显卡: {gpu.label}")
-        log(f"开始安装 torch（{gpu.torch_variant}），CUDA 包约 1.5~2.5GB，请耐心等待…")
-        ok = install_torch(py, gpu.torch_variant, log=log, mirror=mirror,
+        # 后端决策：N 卡 CUDA / A 卡 ROCm / 其余 CPU。
+        # 2026-11-19 起 AMD 走 ROCm（含 gfx1103 核显的家族冒充，见 rocm_plan）
+        rplan = rocm_plan(gpu)
+        variant = rplan["variant"] if rplan else gpu.torch_variant
+        if rplan:
+            log(f"后端: ROCm（{rplan['note']}）")
+            log(f"开始安装 torch（{variant}），ROCm 包约 3~5GB（比 CUDA 版更大），"
+                "只从 AMD 官方源下载，请耐心等待…")
+            if rplan["hsa"]:
+                # 不在官方列表的卡（gfx1103 核显）要靠家族冒充才能用上 GPU。
+                # 真正注入点在 app/process.py 的启动环境构造里（每次启动按当前
+                # 显卡动态判定），这里只把结论打进日志便于排查。
+                log("  启动时将注入 HSA_OVERRIDE_GFX_VERSION=%s"
+                    "（让运行时按 %s 的内核走）" % (rplan["hsa"], rplan["arch"]))
+        else:
+            log(f"开始安装 torch（{variant}），CUDA 包约 1.5~2.5GB，请耐心等待…")
+        ok = install_torch(py, variant, log=log, mirror=mirror,
                            wheels_dir=os.path.join(tools_root(), "wheels"))
         if not ok:
-            log("CUDA 版 torch 安装失败，回退 CPU 版（功能可用但速度慢）")
+            log(f"{variant} 版 torch 安装失败，回退 CPU 版（功能可用但速度慢）")
             install_torch(py, "cpu", log=log, mirror=mirror)
-        # GPU 加速验证
+        # GPU 加速验证（ROCm 在 Windows 上同样以 torch.cuda.is_available() 表示）
         try:
             r = run([py, "-c",
-                "import torch;print('CUDA_OK' if torch.cuda.is_available() else 'CUDA_NO')"],
+                "import torch;"
+                "print('HIP=' + (getattr(torch.version,'hip') or ''));"
+                "print('CUDA_OK' if torch.cuda.is_available() else 'CUDA_NO')"],
                 capture_output=True, text=True, timeout=120)
             out = (r.stdout or "").strip()
-            log(f"torch 安装完成，GPU 加速: {'✅ 可用' if 'CUDA_OK' in out else '❌ 不可用（使用 CPU 模式）'}")
+            hip = ""
+            for ln in out.splitlines():
+                if ln.startswith("HIP="):
+                    hip = ln[4:].strip()
+            tag = ("ROCm/HIP " + hip) if hip else "CUDA"
+            log(f"torch 安装完成，GPU 加速（{tag}）: "
+                f"{'✅ 可用' if 'CUDA_OK' in out else '❌ 不可用（使用 CPU 模式）'}")
         except Exception:
             log("torch 验证跳过")
     return result

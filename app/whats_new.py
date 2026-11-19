@@ -96,8 +96,13 @@ def merge_text(notes):
 def maybe_show(parent=None) -> bool:
     """启动钩子：低版本 → 当前版本的首启弹窗。弹了返回 True。
 
-    幂等：无论弹不弹，都把 last_version 写成当前版本（降级/同版本也刷新，
-    避免旧值残留）。
+    幂等：无论弹不弹，最终都把 last_version 写成当前版本。
+
+    ⚠️ 2026-11-19 修顺序缺陷：原来是「**先**写 last_version，**再**收集说明」。
+    一旦说明收集失败（本地 docs 缺失 + 在线兜底超时/版本没对上），版本号已经
+    被推进到新版本，这次和以后都再也不会弹——用户永远看不到更新内容。
+    现在改成：收集到内容 → 写 + 弹；收集不到 → 仍然写（防每次启动重复卡在
+    在线请求上），但记一条日志，便于远程排查。
     """
     from app.config import load_config, save_config
     from app.updater import ver_key
@@ -105,29 +110,41 @@ def maybe_show(parent=None) -> bool:
     cfg = load_config()
     st = cfg.setdefault("settings", {})
     old = str(st.get("last_version", "") or "")
-    st["last_version"] = APP_VERSION
-    try:
-        save_config(cfg)
-    except Exception:
-        pass
 
-    # 首次安装（无记录）/ 同版本 / 降级：不弹
+    def _commit():
+        st["last_version"] = APP_VERSION
+        try:
+            save_config(cfg)
+        except Exception:
+            pass
+
+    # 首次安装（无记录）/ 同版本 / 降级：不弹，直接刷新记录
     if not old or ver_key(old) >= ver_key(APP_VERSION):
+        _commit()
         return False
 
+    # 升级：先把说明取到手，再决定是否推进版本号
     notes = collect_notes(old)
     if not notes:
         t = online_notes()
         if t:
             notes = [(APP_VERSION, t)]
+    _commit()
     if not notes:
+        print("[whats_new] %s → %s 有升级但没取到说明（本地 docs 与在线兜底均为空）"
+              % (old, APP_VERSION))
         return False
     _show_dialog(parent, notes)
     return True
 
 
 def _show_dialog(parent, notes):
-    """展示弹窗：md 渲染 + 只读，一个「知道了」收尾。"""
+    """展示弹窗：md 渲染 + 只读，一个「知道了」收尾。
+
+    ⚠️ 2026-11-19 修：这里原来构造完 QDialog 就返回，**从未调用 exec()**，
+    所以更新后弹窗一次都没出现过（用户反馈「更新成功但没跳更新内容」）。
+    模态窗必须 exec() 才会进入事件循环显示；只 new 出来只会随函数返回被回收。
+    """
     from PySide6.QtWidgets import (QDialog, QHBoxLayout, QPushButton,
                                    QTextBrowser, QVBoxLayout)
     dlg = QDialog(parent)
@@ -141,6 +158,7 @@ def _show_dialog(parent, notes):
     b_ok = QPushButton("知道了")
     b_ok.setProperty("accent", True)
     b_ok.clicked.connect(dlg.accept)
+    b_ok.setDefault(True)
     row = QHBoxLayout()
     row.addStretch(1)
     row.addWidget(b_ok)
@@ -148,6 +166,10 @@ def _show_dialog(parent, notes):
     lay.setContentsMargins(14, 14, 14, 12)
     lay.addWidget(view, 1)
     lay.addLayout(row)
+    # 置顶到主窗口之上：更新后首启时其他窗口（浏览器/ComfyUI 控制台）可能抢焦点
+    dlg.raise_()
+    dlg.activateWindow()
+    dlg.exec()
 
 
 def show_whats_new(parent=None, versions=None) -> bool:

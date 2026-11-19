@@ -152,8 +152,10 @@ check("cu 安装走本地 wheel 流且成功",
       ok and len(dl_calls) == 3 and len(captured.get("pkgs", [])) == 3
       and all(os.path.basename(d) in " ".join(captured["pkgs"]) for _, d, _ in dl_calls),
       f"dl={len(dl_calls)} pkgs={captured.get('pkgs')}")
-check("下载源轮换含阿里+SJTU 镜像",
-      all(len(srcs) == 3 and "mirrors.aliyun.com" in srcs[1]
+check("下载源轮换含官方+阿里+SJTU 镜像",
+      # 断言意图是"至少三个源、且第 2/3 个是阿里和 SJTU 镜像"，不锁死总数：
+      # 实现后来加了腾讯云第 4 源，写死 ==3 就会假红（2026-11-18 修正）。
+      all(len(srcs) >= 3 and "mirrors.aliyun.com" in srcs[1]
           and "sjtu" in srcs[2] for srcs, _, _ in dl_calls),
       str(dl_calls[0][0] if dl_calls else ""))
 check("期望 sha 透传给下载校验",

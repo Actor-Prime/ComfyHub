@@ -1349,16 +1349,29 @@ EN_DICT = {
     "%d/%d · 共 %s": "%d/%d · %s total",
     "%d/%d · 还需 %s": "%d/%d · %s to download",
     "本地模型（内置组件）": "Local model (built-in)",
+    "在「本地模型（可选组件）」卡片里安装并启动；离线可用，不消耗任何 API 额度":
+        "Install and start it from the “Local model (optional component)” card. "
+        "Works offline and uses no API quota.",
     "安装组件": "Install component",
     "下载模型": "Download model",
     "模型已就绪": "Model ready",
     "启动本地服务": "Start local service",
     "停止本地服务": "Stop local service",
+    # 2026-11-19：运行中切换模型 → 一键应用并重启（原先要用户自己按 停止→启动）
+    "应用并重启（约 15 秒）": "Apply and restart (~15 s)",
+    "已选择「%s」，点上方「应用并重启」生效（当前仍在用「%s」）。":
+        "“%s” selected. Click “Apply and restart” above to switch — "
+        "currently still running “%s”.",
+    "已选择「%s」，但它还没下载，先点「下载模型」再重启服务。":
+        "“%s” selected but not downloaded yet. Click “Download model” first, "
+        "then restart the service.",
     "设为当前 AI 服务商": "Use as current AI provider",
     "移除组件": "Remove component",
     "下载中 %p%": "Downloading %p%",
     "下载失败": "Download failed",
     "启动失败": "Start failed",
+    "启动失败：进程异常退出，详情见「控制台」日志":
+        "Start failed: the process exited abnormally, see the Console log for details",
     "未安装": "Not installed",
     "组件已就绪": "Component ready",
     "本地服务运行中": "Local service running",
@@ -1442,4 +1455,27 @@ EN_DICT = {
     "启动后为纯 CPU 推理，不占用显存；该模型只能对话与调工具，不能看图。":
         "Runs on CPU after start with no VRAM use; this model can chat and call "
         "tools but cannot read images.",
+    # ---- 推理后端（Vulkan / 核显）2026-11-19 ----
+    # AMD / Intel 机器会装 Vulkan 包，文案不能再一律写「纯 CPU」。
+    # 这几条必须是完整句：拼接出来的整句在词表里查不到，英文模式会漏译。
+    "可选组件：不进安装包，按需下载。检测到核显，按 CPU 推理运行（核显 GPU 卸载实测更慢，不启用）。":
+        "Optional component: downloaded on demand, not bundled. An integrated GPU "
+        "was detected; it still runs on CPU because GPU offload is measurably "
+        "slower on iGPUs.",
+    "可选组件：不进安装包，按需下载。将用 Vulkan 后端在显卡上推理，占用少量显存；若与出图冲突可切回 CPU。":
+        "Optional component: downloaded on demand, not bundled. Will run inference "
+        "on your GPU through Vulkan and use a little VRAM; switch back to CPU if "
+        "it competes with image generation.",
+    "启动后按 CPU 推理（核显不启用 GPU 卸载）；可看图、可调用工具。":
+        "Runs on CPU after start (GPU offload is off for integrated GPUs); can read "
+        "images and call tools.",
+    "启动后按 CPU 推理（核显不启用 GPU 卸载）；该模型只能对话与调工具，不能看图。":
+        "Runs on CPU after start (GPU offload is off for integrated GPUs); this "
+        "model can chat and call tools but cannot read images.",
+    "启动后用 Vulkan 后端在显卡上推理；可看图、可调用工具。":
+        "Runs on the GPU through Vulkan after start; can read images and call tools.",
+    "启动后用 Vulkan 后端在显卡上推理；该模型只能对话与调工具，不能看图。":
+        "Runs on the GPU through Vulkan after start; this model can chat and call "
+        "tools but cannot read images.",
+    "CPU 推理": "CPU inference",
 }

@@ -1,0 +1,36 @@
+Intel OpenMP Runtime (libomp-intel.dll)
+=======================================
+
+文件：assets/omp/libomp-intel.dll（1,614,192 字节）
+sha256：d41a71c38f627a95748596820ab380135dcccc4ceecd6fe7d4e247d015bf55a4
+版本信息：Intel(R) OpenMP* Runtime Library（LLVM OpenMP 上游代码的 Intel 构建）
+
+来源
+----
+取自 PyTorch 2.9.1+cu130 官方 Windows wheel 的 torch/lib/libiomp5md.dll，
+文件名改为 libomp-intel.dll 以便与 llama.cpp 自带的 libomp.dll 区分（运行时
+替换时再复制成 libomp.dll，因为 llama.cpp 的导入表写死了这个名字）。
+
+许可
+----
+上游代码：llvm-project/openmp —— Apache License 2.0 WITH LLVM-exception
+  · 许可全文：https://llvm.org/LICENSE.txt
+  · 版权：Copyright (c) Intel Corporation and contributors
+  · Apache-2.0 允许以二进制形式随其他程序再分发，只需保留本声明与许可链接。
+
+为什么需要这份二进制
+--------------------
+llama.cpp 官方 CPU 包（llama-b*-bin-win-cpu-x64.zip）自带的 libomp.dll 在
+Intel 12 代及以后的混合架构 CPU（Alder Lake / Raptor Lake，P 核 + E 核）上，
+DLL 初始化阶段就越界写堆，进程一启动即 0xC0000374（STATUS_HEAP_CORRUPTION）。
+Intel OpenMP 运行时与 LLVM OpenMP 是同一代码谱系、导出符号兼容，替换后
+加载与推理均正常。详见 app/local_llm.py 中 "OpenMP 运行时兼容" 一节注释。
+
+替换范围
+--------
+只在检测到该特征崩溃（退出码 0xC0000374）时才替换用户机器上的
+bin/libomp.dll，并先把官方原版备份为 libomp.dll.orig。AMD 平台与不受影响的
+Intel 平台不会被改动。
+
+如果将来要换用 LLVM 官方构建的 libomp.dll（同一 ABI），只需替换本文件并
+同步更新上面的 sha256 与 assets/SOURCES.md 记录，代码无需改动。

@@ -271,22 +271,36 @@ def detect_gpus() -> list:
 
 
 def torch_build_of(python_exe: str) -> "str | None":
-    """快速判定解释器里 torch 的构建变体：'cuda' / 'cpu' / None（未装或判不出）。
-    只读 Lib/site-packages/torch/version.py 的 cuda 字段，不 import torch
-    （import 要秒级冷启动，启动门卫等不起）。"""
+    """快速判定解释器里 torch 的构建变体：'cuda' / 'rocm' / 'cpu' / None（未装或判不出）。
+    只读 Lib/site-packages/torch/version.py，不 import torch
+    （import 要秒级冷启动，启动门卫等不起）。
+
+    2026-11-19 加 'rocm'：AMD 装 ROCm 版 torch 后 `cuda` 字段是 None、
+    `hip` 字段才有值。若不特判，会被当成 CPU 版——启动门卫直接把 AMD 实例
+    拦下来，用户装好的 5GB ROCm 一点用不上。"""
     try:
         base = os.path.join(os.path.dirname(os.path.abspath(python_exe)),
                             "Lib", "site-packages")
         vp = os.path.join(base, "torch", "version.py")
         if not os.path.isfile(vp):
             return None
+        seen_cuda = False
+        cuda_val = ""
+        hip_val = ""
         with open(vp, encoding="utf-8", errors="replace") as f:
             for line in f:
                 s = line.strip().replace(" ", "")
                 # torch 2.15+ 的 version.py 带类型注解：cuda:Optional[str]=None
                 if s.startswith("cuda=") or s.startswith("cuda:"):
-                    val = s.split("=", 1)[-1].strip().strip("\"'")
-                    return "cpu" if val in ("None", "") else "cuda"
+                    seen_cuda = True
+                    cuda_val = s.split("=", 1)[-1].strip().strip("\"'")
+                elif s.startswith("hip=") or s.startswith("hip:"):
+                    hip_val = s.split("=", 1)[-1].strip().strip("\"'")
+        if hip_val and hip_val != "None":
+            return "rocm"          # ROCm 构建：cuda 恒为 None，必须靠 hip 认
+        if not seen_cuda:
+            return None
+        return "cpu" if cuda_val in ("None", "") else "cuda"
     except Exception:
         pass
     return None
@@ -516,12 +530,33 @@ class ComfyProcess(QObject):
         self._browser_on_ready = False
         self._probe = None          # 就绪异步探测的 QTcpSocket（防并发堆探测）
 
+    # ---------- 后端适配 ----------
+    def _rocm_hsa_override(self, python_exe: str) -> str:
+        """该实例启动前要注入的 HSA_OVERRIDE_GFX_VERSION（空串 = 不用注入）
+
+        触发条件：本机是 AMD，且这张卡不在 AMD 的 Windows ROCm 官方列表、
+        但同架构家族有可用内核（gfx1103 核显 → gfx1100），见 bootstrap.rocm_plan。
+
+        为什么还要看 torch 版本：给 CPU 版 / CUDA 版 torch 塞 HSA 变量没有意义，
+        只会在排查时误导（以为开了 ROCm）。判不出（None）时仍注入——变量对
+        非 ROCm 后端无害，而判不出常常只是 version.py 结构变了。
+        """
+        try:
+            from app.bootstrap import detect_gpu, rocm_plan
+            plan = rocm_plan(detect_gpu())
+            if not plan or not plan.get("hsa"):
+                return ""
+            if python_exe and torch_build_of(python_exe) in ("cpu", "cuda"):
+                return ""          # 明确不是 ROCm 版，别注入
+            return plan["hsa"]
+        except Exception:
+            return ""
+
     # ---------- 状态 ----------
     @property
     def is_running(self) -> bool:
         return self._proc is not None and \
             self._proc.state() != QProcess.NotRunning
-
     @property
     def pid(self):
         return self._pid
@@ -624,6 +659,17 @@ class ComfyProcess(QObject):
             env.insert(k, v)
         if inst.get("env", {}).get("PYTHONPATH"):
             self.log_line.emit("[ComfyHub] 已启用模式依赖 overlay（PYTHONPATH）")
+        # ROCm 家族冒充（2026-11-19）：gfx1103 这类核显不在 AMD 的 Windows
+        # ROCm 官方列表，但和 gfx1100 同属 RDNA3。注入 HSA_OVERRIDE_GFX_VERSION
+        # 让运行时按 gfx1100 的内核走，否则 torch 看不见显卡只会用 CPU。
+        # 放在实例 env 之后：用户自己配的值优先，不被产品覆盖。
+        if "HSA_OVERRIDE_GFX_VERSION" not in (inst.get("env") or {}):
+            _hsa = self._rocm_hsa_override(inst.get("python_path") or "")
+            if _hsa:
+                env.insert("HSA_OVERRIDE_GFX_VERSION", _hsa)
+                self.log_line.emit(
+                    f"[ComfyHub] AMD 显卡不在官方 ROCm 列表，"
+                    f"已设 HSA_OVERRIDE_GFX_VERSION={_hsa}（家族内核兼容，实验性）")
 
         self._proc = QProcess(self)
         self._proc.setProgram(cmd[0])

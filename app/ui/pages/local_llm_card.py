@@ -27,6 +27,71 @@ def _mb(n: int) -> str:
     return "%.1f MB" % (n / 1048576.0) if n < 1073741824 else "%.2f GB" % (n / 1073741824.0)
 
 
+def pending_model_switch(want: str, loaded: str, running: bool,
+                         want_ready: bool) -> bool:
+    """运行中「下拉选的模型」是否与「正在加载的模型」不一致（= 待切换）
+
+    抽成纯函数是为了能单测——它决定按钮是「停止本地服务」还是「应用并重启」，
+    判错会让用户点一下就把服务停了却没重启，或者以为切了其实没切。
+
+    2026-11-19 用户反馈（客户疑问）：「启动后能直接切模型吗？还是要先保存再重启？」
+    原实现里切下拉只 refresh()，服务照跑旧模型、界面也无任何提示，很容易误解。
+    现在：有差异且新模型已就绪 → 按钮变「应用并重启」，一次点击完成停+启。
+    新模型没下载则不算待切换（重启也没用），由界面另外提示先下载。
+    """
+    if not running:
+        return False
+    w = str(want or "").strip()
+    c = str(loaded or "").strip()
+    if not w or not c or w == c:
+        return False
+    return bool(want_ready)
+
+
+def _backend_hint(vision=None) -> str:
+    """说明文案：必须按本机实际会走的后端写，否则是误导（2026-11-19）
+
+    老文案一律写「纯 CPU 运行，不占用显存」，但 AMD / Intel 机器现在会装
+    Vulkan 包跑在显卡上——继续写「纯 CPU」就是骗人。核显又必须说清它仍走
+    CPU 推理（-ngl 0），否则用户会以为装完就变快。
+
+    **刻意写成整句分支，不用字符串拼接**：i18n 是查表翻译，把两段 T()
+    拼起来的整句在英文包里查不到，会漏译（tests/i18n_leftover.py 直接报）。
+    vision 传 None 表示还没选模型（此时不追加看图说明）。
+    """
+    backend = local_llm.detect_backend()
+    igpu = False
+    if backend == "vulkan":
+        try:
+            from app.bootstrap import detect_gpu
+            igpu = bool(getattr(detect_gpu(), "is_igpu", False))
+        except Exception:
+            igpu = False
+
+    if vision is None:
+        if backend != "vulkan":
+            return T("可选组件：不进安装包，按需下载。纯 CPU 运行，"
+                     "不占用显存，出图时互不影响。")
+        if igpu:
+            return T("可选组件：不进安装包，按需下载。检测到核显，按 CPU 推理运行"
+                     "（核显 GPU 卸载实测更慢，不启用）。")
+        return T("可选组件：不进安装包，按需下载。将用 Vulkan 后端在显卡上推理，"
+                 "占用少量显存；若与出图冲突可切回 CPU。")
+
+    if backend != "vulkan":
+        return (T("启动后为纯 CPU 推理，不占用显存；可看图、可调用工具。")
+                if vision else
+                T("启动后为纯 CPU 推理，不占用显存；该模型只能对话与调工具，不能看图。"))
+    if igpu:
+        return (T("启动后按 CPU 推理（核显不启用 GPU 卸载）；可看图、可调用工具。")
+                if vision else
+                T("启动后按 CPU 推理（核显不启用 GPU 卸载）；该模型只能对话与调工具，"
+                  "不能看图。"))
+    return (T("启动后用 Vulkan 后端在显卡上推理；可看图、可调用工具。")
+            if vision else
+            T("启动后用 Vulkan 后端在显卡上推理；该模型只能对话与调工具，不能看图。"))
+
+
 class _FetchWorker(QThread):
     """下载二进制或模型（下载器本身是阻塞的，必须离开 UI 线程）"""
 
@@ -65,7 +130,9 @@ class _ServerWorker(QThread):
             ok = local_llm.SERVER.start(self._mid,
                                         ctx=self._ctx or local_llm.DEFAULT_CTX,
                                         port=self._port, log=lambda *_: None)
-            self.sig_done.emit(ok, "" if ok else "启动失败：端口被占或模型文件损坏")
+            # 文案必须诚实：这里最常见的失败是进程崩溃退出，而不是"端口被占"
+            # （端口冲突时组件自己会顺延，压根不会走到这里）。确切原因看控制台日志。
+            self.sig_done.emit(ok, "" if ok else "启动失败：进程异常退出，详情见「控制台」日志")
         except Exception as e:
             self.sig_done.emit(False, str(e))
 
@@ -99,6 +166,7 @@ class LocalLlmCard(QGroupBox):
         self._mid_dl = ""
         self._probe = None                # 后台读 /props 的线程
         self._probe_tried = 0             # 连续失败上限，防死循环探测
+        self._pending = False             # 运行中改了模型选择、尚未重启生效
         self._timer = QTimer(self)
         self._timer.setInterval(400)
         self._timer.timeout.connect(self._tick)
@@ -253,12 +321,19 @@ class LocalLlmCard(QGroupBox):
     def refresh(self):
         installed = local_llm.is_installed()
         running = local_llm.SERVER.running
-        # 运行中一律以「实际在跑的」为准，别用下拉框当前项：
-        # 下拉是「想用的」，用户可以随便切，切完界面提示就张冠李戴了。
-        mid = ((local_llm.SERVER.model_id or (local_llm.SERVER.info or {}).get("model_id"))
-               if running else "") or self.cb_model.currentData() \
-            or local_llm.MODELS[0]["id"]
-        have_model = installed and local_llm.has_model(mid)
+        # 两个模型身份必须分开（2026-11-19）：
+        #   loaded_mid = 正在跑的（「当前加载」行以此为准，绝不跟着下拉变，否则骗人）
+        #   sel_mid    = 下拉选中的（「下载模型」按钮与重启目标看它）
+        # 以前只有一个 mid（运行中就等于 loaded），于是运行中切到「尚未下载」的模型时，
+        # 下载按钮仍显示「模型已就绪」且点不动——客户那个困惑的直接来源。
+        loaded_mid = ((local_llm.SERVER.model_id
+                       or (local_llm.SERVER.info or {}).get("model_id"))
+                      if running else "") or ""
+        sel_mid = self.cb_model.currentData() or ""
+        sel_ok = installed and bool(sel_mid) and local_llm.has_model(sel_mid)
+        # 待切换：运行中且下拉与当前加载不一致，且新模型已就绪
+        pending = pending_model_switch(sel_mid, loaded_mid, running, sel_ok)
+        self._pending = pending
         busy = self._worker is not None
         self._render_loaded(running)
 
@@ -268,12 +343,16 @@ class LocalLlmCard(QGroupBox):
                                  and self.cb_model.count() > 1)
         self.b_install.setVisible(not installed)
         self.b_install.setEnabled(not busy)
+        # 下载按钮按「下拉选中的」算：运行中也能为下一次切换提前下载
         self.b_model.setVisible(installed)
-        self.b_model.setEnabled(installed and not have_model and not busy)
-        self.b_model.setText(T("下载模型") if not have_model else T("模型已就绪"))
+        self.b_model.setEnabled(installed and not sel_ok and not busy)
+        self.b_model.setText(T("模型已就绪") if sel_ok else T("下载模型"))
         self.b_server.setVisible(installed)
-        self.b_server.setEnabled((have_model and not busy) or running)
-        self.b_server.setText(T("停止本地服务") if running else T("启动本地服务"))
+        self.b_server.setEnabled((sel_ok and not busy) or running)
+        # 运行中切了模型 → 一键「应用并重启」，用户不用自己按「停止」再「启动」
+        self.b_server.setText(
+            T("应用并重启（约 15 秒）") if pending else
+            (T("停止本地服务") if running else T("启动本地服务")))
         self.b_apply.setVisible(running)
         self.b_remove.setVisible(installed and not busy)
         self.b_remove.setEnabled(not running and not busy)
@@ -287,21 +366,34 @@ class LocalLlmCard(QGroupBox):
         if not installed:
             self.lb_state.setText(T("未安装"))
             self.lb_detail.setText("%s + 0.4~1.1 GB"
-                                   % _mb(local_llm.BIN["size"]))
-            self.lb_hint.setText(T("可选组件：不进安装包，按需下载。纯 CPU 运行，"
-                                   "不占用显存，出图时互不影响。"))
-        elif not have_model:
-            self.lb_state.setText(T("组件已就绪"))
-            self.lb_detail.setText("%s" % _mb(local_llm.model_total(mid)))
-            self.lb_hint.setText(T("请选择并下载一个模型，模型从 hf-mirror 下载，支持断点续传。"))
+                                   % _mb(local_llm.active_bin()["size"]))
+            self.lb_hint.setText(_backend_hint())
         elif running:
+            # 运行中优先展示运行态：否则「切到未下载的模型」会被下面的
+            # 「组件已就绪」分支盖掉，用户看不到服务其实还在跑。
             self.lb_state.setText(T("本地服务运行中"))
-            self.lb_detail.setText(local_llm.SERVER.base_url.replace("/v1", ""))
+            # 地址后面补上「实际跑在哪」——GPU 名来自启动日志，比探测值可信
+            gpu = getattr(local_llm.SERVER, "gpu_name", "")
+            self.lb_detail.setText("%s  ·  %s"
+                                   % (local_llm.SERVER.base_url.replace("/v1", ""),
+                                      gpu or T("CPU 推理")))
             info = local_llm.SERVER.info or {}
             vision = bool(info.get("vision")) or bool(
-                local_llm.get_model(mid).get("vision"))
+                local_llm.get_model(loaded_mid or sel_mid).get("vision"))
             ctx_now = int(info.get("ctx") or 0)
-            if ctx_now and ctx_now < 8000:
+            if pending:
+                # 用户切了下拉但还没重启：这是本轮新增的最关键提示。
+                # 注意说「上方」不是「右侧」——按钮在下拉框下面一行，提示在最底部。
+                self.lb_hint.setText(
+                    T("已选择「%s」，点上方「应用并重启」生效（当前仍在用「%s」）。")
+                    % (local_llm.get_model(sel_mid)["name"],
+                       local_llm.get_model(loaded_mid)["name"]))
+            elif sel_mid and not sel_ok:
+                # 切到了还没下载的模型：重启也没用，得先下载
+                self.lb_hint.setText(
+                    T("已选择「%s」，但它还没下载，先点「下载模型」再重启服务。")
+                    % local_llm.get_model(sel_mid)["name"])
+            elif ctx_now and ctx_now < 8000:
                 # 内存不够时 start() 会自动退回小上下文，这时 400 会复发，
                 # 必须让用户知道是「降级了」而不是「又出 bug 了」
                 self.lb_hint.setText(
@@ -312,14 +404,15 @@ class LocalLlmCard(QGroupBox):
                     T("点「设为当前 AI 服务商」把地址填进上方表单，再点页面底部保存。")
                     if vision else
                     T("当前模型不支持看图，附图片会被忽略；需要看截图请换 Qwen3-VL-2B。"))
+        elif not sel_ok:
+            self.lb_state.setText(T("组件已就绪"))
+            self.lb_detail.setText("%s" % _mb(local_llm.model_total(sel_mid)))
+            self.lb_hint.setText(T("请选择并下载一个模型，模型从 hf-mirror 下载，支持断点续传。"))
         else:
             self.lb_state.setText(T("配置完成 · 未启动"))
             self.lb_detail.setText("127.0.0.1:%d" % local_llm.DEFAULT_PORT)
-            vision = bool(local_llm.get_model(mid).get("vision"))
-            self.lb_hint.setText(
-                T("启动后为纯 CPU 推理，不占用显存；可看图、可调用工具。")
-                if vision else
-                T("启动后为纯 CPU 推理，不占用显存；该模型只能对话与调工具，不能看图。"))
+            vision = bool(local_llm.get_model(sel_mid).get("vision"))
+            self.lb_hint.setText(_backend_hint(vision))
 
     # ------------------------------------------------------------ 操作
     def _start_fetch(self, kind: str, mid: str = ""):
@@ -357,7 +450,7 @@ class LocalLlmCard(QGroupBox):
     def _tick(self):
         """进度条：轮询 .part 体积（下载器没有回调，轮询最省事也最稳）"""
         if self._kind == "bin":
-            total = int(local_llm.BIN["size"])
+            total = int(local_llm.active_bin()["size"])
             got = local_llm.progress_of(local_llm.bin_pkg_path())
         elif self._kind == "model" and self._mid_dl:
             # 视觉模型是「权重 + mmproj」两个文件，进度按合计算
@@ -370,10 +463,15 @@ class LocalLlmCard(QGroupBox):
             self.bar.setFormat("%s / %s  (%%p%%)" % (_mb(got), _mb(total)))
 
     def _on_toggle_server(self):
+        # 运行中且下拉换了模型 → 一键「应用并重启」：停掉旧模型后继续走启动流程。
+        # 只有「没换模型」时才是纯粹停止。
         if local_llm.SERVER.running:
+            if not getattr(self, "_pending", False):
+                local_llm.SERVER.stop()
+                self.refresh()
+                return
             local_llm.SERVER.stop()
             self.refresh()
-            return
         mid = self.cb_model.currentData()
         self.b_server.setEnabled(False)
         self.lb_state.setText(T("正在启动（首次加载模型约 10~30 秒）…"))
