@@ -39,6 +39,8 @@ def check(name, cond, detail=""):
 # Qt 自带绘制、不需要 WA_StyledBackground 的控件 ID（按钮/标签/进度条/文本框）
 _SELF_PAINTED = {
     "ScopeBtn", "SaveBtn", "DeleteBtn", "FixBtn",   # QPushButton
+    "ComposerGhost", "ComposerSend",                 # QPushButton（AI 输入区）
+    "TbClose",                                       # QPushButton（标题栏关闭）
     "StatBar", "FixProgress",                        # QProgressBar
     "LogConsole",                                    # QPlainTextEdit
     "BannerScrim",                                   # 自绘 QFrame（QPainterPath）

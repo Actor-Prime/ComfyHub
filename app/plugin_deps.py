@@ -15,10 +15,14 @@ UI 在 env_page 的「依赖管理」tab 里调用。
 """
 import json
 import os
+import queue
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
+import threading
+import time
 
 # ---------------------------------------------------------------- 底座包保护
 # 这些包由 ComfyHub 统一管（按显卡装 cu130/cu126 的 torch），
@@ -40,6 +44,14 @@ HEAVY = {
 }
 
 _REQ_NAME = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
+
+# ----------------------------------------------------- 补装过程的三个时间尺度
+# 2026-11-22 用户报障「补装卡住了」：原实现 capture_output=True，pip 的输出
+# 被整段缓冲，最后一次性吐 8 行 —— 「解析回溯 20 分钟」和「2 秒就失败」
+# 在界面上长得一模一样，用户只能干等。改成流式之后这三档才有意义：
+IDLE_WARN = 300        # 连 5 分钟没有任何输出 → 日志提示 + 按钮换「取消并终止」
+IDLE_KILL = 600        # 再没输出到 10 分钟 → 直接中止这一个插件（快速失败）
+PLUGIN_TIMEOUT = 1800  # 单个插件的总上限（原来 7200 秒，等 2 小时毫无意义）
 
 
 def norm(name: str) -> str:
@@ -107,12 +119,60 @@ def installed_packages(python_exe: str, timeout: int = 120) -> dict:
     return {norm(k): v for k, v in data.items()}
 
 
+def incomplete_reason(path: str) -> str:
+    """插件目录是不是「装坏了的空壳」→ 返回原因（正常返回空串）
+
+    2026-11-22 现场：`custom_nodes\\minimax-h3` 目录在、requirements.txt 里
+    12 个依赖也全齐，所以自检显示「齐 (12)」；实际它没有 `__init__.py`，
+    ComfyUI 启动就打 `[Errno 2] ... __init__.py` + IMPORT FAILED。
+    用户看到的是「这个插件没问题」，日志里却一直加载失败 —— 必须单独标出来。
+
+    全部静态判定（不跑解释器，秒级完成）。三种形态：
+      · 目录是空的；
+      · 没有 `__init__.py`，且顶层连一个 .py 都没有（老式「多个 .py 平铺」的
+        插件不报，宁可漏报不误报）；
+      · 多套了一层同名目录（`X\\X\\__init__.py` 存在而 `X\\__init__.py` 不存在）。
+    """
+    try:
+        entries = os.listdir(path)
+    except OSError as e:
+        return "目录读不了：%s" % e
+    if not entries:
+        return "目录是空的（一个文件都没有）"
+    base = os.path.basename(os.path.abspath(path).rstrip("\\/"))
+    if not os.path.isfile(os.path.join(path, "__init__.py")):
+        inner = os.path.join(path, base, "__init__.py")
+        if os.path.isfile(inner):
+            return "多套了一层同名目录（%s\\%s\\__init__.py）" % (base, base)
+        if not any(e.lower().endswith(".py") for e in entries):
+            return "缺少 __init__.py（目录里也没有任何 .py 文件）"
+    return ""
+
+
 def scan(comfyui_path: str, installed: dict) -> list:
-    """逐插件比对 → [{name, path, total, missing, special, heavy, base}]
+    """逐插件比对 → [{name, path, total, missing, special, heavy, base, incomplete}]
 
     missing 里只放「能自动补装且确实没装」的包；底座包单独放 base，只提示不装。
+    incomplete 非空 = 目录本身坏了（缺 __init__.py 之类），补依赖也修不好。
     """
-    return scan_dirs(plugin_dirs(comfyui_path), installed)
+    rows = scan_dirs(plugin_dirs(comfyui_path), installed)
+    # 没有 requirements.txt、但目录是空壳的插件也要露头：它照样会 IMPORT FAILED，
+    # 只是原来看不见（旧逻辑要求目录里有 requirements.txt 才建行）。
+    known = {r["path"] for r in rows}
+    for name, d in plugin_dirs(comfyui_path):
+        if d in known:
+            continue
+        why = incomplete_reason(d)
+        if not why:
+            continue
+        rows.append({
+            "name": name, "path": d, "req_file": "",
+            "total": 0, "missing": [], "special": [], "base": [], "heavy": [],
+            "incomplete": why,
+        })
+    rows.sort(key=lambda r: (not r.get("incomplete"), -len(r["missing"]),
+                             r["name"].lower()))
+    return rows
 
 
 def scan_dirs(pairs: list, installed: dict) -> list:
@@ -148,21 +208,26 @@ def scan_dirs(pairs: list, installed: dict) -> list:
             "special": special,
             "base": base,
             "heavy": [m["name"] for m in missing if m["name"] in HEAVY],
+            "incomplete": incomplete_reason(d),
         })
-    # 问题最大的排前面（缺得多的先看）
-    out.sort(key=lambda r: (-len(r["missing"]), r["name"].lower()))
+    # 问题最大的排前面（目录坏了最优先，其次缺得多的）
+    out.sort(key=lambda r: (not r.get("incomplete"), -len(r["missing"]),
+                            r["name"].lower()))
     return out
 
 
 def summarize(rows: list) -> dict:
     """给 UI 的一句话摘要"""
     bad = [r for r in rows if r["missing"]]
+    broken = [r for r in rows if r.get("incomplete")]
     return {
         "plugins": len(rows),
         "bad": len(bad),
+        "broken": len(broken),
         "missing": sum(len(r["missing"]) for r in bad),
         "heavy": sum(len(r["heavy"]) for r in bad),
         "names": [r["name"] for r in bad],
+        "broken_names": [r["name"] for r in broken],
     }
 
 
@@ -239,6 +304,146 @@ def install_args(req_path: str, constraints_path: str, mirror: str = "") -> list
 
 def _host(url: str) -> str:
     return re.sub(r"^https?://", "", url).split("/")[0]
+
+
+# ------------------------------------------------------- 流式跑 pip（2026-11-22）
+def _kill_tree(pid: int) -> None:
+    """强杀整个进程树（pip 会拉子进程解 wheel）"""
+    try:
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                       capture_output=True, timeout=15)
+        return
+    except Exception:
+        pass
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except Exception:
+        pass
+
+
+def run_pip_stream(python_exe: str, args: list, on_line=None, on_state=None,
+                   idle_warn: int = IDLE_WARN, idle_kill: int = IDLE_KILL,
+                   total_timeout: int = PLUGIN_TIMEOUT, cancelled=None,
+                   poll: float = 0.2) -> dict:
+    """逐行流式跑 pip，带「没输出」判定（2026-11-22 用户报障「补装卡住」）
+
+    为什么不用 subprocess.run：`capture_output=True` 会一直读到进程退出才返回，
+    pip 卡在依赖回溯时界面上一行字都没有，用户只能猜；失败也同样是静默的。
+
+    三个出口，全部有日志：
+      · 连续 idle_warn 秒无输出 → on_state("idle")，UI 把按钮换成「取消并终止」，
+        进程继续跑（可能只是在下大文件，别急着杀）；
+      · 连续 idle_kill 秒无输出 → 杀进程树，idle=True；
+      · 总时长超 total_timeout / cancelled() 为真 → 杀掉，分别置 timeout / cancelled。
+
+    返回 {"code", "idle", "timeout", "cancelled", "lines"}；code=-1 表示被杀。
+    """
+    lines = []
+    q = queue.Queue()
+
+    try:
+        proc = subprocess.Popen(
+            [python_exe, "-m", "pip"] + list(args),
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace", bufsize=1,
+            universal_newlines=True)
+    except Exception as e:
+        lines.append("启动 pip 失败：%s" % e)
+        if on_line:
+            on_line(lines[-1])
+        return {"code": -1, "idle": False, "timeout": False,
+                "cancelled": False, "lines": lines}
+
+    def _reader(p, box):
+        try:
+            for ln in p.stdout:
+                box.put(ln.rstrip("\r\n"))
+        except Exception:
+            pass
+        finally:
+            box.put(None)          # 结束哨兵
+
+    th = threading.Thread(target=_reader, args=(proc, q), daemon=True)
+    th.start()
+
+    res = {"code": -1, "idle": False, "timeout": False, "cancelled": False,
+           "lines": lines}
+    t0 = time.time()
+    last_out = t0
+    warned = False
+    try:
+        while True:
+            if cancelled is not None and cancelled():
+                res["cancelled"] = True
+                _kill_tree(proc.pid)
+                break
+            try:
+                item = q.get(timeout=poll)
+            except queue.Empty:
+                now = time.time()
+                silent = now - last_out
+                if silent >= idle_kill:
+                    res["idle"] = True
+                    _kill_tree(proc.pid)
+                    break
+                if now - t0 >= total_timeout:
+                    res["timeout"] = True
+                    _kill_tree(proc.pid)
+                    break
+                if silent >= idle_warn and not warned:
+                    warned = True
+                    if on_state:
+                        on_state("idle")
+                    silent_note = ("… 已 %d 秒没有新输出（可能卡在依赖解析或大文件下载），"
+                                   "可以点「取消并终止」" % int(silent))
+                    lines.append(silent_note)
+                    if on_line:
+                        on_line(silent_note)
+                continue
+            if item is None:
+                break
+            last_out = time.time()
+            lines.append(item)
+            if on_line and item.strip():
+                on_line(item)
+            # 超总时长（有输出也要拦，不然一个超大包能跑一天）
+            if time.time() - t0 > total_timeout:
+                res["timeout"] = True
+                _kill_tree(proc.pid)
+                break
+        try:
+            proc.wait(timeout=15)
+        except Exception:
+            _kill_tree(proc.pid)
+        res["code"] = proc.returncode if proc.returncode is not None else -1
+    finally:
+        try:
+            if proc.poll() is None:
+                _kill_tree(proc.pid)
+        except Exception:
+            pass
+    return res
+
+
+def pip_check(python_exe: str, timeout: int = 180) -> list:
+    """`pip check`：列出现在环境里互相打架的包（中止/失败后提示用，只报不改）
+
+    为什么不自动回滚：半装的包自动卸掉风险更大（可能带走别的插件的依赖），
+    让用户看到清单，自己去依赖管理页处理更稳。
+    """
+    try:
+        r = subprocess.run([python_exe, "-m", "pip", "check",
+                            "--disable-pip-version-check"],
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=timeout)
+    except Exception as e:
+        return ["pip check 没能跑起来：%s" % e]
+    out = ((r.stdout or "") + (r.stderr or "")).strip()
+    if not out:
+        return []
+    if "No broken requirements found" in out:
+        return []
+    return [x.strip() for x in out.splitlines() if x.strip()][:12]
 
 
 def install_for_dirs(python_exe: str, pairs: list, log=print, mirror: str = "",

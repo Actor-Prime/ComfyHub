@@ -396,7 +396,7 @@ class MainWindow(QMainWindow):
         self._apply_theme()
         self.settings_page.sig_saved.connect(self._apply_theme)   # 设置页保存后实时重绘
         self._init_theme_watch()
-        self._enable_round_corners()
+        self._apply_dwm_chrome()
         from app.i18n import apply_language
         apply_language(self, str((self.cfg.get("settings") or {}).get("lang", "zh")))
 
@@ -734,8 +734,12 @@ class MainWindow(QMainWindow):
         if name and (not cur or cur.get("id") != iid):
             text = "[%s] %s" % (name, text)
         deps_hint = plugin_log.has_deps_hint(hit)
-        text += ("　·　多半是插件依赖没装全，可一键补装" if deps_hint
-                 else "　·　可去依赖自检看具体情况")
+        if hit.get("incomplete") and not deps_hint:
+            # 目录缺 __init__.py 这类：补依赖是死路，别给「一键补装」
+            text += "　·　插件没装好（目录不完整），去依赖自检删掉后重装"
+        else:
+            text += ("　·　多半是插件依赖没装全，可一键补装" if deps_hint
+                     else "　·　可去依赖自检看具体情况")
         # 一行塞不下所有插件，逐条进 tooltip（用户可能就关心某几个）
         tip = "\n".join(
             "%s：%s" % (p.get("name") or "（未识别出插件）",
@@ -1109,26 +1113,67 @@ class MainWindow(QMainWindow):
 
     # ---------- 关闭 ----------
     # ---------- 无边框窗口：边缘热区跟随 / 最大化时收起热区 ----------
-    def _enable_round_corners(self):
-        """Win11 DWM 原生圆角（2026-11-14 用户要求「外边框做圆角」）。
+    # DWM 属性号（dwmapi.h）
+    _DWMWA_WINDOW_CORNER_PREFERENCE = 33
+    _DWMWA_BORDER_COLOR = 34
+    _DWMWCP_DONOTROUND = 1
+    _DWMWCP_ROUND = 2
+    _DWMWA_COLOR_NONE = 0xFFFFFFFE       # 不画 1px 描边
+    _DWMWA_COLOR_DEFAULT = 0xFFFFFFFF
 
-        走系统级 DWMWCP_ROUND：抗锯齿圆角 + 细边框光，比 Qt setMask 的
-        位图掩码锯齿方案好得多，也不影响布局。Win10 没有这个 API，调用
-        静默失败保持直角（Win10 本来也没有圆角窗口语言）。offscreen/
-        测试环境拿不到真 hwnd 同样无害。
+    def _apply_dwm_chrome(self, maximized=None):
+        """Win11 原生窗口外观：还原态圆角+默认边框，最大化直角+无边框
+
+        2026-11-22 用户报障「放大之后左边栏不是在最左边」：实测最大化后窗口
+        左边、顶部各留 1~2px 桌面（x=0 整列是壁纸的渐变色，x=1 起才是窗口底色）。
+        旧实现只在启动时调了一次 DWMWCP_ROUND、从不改回来，最大化后既没切直角
+        也没去掉 DWM 那圈 1px 描边，叠上无边框窗口自身的边框内缩就成了那条缝。
+        Win10 没有这两个属性，调用静默失败保持直角（Win10 本来也没有圆角语言）。
         """
         import ctypes
         import sys as _sys
         if _sys.platform != "win32":
             return
+        if maximized is None:
+            maximized = self.isMaximized()
         try:
             hwnd = int(self.winId())
-            DWMWA_WINDOW_CORNER_PREFERENCE = 33
-            DWMWCP_ROUND = 2
-            val = ctypes.c_int(DWMWCP_ROUND)
+            corner = ctypes.c_int(self._DWMWCP_DONOTROUND if maximized
+                                  else self._DWMWCP_ROUND)
             ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                hwnd, DWMWA_WINDOW_CORNER_PREFERENCE,
-                ctypes.byref(val), ctypes.sizeof(val))
+                hwnd, self._DWMWA_WINDOW_CORNER_PREFERENCE,
+                ctypes.byref(corner), ctypes.sizeof(corner))
+            border = ctypes.c_uint(self._DWMWA_COLOR_NONE if maximized
+                                   else self._DWMWA_COLOR_DEFAULT)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, self._DWMWA_BORDER_COLOR,
+                ctypes.byref(border), ctypes.sizeof(border))
+        except Exception:
+            pass
+
+    def _snap_maximized(self):
+        """最大化后把窗口贴齐屏幕工作区（补掉残留的 1~2px 缝）
+
+        Qt 无边框窗口最大化时几何是「原尺寸 + 当前屏幕」推算出来的，换过显示器
+        或缩放比不同时会算偏 1px。只修正 ≤4px 的偏差：偏差再大说明不是这个问题
+        （比如用户手动摆过窗口），强行设几何反而会打架。
+        """
+        if not self.isMaximized() or not hasattr(self, "setGeometry"):
+            return
+        try:
+            scr = self.screen()
+            if scr is None:
+                from PySide6.QtGui import QGuiApplication
+                scr = QGuiApplication.primaryScreen()
+            if scr is None:
+                return
+            want, cur = scr.availableGeometry(), self.geometry()
+            diffs = [abs(cur.x() - want.x()), abs(cur.y() - want.y()),
+                     abs(cur.width() - want.width()),
+                     abs(cur.height() - want.height())]
+            if max(diffs) == 0 or max(diffs) > 4:
+                return
+            self.setGeometry(want)
         except Exception:
             pass
 
@@ -1140,9 +1185,15 @@ class MainWindow(QMainWindow):
         super().changeEvent(ev)
         if ev.type() == QEvent.Type.WindowStateChange:
             # 最大化后窗口贴满工作区，边缘热区还留着会出现"缩放光标"误导
-            set_grips_visible(self, not self.isMaximized())
+            maximized = self.isMaximized()
+            set_grips_visible(self, not maximized)
             if getattr(self, "title_bar", None) is not None:
                 self.title_bar._sync_max_icon()
+            # 圆角/描边跟着窗口状态走（2026-11-22）
+            self._apply_dwm_chrome(maximized)
+            if maximized:
+                # 等这一轮布局落定再量几何，否则读到的是切换中的旧矩形
+                QTimer.singleShot(0, self._snap_maximized)
 
     def closeEvent(self, event):
         # 关闭行为（2026-10-31）：settings.close_behavior = ask / close / minimize

@@ -30,19 +30,31 @@ _CANNOT = re.compile(r"Cannot import\s+(.+?)\s+module for custom nodes", re.I)
 _IMPORT_FAILED = re.compile(r"(?:\(IMPORT FAILED\)|IMPORT FAILED:)", re.I)
 _NO_MODULE = re.compile(r"No module named\s+['\"]?([A-Za-z0-9_.\-]+)['\"]?")
 _CUSTOM_NODES = re.compile(r"custom_nodes[\\/]+([^\\/\s\"']+)", re.I)
+# 「文件不存在」型失败（2026-11-22）：目录在、但 __init__.py 没有 →
+# 不是缺包，是插件目录装坏了，补依赖永远修不好，必须分开判。
+_MISSING_FILE = re.compile(r"No such file or directory:\s*['\"]([^'\"]+)['\"]", re.I)
 # 失败事件关键词（有它才说明这一行/这一块真的出事了）
 _FAIL_WORD = re.compile(r"Cannot import|Error loading|IMPORT FAILED|"
                         r"FATAL ERROR|Loading Failed|加载失败|ImportError", re.I)
 # 明确的可选组件探测（看到就整行跳过）
+# 2026-11-22 补中文形态：XB-llama 打的是
+#   「[XB-llama] llama-cpp-python 未安装（本地模型不可用，其余节点正常）：No module named 'llama_cpp'」
+# 插件自己都把「其余节点正常」写出来了，旧正则只认英文，于是这句被算成
+# 「minimax-h3 缺 llama_cpp」，横幅还把两件事缝成一条错误诊断。
 _NOISE = re.compile(r"comfy_kitchen backend|module loaded:|"
                     r"is not installed:|optional|will be skipped|skipping|"
-                    r"falling back|using fallback", re.I)
+                    r"falling back|using fallback|"
+                    r"本地模型不可用|其余节点正常|不影响其余|"
+                    r"可选(?:依赖|组件|后端|功能)", re.I)
 
-_NEAR_BACK = 30      # 往回最多找多少行（一般 Failure 在上、traceback 在下）
+_NEAR_BACK = 2       # 往回最多找多少行（2026-11-22：30 → 2，见 _nearby_plugin）
 _NEAR_FWD = 8        # 往后最多找多少行
 # 「Import times」汇总段的行（`0.0 seconds: <path>`）：相邻但有插件名，
 # 往里找会把 traceback 错绑到相邻插件上，所以向后查找要跳过它们
 _SECONDS = re.compile(r"\bseconds?\b\s*[:(]", re.I)
+
+# 这些扩展名说明「文件真的缺了」而不是「缺包」
+_FILE_SUFFIX = (".py", ".pyc", ".dll", ".pyd", ".so", ".json", ".yaml", ".yml")
 
 
 def plugin_of(text: str) -> str:
@@ -51,16 +63,39 @@ def plugin_of(text: str) -> str:
     return m.group(1).strip().strip("\"'") if m else ""
 
 
-def _nearby_plugin(idx: int, at: dict, skip: set) -> str:
-    """就近找插件归属：先往后（traceback 通常紧跟在后），再往前"""
+def _nearby_plugin(idx: int, at: dict, skip: set, lines=None) -> str:
+    """就近找插件归属：先往后（traceback 通常紧跟在后），再往前
+
+    2026-11-22 收紧（原来「往前回扫 30 行、见名字就认」）：
+    插件自己 catch 住异常再打一行模块名时，那一行本身可能不含路径，回扫 30 行
+    会把它挂到**上一个**插件的失败行上。现场就是 XB-llama 的
+    「llama_cpp 未安装」被算到了 minimax-h3 名下，横幅因此说
+    「minimax-h3 缺 llama_cpp」——方向全错，一键补装也修不好。
+
+    现在的规矩：
+      · 往后：traceback 紧跟失败行，允许跨几行；但碰到汇总行（seconds:）就当边界；
+        若目标行自己也是失败行，说明那是另一个事件，不认；
+      · 往前：只认紧邻 ≤2 行，且那行本身**不含失败词**（含了就说明它是别人的失败行）；
+      · 都不满足 → 返回空串 = 归属不明，比挂错名字强。
+    """
     for d in range(1, _NEAR_FWD + 1):
         j = idx + d
-        if j in at and j not in skip:
-            return at[j]
+        if j in skip:
+            break
+        if j not in at:
+            continue
+        if lines is not None and j in at and _FAIL_WORD.search(lines[j] or ""):
+            break
+        return at[j]
     for d in range(1, _NEAR_BACK + 1):
         j = idx - d
-        if j in at and j not in skip:
-            return at[j]
+        if j in skip:
+            break
+        if j not in at:
+            continue
+        if lines is not None and _FAIL_WORD.search(lines[j] or ""):
+            break          # 那是上一个插件自己的失败行，不是我的归属
+        return at[j]
     return ""
 
 
@@ -69,10 +104,12 @@ def analyze(lines) -> dict:
 
     返回：
       {"count": 插件数, "plugins": [{"name", "mods": [...]}],
-       "modules": [去重模块名], "lines": [原始行，最多 8 条]}
+       "modules": [去重模块名], "lines": [原始行，最多 8 条],
+       "incomplete": [目录不完整的插件名]}
     count=0 表示没有失败，调用方直接跳过即可。
     """
-    rows = [(i, (t or "").rstrip("\r\n")) for i, t in enumerate(lines or [])]
+    texts = [(t or "").rstrip("\r\n") for t in (lines or [])]
+    rows = list(enumerate(texts))
     # 每一行里出现的 custom_nodes 目录名（一行可能只有路径，没别的信息）
     at, summary = {}, set()
     for i, line in rows:
@@ -84,15 +121,30 @@ def analyze(lines) -> dict:
             summary.add(i)
 
     plugins = {}          # name -> set(mods)；名字为空串表示「归属不明」
+    incomplete = set()    # 目录装坏了（缺 __init__.py 之类），不是缺包
     keeps = []
     for i, line in rows:
         if not line or _NOISE.search(line):
             continue
         failed = bool(_FAIL_WORD.search(line))
         mod = _NO_MODULE.search(line)
+        missing_file = _MISSING_FILE.search(line)
+        # 「文件不存在」优先判：目录在但文件没有 → 目录不完整，跟缺包是两回事。
+        # 必须同时是失败行（Cannot import / Error loading / IMPORT FAILED）：
+        # 插件在导入期找不到模型文件也长这样，那属于「缺模型」不是「目录坏了」，
+        # 没有失败词就当普通日志跳过。
+        if failed and missing_file and \
+                missing_file.group(1).lower().endswith(_FILE_SUFFIX):
+            name = at.get(i) or _nearby_plugin(i, at, summary, texts)
+            plugins.setdefault(name, set())
+            if name:
+                incomplete.add(name)
+            if len(keeps) < 8:
+                keeps.append(line.strip()[:300])
+            continue
         if not failed and not mod:
             continue
-        name = at.get(i) or _nearby_plugin(i, at, summary)
+        name = at.get(i) or _nearby_plugin(i, at, summary, texts)
         if mod and (failed or name):
             # 能归属到某个插件 + 有模块名 → 记账。XB_ToolBox 这种插件自己
             # catch 异常再打印「❌ Error Detail: No module named 'cv2'」的，
@@ -107,6 +159,12 @@ def analyze(lines) -> dict:
         if len(keeps) < 8:
             keeps.append(line.strip()[:300])
 
+    # 目录不完整的插件不可能「缺包」——它的 mods 一律不算数，
+    # 否则横幅会给一个补装按钮，点了也修不好。
+    for nm in incomplete:
+        if nm in plugins:
+            plugins[nm] = set()
+
     mods_all = sorted({m for v in plugins.values() for m in v})
     out_plugins = [{"name": k, "mods": sorted(v)}
                    for k, v in sorted(plugins.items(), key=lambda kv: kv[0].lower())]
@@ -115,6 +173,7 @@ def analyze(lines) -> dict:
         "plugins": out_plugins,
         "modules": mods_all,
         "lines": keeps,
+        "incomplete": sorted(incomplete),
     }
 
 
@@ -122,24 +181,29 @@ def has_deps_hint(hit: dict) -> bool:
     """是否明确指向「缺依赖」（有模块名）——只有这种才推荐一键补装
 
     单纯 IMPORT FAILED 却解析不出模块名，也可能是插件代码跟内核不兼容，
-    这时推「补装」会误导用户，所以分开处理。
+    这时推「补装」会误导用户，所以分开处理。目录不完整（缺 __init__.py）
+    已经由 analyze 把 mods 清空，因此这里天然不会推补装。
     """
     return bool((hit or {}).get("modules"))
 
 
 def signature(hit: dict) -> str:
     """去重指纹：同一实例同一批失败只提示一次"""
-    return "|".join(sorted(p["name"] for p in (hit or {}).get("plugins") or [])) \
-        + "#" + ",".join((hit or {}).get("modules") or [])
+    hit = hit or {}
+    return "|".join(sorted(p["name"] for p in hit.get("plugins") or [])) \
+        + "#" + ",".join(hit.get("modules") or []) \
+        + "@" + ",".join(hit.get("incomplete") or [])
 
 
 def summarize(hit: dict, max_plugins: int = 3, max_mods: int = 3) -> str:
     """一句话文案，例如：
     「6 个插件加载失败（ComfyUI-GGUF、ComfyUI-Impact-Pack…），缺 cv2、gguf」
+    「1 个插件加载失败（minimax-h3）· 插件目录不完整，需重装插件」
     """
     hit = hit or {}
     plugins = [p["name"] for p in hit.get("plugins") or [] if p["name"]]
     mods = hit.get("modules") or []
+    broken = [n for n in (hit.get("incomplete") or []) if n]
     if not plugins and not mods:
         return ""
     head = ("%d 个插件加载失败（%s%s）"
@@ -149,4 +213,8 @@ def summarize(hit: dict, max_plugins: int = 3, max_mods: int = 3) -> str:
     if mods:
         head += "，缺 %s%s" % ("、".join(mods[:max_mods]),
                               "…" if len(mods) > max_mods else "")
+    if broken:
+        # 这句必须出现：目录缺 __init__.py 时补依赖是死路，得让用户去重装
+        head += "　·　%s 目录不完整（缺 __init__.py），需重装插件" \
+                % "、".join(broken[:max_plugins])
     return head

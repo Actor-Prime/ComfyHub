@@ -99,6 +99,33 @@ def test_plugin_log():
     check("无模块名也算失败", only_fail["count"] == 1, only_fail)
     check("无模块名 → 不推一键补装", pl.has_deps_hint(only_fail) is False)
 
+    # 2026-11-22 现场原样两行：minimax-h3 目录缺 __init__.py + XB-llama 的中文可选探测
+    # 旧逻辑把 llama_cpp 算到了 minimax-h3 名下，横幅说「minimax-h3 缺 llama_cpp」，
+    # 点一键补装去装 llama-cpp-python —— 方向全错，永远修不好。
+    lines2 = [
+        "[WARNING] Cannot import F:\\Qurak\\ComfyUI-master\\ComfyUI_windows_portable"
+        "\\ComfyUI\\custom_nodes\\minimax-h3 module for custom nodes: [Errno 2] "
+        "No such file or directory: 'F:\\Qurak\\ComfyUI-master\\"
+        "ComfyUI_windows_portable\\ComfyUI\\custom_nodes\\minimax-h3\\__init__.py'",
+        "[XB-llama] llama-cpp-python 未安装（本地模型不可用，其余节点正常）："
+        "No module named 'llama_cpp'",
+        "[INFO]    0.0 seconds (IMPORT FAILED): F:\\Qurak\\ComfyUI-master\\"
+        "ComfyUI_windows_portable\\ComfyUI\\custom_nodes\\minimax-h3",
+    ]
+    hit2 = pl.analyze(lines2)
+    check("中文可选探测（其余节点正常）不再算缺包",
+          "llama_cpp" not in hit2["modules"], hit2["modules"])
+    check("不把 llama_cpp 挂到 minimax-h3 头上",
+          all("llama_cpp" not in (p["mods"] or []) for p in hit2["plugins"]),
+          hit2["plugins"])
+    check("缺 __init__.py 被识别为目录不完整",
+          hit2.get("incomplete") == ["minimax-h3"], hit2.get("incomplete"))
+    check("目录不完整 → 不推一键补装", pl.has_deps_hint(hit2) is False)
+    check("文案说清是目录不完整",
+          "目录不完整" in pl.summarize(hit2), pl.summarize(hit2))
+    check("签名区分「不完整」与「缺包」",
+          pl.signature(hit2) != pl.signature(only_fail))
+
 
 # ============================================================ B. 带约束安装
 def test_install_for_dirs():

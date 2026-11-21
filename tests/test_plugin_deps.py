@@ -48,6 +48,9 @@ def make_tree(tmp):
     b = os.path.join(cn, "PluginBroken")
     os.makedirs(a)
     os.makedirs(b)
+    for d in (a, b):
+        # 2026-11-22：真实插件目录必有 __init__.py，没有就会被判「目录不完整」
+        open(os.path.join(d, "__init__.py"), "w", encoding="utf-8").write("")
     with open(os.path.join(a, "requirements.txt"), "w", encoding="utf-8") as f:
         f.write("numpy>=1.25\n# 注释\nopencv-python-headless\n")
     with open(os.path.join(b, "requirements.txt"), "w", encoding="utf-8") as f:
@@ -138,25 +141,25 @@ def main():
     dlg._check_all(True)
     check("全选回来", len(dlg._selected()) == 1)
 
-    print("== G. 安装线程真的跑起来（monkeypatch pip）==")
+    print("== G. 安装线程真的跑起来（monkeypatch 流式 pip）==")
     calls = []
 
-    class _R:
-        returncode = 0
-        stdout = "Successfully installed opencv-python diffusers\n"
-        stderr = ""
+    def fake_stream(py, args, on_line=None, on_state=None, **kw):
+        calls.append((py, args))
+        for ln in ("Looking in indexes: https://mirrors.aliyun.com/pypi/simple/",
+                   "Collecting opencv-python>=4.8",
+                   "Successfully installed opencv-python diffusers"):
+            if on_line:
+                on_line(ln)
+        return {"code": 0, "idle": False, "timeout": False, "cancelled": False,
+                "lines": ["Successfully installed opencv-python diffusers"]}
 
-    def fake_sub(cmd, **kw):
-        calls.append(cmd)
-        return _R()
-
-    orig = env_page.sub_run
-    env_page.sub_run = fake_sub
+    orig_stream = pd.run_pip_stream
     orig_verify = pd.verify
+    pd.run_pip_stream = fake_stream
     pd.verify = lambda py, names, **kw: []
     try:
         dlg._worker = None
-        dlg._install_silent = True
         rows_sel = [r for r in dlg.rows if r["missing"]]
         w = env_page.PluginInstallWorker(sys.executable, rows_sel, installed,
                                         mirror="https://mirrors.aliyun.com/pypi/simple/")
@@ -165,16 +168,92 @@ def main():
         w.sig_done.connect(lambda bad, err: done.append((bad, err)))
         w.run()                        # 同步跑，避免线程时序抖动
         check("pip 被调用", len(calls) >= 1, calls)
-        cmd = calls[0]
-        check("调用的是 pip install -r",
-              cmd[1:4] == ["-m", "pip", "install"], cmd[:5])
-        check("带约束文件 -c", "-c" in cmd, cmd)
+        args = calls[0][1] if calls else []
+        check("调用的是 pip install -r", args[:2] == ["install", "-r"], args[:5])
+        check("带约束文件 -c", "-c" in args, args)
+        check("日志第一行说清「已开始」", any("开始" in x for x in logs), logs[:2])
         check("日志里有补装记录", any("补装" in x for x in logs), logs[:3])
+        check("pip 输出逐行流出（不再是最后才吐）",
+              any("Collecting" in x for x in logs), logs[:6])
         check("完成回调有结果", len(done) == 1, done)
         check("成功时无错误", done and not done[0][1], done)
+
+        # 取消：run 之前就置位 → 不跑 pip，直接收尾
+        calls.clear()
+        w2 = env_page.PluginInstallWorker(sys.executable, rows_sel, installed)
+        w2.cancel()
+        logs2, done2 = [], []
+        w2.sig_log.connect(logs2.append)
+        w2.sig_done.connect(lambda bad, err: done2.append((bad, err)))
+        w2.run()
+        check("取消后不再调 pip", calls == [], calls)
+        check("取消写进日志", any("终止" in x or "取消" in x for x in logs2), logs2)
+        check("取消也有完成回调", len(done2) == 1, done2)
     finally:
-        env_page.sub_run = orig
+        pd.run_pip_stream = orig_stream
         pd.verify = orig_verify
+
+    print("== I. 目录不完整（缺 __init__.py / 空目录 / 多套一层）==")
+    bad_dir = os.path.join(comfy, "custom_nodes", "Hollow")
+    os.makedirs(bad_dir)
+    open(os.path.join(bad_dir, "requirements.txt"), "w", encoding="utf-8").write("diffusers\n")
+    why = pd.incomplete_reason(bad_dir)
+    check("没有 __init__.py 也没有 .py → 判不完整", "缺少 __init__.py" in why, why)
+    rows3 = pd.scan(comfy, installed)
+    hollow = [r for r in rows3 if r["name"] == "Hollow"]
+    check("不完整目录也出现在自检里", bool(hollow), [r["name"] for r in rows3])
+    check("不完整原因带在行上",
+          bool(hollow and hollow[0].get("incomplete")), hollow)
+    check("不完整的排最前面", rows3[0]["name"] == "Hollow", [r["name"] for r in rows3])
+    s3 = pd.summarize(rows3)
+    check("摘要统计出不完整个数", s3.get("broken") == 1, s3)
+
+    empty_dir = os.path.join(comfy, "custom_nodes", "EmptyOne")
+    os.makedirs(empty_dir)
+    check("空目录被判不完整", "空的" in pd.incomplete_reason(empty_dir),
+          pd.incomplete_reason(empty_dir))
+
+    nested = os.path.join(comfy, "custom_nodes", "Nested")
+    os.makedirs(os.path.join(nested, "Nested"))
+    open(os.path.join(nested, "Nested", "__init__.py"), "w", encoding="utf-8").write("")
+    check("多套一层同名目录被判不完整",
+          "多套了一层" in pd.incomplete_reason(nested), pd.incomplete_reason(nested))
+
+    ok_dir = os.path.join(comfy, "custom_nodes", "PluginFull")
+    check("正常插件不误报", pd.incomplete_reason(ok_dir) == "",
+          pd.incomplete_reason(ok_dir))
+
+    print("== J. 流式 pip：空闲超时能快速失败 ==")
+    import time as _t
+
+    class _Silent:
+        def __iter__(self):
+            while True:
+                _t.sleep(0.5)
+                yield ""            # 永不产生真实行
+
+    class _FakeProc:
+        pid = 999999
+        returncode = None
+        def __init__(self):
+            self.stdout = _Silent()
+        def wait(self, timeout=None):
+            return None
+        def poll(self):
+            return None
+
+    orig_popen = pd.subprocess.Popen
+    pd.subprocess.Popen = lambda *a, **k: _FakeProc()
+    states, lines = [], []
+    try:
+        res = pd.run_pip_stream(sys.executable, ["install", "x"],
+                                on_line=lines.append, on_state=states.append,
+                                idle_warn=0.10, idle_kill=0.25, poll=0.02)
+    finally:
+        pd.subprocess.Popen = orig_popen
+    check("无输出到点即中止", res["idle"] is True, res)
+    check("中止前先提醒可取消", "idle" in states, states)
+    check("提示文案进了日志", any("没有新输出" in x for x in lines), lines)
 
 
     print("== H. 页面接线：点按钮真的把线程 start() 起来 ==")

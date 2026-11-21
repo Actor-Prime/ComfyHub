@@ -947,14 +947,21 @@ class PluginScanWorker(QThread):
 
 
 class PluginInstallWorker(QThread):
-    """按插件补装缺失依赖
+    """按插件补装缺失依赖（2026-11-22 改成流式输出）
 
     两条保护（缺一条都可能把环境改坏）：
       · 每行只带「确实没装的包」→ 不会去动已装包；
       · 全局 -c 约束文件把当前所有已装版本钉死 → pip 只能找不冲突的版本，
         找不到就报错，而不是把 transformers / huggingface_hub 悄悄降级。
+
+    2026-11-22 用户报障「补装卡住、日志空白」：旧实现是
+    `capture_output=True` 一次读完，pip 的全部输出被吞到进程退出才吐 8 行，
+    于是「解析依赖 20 分钟」和「2 秒就失败」在界面上一模一样。
+    现在逐行流式吐 + 三档时间判定（见 plugin_deps.run_pip_stream），
+    并且随时可以取消（pip 进程树一起杀，不留后台任务）。
     """
     sig_log = Signal(str)
+    sig_state = Signal(str)                  # "idle" / "" → 对话框换按钮文案
     sig_done = Signal(list, str)             # (仍导不进来的包, err)
 
     def __init__(self, python_exe, rows, installed, mirror="", parent=None):
@@ -963,59 +970,103 @@ class PluginInstallWorker(QThread):
         self.rows = rows
         self.installed = installed
         self.mirror = mirror
+        self._cancel = False
+
+    # ---- 外部控制 ----
+    def cancel(self):
+        """请求终止（pip 进程树会被强杀，不会留后台任务）"""
+        self._cancel = True
+
+    def cancelled(self) -> bool:
+        return self._cancel
 
     def run(self):
         import tempfile
         tmp = tempfile.mkdtemp(prefix="ch_pdep_")
+        failed, aborted = [], False
         try:
             cons = plugin_deps.write_constraints(
                 self.installed, os.path.join(tmp, "constraints.txt"))
         except Exception as e:
             self.sig_done.emit([], "写约束文件失败：" + str(e))
             return
-        failed = []
+        n_pkg = sum(len(r["missing"]) for r in self.rows)
+        self.sig_log.emit("== 开始：%d 个插件 / %d 个包（镜像 %s）"
+                          % (len(self.rows), n_pkg, self.mirror or "官方"))
         for i, r in enumerate(self.rows):
+            if self.cancelled():
+                aborted = True
+                self.sig_log.emit("⏹ 已终止：后续插件未处理")
+                break
             text, base, special = plugin_deps.build_requirements([r])
             if base:
-                self.sig_log.emit(f"   跳过底座包（由 ComfyHub 管，装了可能毁 torch）："
+                self.sig_log.emit("   跳过底座包（由 ComfyHub 管，装了可能毁 torch）："
                                   + "、".join(base))
             if special:
                 self.sig_log.emit("   需手工安装：" + "；".join(special)[:160])
             if not text.strip():
                 continue
-            self.sig_log.emit(f"== {r['name']}：补装 {len(r['missing'])} 个包")
-            req = os.path.join(tmp, f"req_{i}.txt")
+            self.sig_log.emit("== %s：补装 %d 个包" % (r["name"], len(r["missing"])))
+            req = os.path.join(tmp, "req_%d.txt" % i)
             with open(req, "w", encoding="utf-8") as f:
                 f.write(text)
             args = plugin_deps.install_args(req, cons, self.mirror)
-            try:
-                p = sub_run([self.python_exe, "-m", "pip"] + args,
-                            capture_output=True, text=True, encoding="utf-8",
-                            errors="replace", timeout=7200)
-            except Exception as e:
-                self.sig_log.emit(f"   ❌ 异常：{e}")
+            res = plugin_deps.run_pip_stream(
+                self.python_exe, args,
+                on_line=lambda ln: self.sig_log.emit("   " + str(ln)[:200]),
+                on_state=lambda st: self.sig_state.emit(str(st)),
+                cancelled=self.cancelled)
+            self.sig_state.emit("")
+            if res["cancelled"]:
+                aborted = True
                 failed.append(r["name"])
+                self.sig_log.emit("⏹ %s 的补装被取消（pip 进程已终止）" % r["name"])
+                break
+            if res["idle"]:
+                failed.append(r["name"])
+                self.sig_log.emit("   ⚠️ %s 连续 %d 分钟没有任何输出，已中止"
+                                  % (r["name"], plugin_deps.IDLE_KILL // 60))
+                self.sig_log.emit("      → 多为依赖回溯打转或没有 Windows 轮子，"
+                                  "可在插件目录里手动 pip install 再看报错")
                 continue
-            out = ((p.stdout or "") + (p.stderr or "")).strip().splitlines()
-            for ln in [x for x in out if x.strip()][-8:]:
-                self.sig_log.emit("   " + ln[:180])
-            if p.returncode != 0:
+            if res["timeout"]:
                 failed.append(r["name"])
-                self.sig_log.emit(f"   ⚠️ {r['name']} 有包没装上（多为没有 Windows 轮子，"
-                                  f"其余插件继续）")
+                self.sig_log.emit("   ⚠️ %s 超过 %d 分钟总时长，已中止"
+                                  % (r["name"], plugin_deps.PLUGIN_TIMEOUT // 60))
+                continue
+            if res["code"] != 0:
+                failed.append(r["name"])
+                self.sig_log.emit("   ⚠️ %s 有包没装上（多为没有 Windows 轮子，"
+                                  "其余插件继续）" % r["name"])
             else:
-                self.sig_log.emit(f"   ✅ {r['name']} 完成")
+                self.sig_log.emit("   ✅ %s 完成" % r["name"])
 
         names = sorted({m["name"] for r in self.rows for m in r["missing"]})
-        self.sig_log.emit("正在校验（逐个 import）…")
-        try:
-            bad = plugin_deps.verify(self.python_exe, names)
-        except Exception as e:
-            self.sig_done.emit([], "校验失败：" + str(e))
-            return
+        bad = []
+        if names and not aborted:
+            self.sig_log.emit("正在校验（逐个 import）…")
+            try:
+                bad = plugin_deps.verify(self.python_exe, names)
+            except Exception as e:
+                self.sig_done.emit([], "校验失败：" + str(e))
+                return
+        # 取消/中止/失败之后：跑一次 pip check，把半装的包列出来。
+        # 只提示不自动回滚 —— 自动卸包比半装更容易连带弄坏别的插件。
+        if failed or aborted:
+            self.sig_log.emit("正在检查环境完整性（pip check）…")
+            problems = plugin_deps.pip_check(self.python_exe)
+            if problems:
+                self.sig_log.emit("⚠ 以下包互相冲突（只提示，不自动回滚）：")
+                for p in problems[:8]:
+                    self.sig_log.emit("   " + p)
+                self.sig_log.emit("   → 前往「依赖管理」按需卸载/重装，再复核")
+            else:
+                self.sig_log.emit("   ✅ 环境依赖关系正常（pip check 通过）")
         err = ""
         if bad:
             err = "以下包仍然导不进来：" + "、".join(bad[:8])
+        elif failed:
+            err = "有 %d 个插件没装全：%s" % (len(failed), "、".join(failed[:6]))
         self.sig_done.emit(bad, err)
 
 
@@ -1170,15 +1221,21 @@ class PluginDepsDialog(QDialog):
         self.rows = rows
         self.installed = installed
         self._worker = None
+        self._running = False
+        self._starting = False          # 防重入：正在弹「停机/确认」过程
         self.setWindowTitle("插件依赖自检")
-        self.resize(860, 580)
+        self.resize(860, 600)
         v = QVBoxLayout(self)
 
         s = plugin_deps.summarize(rows)
-        head = QLabel(
-            f"扫描到 {s['plugins']} 个带 requirements.txt 的插件，"
-            f"其中 <b>{s['bad']}</b> 个缺依赖，共缺 <b>{s['missing']}</b> 个包。")
+        head_txt = (f"扫描到 {s['plugins']} 个带 requirements.txt 的插件，"
+                    f"其中 <b>{s['bad']}</b> 个缺依赖，共缺 <b>{s['missing']}</b> 个包。")
+        if s.get("broken"):
+            head_txt += (f"　另有 <b style='color:#e05a5a'>{s['broken']}</b> 个插件"
+                         f"目录不完整（补依赖修不好，需要重装插件）。")
+        head = QLabel(head_txt)
         head.setTextFormat(Qt.RichText)
+        head.setWordWrap(True)
         v.addWidget(head)
 
         heavy = [n for r in rows for n in r["heavy"]]
@@ -1205,7 +1262,8 @@ class PluginDepsDialog(QDialog):
         tip = QLabel(
             "· 只补「确实没装」的包；已装版本用约束文件钉死，不会把 torch / transformers 降级\n"
             "· torch、numpy 等底座包自动跳过（由 ComfyHub 按显卡统一管）\n"
-            "· 标「需手工」的是 git 依赖，得在插件目录里手动装；没有 Windows 轮子的包会失败但其余继续")
+            "· 标「需手工」的是 git 依赖，得在插件目录里手动装；没有 Windows 轮子的包会失败但其余继续\n"
+            "· 标「目录不完整」的是插件没装好（缺 __init__.py），补依赖没用 —— 点该行「删除」后重装插件")
         tip.setStyleSheet("color:#7d8797; font-size:11px;")
         tip.setWordWrap(True)
         v.addWidget(tip)
@@ -1214,7 +1272,7 @@ class PluginDepsDialog(QDialog):
         self.log.setReadOnly(True)
         self.log.setObjectName("LogConsole")
         self.log.setPlaceholderText("补装日志…")
-        self.log.setMaximumHeight(120)
+        self.log.setMaximumHeight(150)
         v.addWidget(self.log)
 
         btns = QHBoxLayout()
@@ -1224,7 +1282,7 @@ class PluginDepsDialog(QDialog):
         self.b_none.clicked.connect(lambda: self._check_all(False))
         self.b_go = QPushButton("补装选中")
         self.b_go.setProperty("accent", True)
-        self.b_go.clicked.connect(self._install)
+        self.b_go.clicked.connect(self._on_go)
         b_close = QPushButton("关闭")
         b_close.clicked.connect(self.reject)
         btns.addWidget(self.b_all)
@@ -1240,14 +1298,34 @@ class PluginDepsDialog(QDialog):
         for r in self.rows:
             n = self.tb.rowCount()
             self.tb.insertRow(n)
-            it = QTableWidgetItem("")
-            if r["missing"]:
-                it.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
-                it.setCheckState(Qt.Checked)
+            broken = r.get("incomplete") or ""
+            if broken:
+                # 目录装坏了：勾选框换成「删除」，补依赖对这种情况无效
+                b = QPushButton("删除")
+                b.setToolTip("删除这个不完整的插件目录：\n%s\n\n%s" % (r["path"], broken))
+                b.clicked.connect(lambda _c=False, row=r: self._remove_dir(row))
+                b.setStyleSheet("padding:1px 8px; font-size:11px;")
+                self.tb.setCellWidget(n, 0, b)
             else:
-                it.setFlags(Qt.NoItemFlags)
-            self.tb.setItem(n, 0, it)
+                it = QTableWidgetItem("")
+                if r["missing"]:
+                    it.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+                    it.setCheckState(Qt.Checked)
+                else:
+                    it.setFlags(Qt.NoItemFlags)
+                self.tb.setItem(n, 0, it)
             self.tb.setItem(n, 1, QTableWidgetItem(r["name"]))
+            if broken:
+                cell = QTableWidgetItem("目录不完整")
+                cell.setForeground(QColor("#e05a5a"))
+                cell.setToolTip(broken)
+                self.tb.setItem(n, 2, cell)
+                cell2 = QTableWidgetItem(broken)
+                cell2.setForeground(QColor("#e05a5a"))
+                cell2.setToolTip("插件没装好，补依赖修不好：%s\n\n需要删除后重新安装该插件。"
+                                 % broken)
+                self.tb.setItem(n, 3, cell2)
+                continue
             self.tb.setItem(n, 2, QTableWidgetItem(
                 f"{len(r['missing'])}/{r['total']}" if r["missing"]
                 else f"齐 ({r['total']})"))
@@ -1258,6 +1336,37 @@ class PluginDepsDialog(QDialog):
             cell.setToolTip("\n".join(
                 [m["raw"] for m in r["missing"]] + (r["special"] or []))[:1500])
             self.tb.setItem(n, 3, cell)
+
+    def _remove_dir(self, row):
+        """删除一个不完整的插件目录（用户显式点「删除」才走这里）"""
+        name, path = row.get("name") or "", row.get("path") or ""
+        if not path or not os.path.isdir(path):
+            QMessageBox.information(self, "ComfyHub", "目录已经不在了，刷新一下自检即可")
+            self.rows = [x for x in self.rows if x.get("path") != path]
+            self._fill()
+            return
+        mw = self.parent().mainwin if self.parent() is not None else None
+        try:
+            if mw is not None and mw.procs.is_running(self.inst):
+                QMessageBox.warning(self, "ComfyHub", "先停止 ComfyUI 再删插件目录")
+                return
+        except Exception:
+            pass
+        if QMessageBox.question(
+                self, "删除插件目录",
+                "确定删除这个不完整的插件目录？\n\n%s\n%s\n\n%s\n\n"
+                "删掉后 ComfyUI 不再加载它；需要用时重新装一遍插件。"
+                % (name, path, row.get("incomplete") or "")) != QMessageBox.Yes:
+            return
+        try:
+            shutil.rmtree(path)
+        except Exception as e:
+            QMessageBox.warning(self, "删除失败",
+                                "%s\n\n（多半是被占用：先停止 ComfyUI 再试）" % e)
+            return
+        self.log.appendPlainText("🗑 已删除不完整目录：" + path)
+        self.rows = [x for x in self.rows if x.get("path") != path]
+        self._fill()
 
     def _check_all(self, on: bool):
         for i in range(self.tb.rowCount()):
@@ -1274,21 +1383,103 @@ class PluginDepsDialog(QDialog):
         return out
 
     # ---- 补装 ----
-    def _install(self):
-        rows = self._selected()
-        if not rows:
-            QMessageBox.information(self, "ComfyHub", "先勾选要补装的插件")
+    def _note(self, msg: str):
+        """往日志写一行（日志是第一现场：到底动没动，第一行就要能回答）"""
+        self.log.appendPlainText(msg)
+
+    def _on_go(self):
+        """同一个按钮两种身份：空闲时「补装选中」，运行时「取消并终止」"""
+        if self._running:
+            self._cancel_install()
+        else:
+            self._install()
+
+    def _cancel_install(self):
+        w = self._worker
+        if w is None:
             return
-        if self._worker is not None:
-            return
-        # 实例在跑时 pip 会去改正在被占用的文件 → 装一半失败，必须拦住
+        self.b_go.setEnabled(False)
+        self.b_go.setText("正在终止…")
+        self._note("⏹ 收到取消：正在终止 pip（进程树一起杀）…")
+        try:
+            w.cancel()
+        except Exception as e:
+            self._note("   取消失败：%s" % e)
+
+    def _ensure_instance_stopped(self) -> bool:
+        """实例在跑就先停下（2026-11-22 加一键处置）
+
+        旧流程只弹「请先停止 ComfyUI」，用户关掉弹窗后界面回到原样、日志空白，
+        看着就像"点了没反应"。现在直接给「停止并继续」，点完自动停机再补装。
+        """
         mw = self.parent().mainwin if self.parent() is not None else None
         try:
-            if mw is not None and mw.procs.is_running(self.inst):
-                QMessageBox.warning(self, "ComfyHub", "补装依赖前请先停止 ComfyUI")
-                return
+            running = bool(mw is not None and mw.procs.is_running(self.inst))
         except Exception:
-            pass
+            return True
+        if not running:
+            return True
+        box = QMessageBox(self)
+        box.setWindowTitle("补装依赖")
+        box.setIcon(QMessageBox.Warning)
+        box.setText("ComfyUI 正在运行，pip 会去改被占用的文件，装一半就会失败。")
+        box.setInformativeText("可以先由 ComfyHub 停止它，再继续补装。")
+        b_stop = box.addButton("停止 ComfyUI 并继续", QMessageBox.AcceptRole)
+        box.addButton("先不装", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is not b_stop:
+            self._note("未开始：ComfyUI 正在运行，你选择了先停止它再说")
+            return False
+        self._note("… 正在停止 ComfyUI")
+        try:
+            mw.procs.get(self.inst).stop()
+        except Exception as e:
+            self._note("   停止失败：%s" % e)
+        import time as _t
+        from PySide6.QtWidgets import QApplication as _QA
+        t0 = _t.time()
+        while True:
+            try:
+                if not mw.procs.is_running(self.inst):
+                    break
+            except Exception:
+                break
+            if _t.time() - t0 > 30:
+                break
+            _QA.processEvents()
+            _t.sleep(0.2)
+        try:
+            still = mw.procs.is_running(self.inst)
+        except Exception:
+            still = False
+        if still:
+            self._note("未开始：等了 30 秒 ComfyUI 还没停下来，请手动停止后再补装")
+            return False
+        self._note("   ✅ 已停止，继续补装")
+        return True
+
+    def _install(self):
+        # 防重入：_ensure_instance_stopped 里跑 processEvents 等停机，这期间用户
+        # 还能点到「补装选中」，不加这个闸门会起两个 pip 同时改一个环境。
+        if getattr(self, "_starting", False):
+            return
+        rows = self._selected()
+        if not rows:
+            self._note("未开始：没有勾选任何插件（缺依赖的行默认已勾选）")
+            QMessageBox.information(self, "ComfyHub", "先勾选要补装的插件")
+            return
+        if self._worker is not None or self._running:
+            self._note("未开始：上一次补装还在跑，等它结束（或点「取消并终止」）")
+            return
+        self._starting = True
+        try:
+            self._install_inner(rows)
+        finally:
+            self._starting = False
+
+    def _install_inner(self, rows):
+        if not self._ensure_instance_stopped():
+            return
         heavy = [n for r in rows for n in r["heavy"]]
         n_pkg = sum(len(r["missing"]) for r in rows)
         msg = f"将补装 {len(rows)} 个插件的 {n_pkg} 个缺失包。"
@@ -1297,23 +1488,45 @@ class PluginDepsDialog(QDialog):
             msg += "\n\n" + h
         msg += "\n\n补装期间请不要启动 ComfyUI。开始吗？"
         if QMessageBox.question(self, "补装依赖", msg) != QMessageBox.Yes:
+            self._note("未开始：你取消了本次补装")
             return
         from app.bootstrap import PYPI_MIRRORS
+        mirror = PYPI_MIRRORS.get("阿里云", "")
+        # 留痕在先：这几行写下去，日志第一行永远能回答「到底动没动」
+        self.log.clear()
+        self._note("已开始补装 %d 个插件的 %d 个包（镜像 %s）"
+                   % (len(rows), n_pkg, "阿里云" if mirror else "官方"))
+        self._running = True
+        self.b_go.setText("取消并终止")
+        # 先置灰：worker 吐第一行日志（证明真的跑起来了）才解锁成可取消。
+        # 否则手快双击「补装选中」会变成「刚启动就被自己取消」。
         self.b_go.setEnabled(False)
         self.b_all.setEnabled(False)
         self.b_none.setEnabled(False)
-        self.log.clear()
         w = PluginInstallWorker(self.inst.get("python_path") or "",
-                                rows, self.installed,
-                                mirror=PYPI_MIRRORS["阿里云"])
-        w.sig_log.connect(lambda t: self.log.appendPlainText(str(t)))
+                                rows, self.installed, mirror=mirror)
+        w.sig_log.connect(self._on_worker_log)
+        w.sig_state.connect(self._on_worker_state)
         w.sig_done.connect(self._done)
         swap_worker(self, "_pdep_worker", w)
         self._worker = w
         w.start()
 
+    def _on_worker_log(self, text):
+        self.log.appendPlainText(str(text))
+        if self._running and not self.b_go.isEnabled():
+            self.b_go.setEnabled(True)
+
+    def _on_worker_state(self, st):
+        """worker 报「没输出了」→ 把按钮解锁成可取消（不杀进程，可能只是在下大文件）"""
+        if st == "idle" and self._running:
+            self.b_go.setEnabled(True)
+            self.b_go.setText("取消并终止")
+
     def _done(self, bad, err):
         self._worker = None
+        self._running = False
+        self.b_go.setText("补装选中")
         self.b_go.setEnabled(True)
         self.b_all.setEnabled(True)
         self.b_none.setEnabled(True)
@@ -1324,6 +1537,24 @@ class PluginDepsDialog(QDialog):
             self.log.appendPlainText("✅ 全部补齐，可以启动 ComfyUI 试跑工作流了")
         self.log.appendPlainText("（已让依赖列表刷新；可再点一次「插件依赖自检」复核）")
         self.sig_installed.emit()
+
+    def reject(self):
+        """运行中关窗：先请求终止并等线程收尾（否则 QThread 被析构会崩）"""
+        if self._running and self._worker is not None:
+            if QMessageBox.question(
+                    self, "补装进行中",
+                    "补装还没结束。关闭窗口会终止 pip 进程，已装的包保持原样。\n\n确定关闭？"
+            ) != QMessageBox.Yes:
+                return
+            try:
+                self._worker.cancel()
+                if not self._worker.wait(8000):
+                    self._note("pip 正在退出，请等几秒再关（已请求终止）")
+                    return
+            except Exception:
+                pass
+            self._running = False
+        super().reject()
 
 
 class _RunTask(_QThread):

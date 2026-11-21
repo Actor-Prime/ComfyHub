@@ -1527,6 +1527,17 @@ EN_DICT = {
     "全不选": "Select none",
     "补装选中": "Install selected",
     "背景模糊:": "Background blur:",
+    # —— 2026-11-22 补：补装对话框的流式/取消/停机处置文案
+    "取消并终止": "Cancel and stop",
+    "正在终止…": "Stopping…",
+    "补装依赖": "Install dependencies",
+    "ComfyUI 正在运行，pip 会去改被占用的文件，装一半就会失败。":
+        "ComfyUI is running. pip would modify files that are in use and fail "
+        "halfway.",
+    "可以先由 ComfyHub 停止它，再继续补装。":
+        "ComfyHub can stop it first, then continue installing.",
+    "停止 ComfyUI 并继续": "Stop ComfyUI and continue",
+    "先不装": "Not now",
     "已填入本地模型地址与模型名，点底部「保存设置」后生效":
         "Local model URL and name filled in; click [Save settings] at the bottom "
         "to apply.",
