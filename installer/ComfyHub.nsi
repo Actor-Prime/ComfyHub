@@ -14,9 +14,10 @@ Unicode true
 ; ---------- 基本信息 ----------
 !define APP_NAME       "ComfyHub"
 !define APP_NAME_CN    "ComfyHub 多实例管理器"
-!define APP_VERSION    "0.8.34"
+!define APP_VERSION    "0.8.35"
 !define APP_PUBLISHER  "LeiMengStudio"
-!define APP_URL        "https://gitee.com/yzdydwdd/ComfyHub"
+!define APP_URL        "https://gitee.com/ActorPrime/ComfyHub"
+!define APP_URL_GH     "https://github.com/Actor-Prime/ComfyHub"
 !define APP_EXE        "ComfyHub.exe"
 !define UNINST_KEY     "Software\Microsoft\Windows\CurrentVersion\Uninstall\ComfyHub"
 !define SRC_DIR        "..\dist\ComfyHub"
@@ -32,7 +33,7 @@ SetCompressor /SOLID lzma
 ShowInstDetails show
 ShowUninstDetails show
 
-VIProductVersion "0.8.34.0"
+VIProductVersion "0.8.35.0"
 VIAddVersionKey "ProductName"     "${APP_NAME_CN}"
 VIAddVersionKey "FileDescription" "${APP_NAME_CN} 安装程序"
 VIAddVersionKey "FileVersion"     "${APP_VERSION}"
@@ -190,6 +191,8 @@ Section "ComfyHub 主程序" SEC_CORE
     WriteRegStr HKCU "${UNINST_KEY}" "UninstallString" '"$INSTDIR\Uninstall.exe"'
     WriteRegStr HKCU "${UNINST_KEY}" "InstallLocation" "$INSTDIR"
     WriteRegStr HKCU "${UNINST_KEY}" "URLInfoAbout" "${APP_URL}"
+    ; 控制面板「帮助链接」旁再挂一条更新地址，指向 GitHub Releases（国内可走加速镜像）
+    WriteRegStr HKCU "${UNINST_KEY}" "URLUpdateInfo" "${APP_URL_GH}/releases"
     WriteRegDWORD HKCU "${UNINST_KEY}" "NoModify" 1
     WriteRegDWORD HKCU "${UNINST_KEY}" "NoRepair" 1
     ${GetSize} "$INSTDIR" "/S=0K" $0 $1 $2

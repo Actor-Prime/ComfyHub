@@ -40,4 +40,6 @@ ComfyHub 以 MIT 许可发布，您可以自由使用、复制、修改与分发
 2. 本声明未尽事宜，依 MIT 许可与适用法律处理。
 
 Copyright (c) 2026 LeiMengStudio
-ComfyHub · MIT License · https://gitee.com/yzdydwdd/ComfyHub
+ComfyHub · MIT License
+  Gitee  : https://gitee.com/ActorPrime/ComfyHub
+  GitHub : https://github.com/Actor-Prime/ComfyHub

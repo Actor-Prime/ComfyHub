@@ -201,7 +201,7 @@ sp_mod.SettingsPage._open_url = staticmethod(lambda u: _opened.append(u))
 for _b in _links:
     _b.click()
 check("4n 点击打开对应仓库地址",
-      _opened == ["https://gitee.com/yzdydwdd/ComfyHub",
+      _opened == ["https://gitee.com/ActorPrime/ComfyHub",
                   "https://github.com/Actor-Prime/ComfyHub"], str(_opened))
 sp_mod.SettingsPage._open_url = staticmethod(_orig_open)
 check("4o 链接文案已英译",

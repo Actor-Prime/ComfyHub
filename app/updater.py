@@ -28,7 +28,7 @@ import urllib.request
 
 from app.config import APP_VERSION, load_config, save_config
 
-OWNER = "yzdydwdd"
+OWNER = "ActorPrime"        # 2026-11-21：仓库已从 yzdydwdd 转移到 ActorPrime（旧地址仅 302 跳转，别再依赖它）
 REPO = "ComfyHub"
 GITEE_API = f"https://gitee.com/api/v5/repos/{OWNER}/{REPO}/releases/latest"
 GITHUB_SLUG = "Actor-Prime/ComfyHub"
