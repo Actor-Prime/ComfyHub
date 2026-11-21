@@ -17,6 +17,12 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QMessageBox,
                                QPushButton)
 
+# 横幅里的按钮固定 26px 高，而全局 QPushButton 有 padding:7px 15px —— 内容区只剩
+# 10px，12px 字（行高 15px）上下会被裁切（2026-11-22 客户报「文字显示不全」）。
+# 只覆盖内边距，颜色/边框仍走全局 QSS，主题翻转不受影响。
+_TIGHT_BTN = ('QPushButton{padding:0 12px;}'
+              'QPushButton[accent="true"]{padding:0 12px;}')
+
 
 class PluginBanner(QFrame):
     """主窗口顶栏下方的一条告警（一键补装 / 日志 / ✕）"""
@@ -41,10 +47,14 @@ class PluginBanner(QFrame):
         self.b_fix = QPushButton("一键补装")
         self.b_fix.setProperty("accent", True)
         self.b_fix.setFixedHeight(26)
+        # 同 update_banner：全局 QPushButton 有 padding:7px 15px，压到 26px 高后
+        # 内容区只剩 10px，12px 字（行高 15px）会被上下裁切。只覆盖内边距。
+        self.b_fix.setStyleSheet(_TIGHT_BTN)
         self.b_fix.clicked.connect(self.sig_fix.emit)
         h.addWidget(self.b_fix)
         b_note = QPushButton("日志")
         b_note.setFixedHeight(26)
+        b_note.setStyleSheet(_TIGHT_BTN)
         b_note.setToolTip("看 ComfyUI 启动日志里报错的那几行")
         b_note.clicked.connect(self._show_lines)
         h.addWidget(b_note)
@@ -52,7 +62,7 @@ class PluginBanner(QFrame):
         b_close.setFixedSize(24, 26)
         b_close.setToolTip("关闭（本批插件失败不再提示）")
         b_close.setStyleSheet(
-            "QPushButton{background:transparent;border:none;color:#93a3b8;}")
+            "QPushButton{background:transparent;border:none;color:#93a3b8;padding:0;}")
         b_close.clicked.connect(self._on_close)
         h.addWidget(b_close)
         self._lines = []

@@ -17,6 +17,24 @@ from app import bootstrap
 from app.bootstrap import PYPI_MIRRORS
 
 
+def _program_base() -> str:
+    """程序所在目录：打包后 = exe 所在目录；源码运行 = 项目根。
+
+    2026-11-22：向导第 1 页的「安装到」原来写死 `F:\\ComfyUI`，客户在别的盘
+    装 ComfyUI 时第一个看到的永远是 F 盘路径（他根本没那个盘）。
+    """
+    import sys as _sys
+    if getattr(_sys, "frozen", False):
+        return os.path.dirname(_sys.executable)
+    return os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))
+
+
+def default_install_dir() -> str:
+    """「添加 ComfyUI」的默认全新安装位置 = <程序目录>\\ComfyUI"""
+    return os.path.join(_program_base(), "ComfyUI")
+
+
 def install_requirements_then_manager(state: dict, log=print, mirror: str = "") -> bool:
     """装 ComfyUI 本体依赖，成功后顺手把 ComfyUI-Manager 自己的依赖也装齐
 
@@ -595,7 +613,7 @@ class SetupWizard(QWizard):
         p1.setTitle("选择安装位置")
         form = QFormLayout(p1)
 
-        self.ed_dir = QLineEdit(os.path.join("F:\\", "ComfyUI"))
+        self.ed_dir = QLineEdit(default_install_dir())
         self.b_pick = QPushButton("浏览…")
         self.b_pick.clicked.connect(self._pick)
         row = QHBoxLayout()
@@ -779,36 +797,39 @@ class SetupWizard(QWizard):
         QTimer.singleShot(150, self._auto_probe)
 
     def _auto_probe(self):
-        """自动探测 _probe_roots()：找到现成 ComfyUI → 填入并触发扫描验证；
-        都没有 → 提示用户选择安装位置"""
+        """打开向导时的初始化：默认落在「程序目录\\ComfyUI」做全新安装，
+        顺带扫一眼有没有现成实例 —— 但**只放进候选下拉，不自动选**。
+
+        2026-11-22 客户反馈（0.8.35 仍在复现，截图见 F 盘桌面版路径）：原来
+        `_probe_roots()` 一命中就把路径改成那个实例并立刻开始验证。客户机器 F 盘装了
+        官方 ComfyUI Desktop，于是「点添加就锁到 F:\\Comfy-Desktop\\ComfyUI-Installs\\
+        ComfyUI\\ComfyUI」—— 可他其实想新建一个独立的，原话是「一添加就扫到 F 盘的路径」。
+        """
         from app.config import _probe_roots
-        for root in _probe_roots():
-            if os.path.isfile(os.path.join(root, "main.py")):
-                self.ed_dir.setText(os.path.normpath(root))
-                self._detect_existing()
-                return
-        # 默认路径全空：预填「程序所在目录/ComfyUI」作为安装位置（不用系统盘 C:）
-        import sys as _sys
-        if getattr(_sys, "frozen", False):
-            base = os.path.dirname(_sys.executable)          # 打包后 = exe 所在目录
+
+        base = _program_base()
+        self._orig_root = base                       # 「新建新实例」的推导基准
+        self.ed_dir.setText(default_install_dir())   # <程序目录>\ComfyUI
+
+        # 全盘探测命中的现成实例：只记下来给下拉用，绝不自动填入
+        hits = []
+        for _r in _probe_roots():
+            try:
+                if os.path.isfile(os.path.join(_r, "main.py")):
+                    hits.append(os.path.normpath(_r))
+            except OSError:
+                pass
+        self._probe_hits = hits
+        self._autoprobe = True                       # 本轮扫描的默认选中 = 「新建新实例」
+        self._scan_parent = False                    # 清掉上一轮残留的父目录扫描标记
+
+        if hits:
+            # 有现成实例：不扫盘（避免遍历 dist/_internal 几千文件），直接把探测结果
+            # 合成一轮扫描结果，让候选下拉出现 —— 默认仍然选「新建新实例」
+            self._scan_seq = getattr(self, "_scan_seq", 0) + 1
+            self._on_scan_done(base, list(hits))
         else:
-            base = os.path.dirname(os.path.dirname(os.path.dirname(
-                os.path.abspath(__file__))))                 # 源码运行 = 项目根
-        # 默认扫「程序所在目录的上级」——现成实例常和启动器同级的任意命名目录
-        # （例：F:\ComfyHub\ComfyUIImage 就在启动器目录 F:\ComfyHub 下）
-        self.ed_dir.setText(base)
-        _parent = os.path.dirname(base.rstrip("\\/"))
-        # ★ 父目录是盘根（F:\）时绝不扫描——整盘遍历极慢且结果杂乱
-        _is_drive_root = len(_parent.rstrip("\\/")) <= 2
-        if (not _is_drive_root and _parent and os.path.isdir(_parent)
-                and os.path.normpath(_parent) != os.path.normpath(base)):
-            self._orig_root = os.path.join(base, "ComfyUI")   # 无实例时的全新安装目标
-            self._scan_parent = True
-            self.lb_scan.setStyleSheet("color:#9aa4b2;")
-            self.lb_scan.setText(f"正在检查 {_parent} 下有没有现成 ComfyUI 实例…")
-            self.lb_scan.show()
-            self._start_scan(_parent)
-        else:
+            # 没有现成实例：走常规检测（目录不存在时会顺带看一眼程序目录旁边）
             self._detect_existing()
 
         # ---------- 页2：安装进度 ----------
@@ -816,11 +837,9 @@ class SetupWizard(QWizard):
         self.addPage(self.p2)
 
         # 中文按钮文案
-        self.setButtonText(QWizard.BackButton, "< 上一步")
+        # 中文按钮文案（Qt 自带按钮默认英文；setFinalPage 会重置，见 _relabel_wizard_buttons）
+        self._relabel_wizard_buttons()
         self.setButtonText(QWizard.NextButton, "下一步 >")
-        self.setButtonText(QWizard.CommitButton, "开始安装 >")
-        self.setButtonText(QWizard.FinishButton, "完成")
-        self.setButtonText(QWizard.CancelButton, "取消")
         # 安装页是最后一页，Qt 显示 FinishButton 且默认可点——初始必须禁用，
         # 安装成功后由 _on_done 解锁
         self.button(QWizard.FinishButton).setEnabled(False)
@@ -980,13 +999,40 @@ class SetupWizard(QWizard):
         except Exception:
             pass
 
+    def _relabel_wizard_buttons(self):
+        """把 QWizard 自带的英文按钮文案换成中文，并保持住。
+
+        Qt 的 `setFinalPage(True)` 会把 Back / Next / Finish / Cancel 全部重置回英文
+        （Qt 6.12 实测；final page 上 Finish 还会被强制显示出来），客户 2026-11-22
+        截图底部那排「Back / Finish / Cancel」就是这么来的 —— 我们的 i18n 只管自己写
+        的文案，QWizard 自带按钮是 Qt 的默认字符串，得单独设。
+
+        所以**每次切 finalPage 都要重套一遍**，不能只在 __init__ 里设一次。
+        故意不动 NextButton —— 它的文案由状态机决定（准备中… / 验证中… / 完成 / 下一步 >）。
+        """
+        for _b, _t in ((QWizard.BackButton, "< 上一步"),
+                       (QWizard.CommitButton, "开始安装 >"),
+                       (QWizard.FinishButton, "完成"),
+                       (QWizard.CancelButton, "取消")):
+            try:
+                self.setButtonText(_b, _t)
+            except Exception:
+                pass
+
+    def _set_final_page(self, page, flag: bool):
+        """setFinalPage 的统一入口：切完立刻补中文按钮文案（原因见 _relabel_wizard_buttons）"""
+        try:
+            page.setFinalPage(flag)
+        finally:
+            self._relabel_wizard_buttons()
+
     def _apply_fresh_buttons(self):
         """全新安装状态下的按钮语义（统一出口，避免各处漏设导致显示"完成"）：
         Next = 「下一步 >」可用、Finish 禁用、本页不是 final page"""
         try:
             p1 = self.page(0)
             if p1.isFinalPage():
-                p1.setFinalPage(False)
+                self._set_final_page(p1, False)
             self.setButtonText(QWizard.NextButton, "下一步 >")
             self.button(QWizard.NextButton).setEnabled(True)
             self.button(QWizard.FinishButton).setEnabled(False)
@@ -1024,7 +1070,7 @@ class SetupWizard(QWizard):
             # 还原 Next 按钮（全新安装需要"下一步"进入安装页，而非"完成"）
             try:
                 p1 = self.page(0)
-                p1.setFinalPage(False)
+                self._set_final_page(p1, False)
                 self.setButtonText(QWizard.NextButton, "下一步 >")
                 self.button(QWizard.FinishButton).show()
                 self.button(QWizard.FinishButton).setEnabled(False)   # 安装页才允许完成
@@ -1052,7 +1098,7 @@ class SetupWizard(QWizard):
             try:
                 _p = self.page(0)
                 if _p.isFinalPage():
-                    _p.setFinalPage(False)
+                    self._set_final_page(_p, False)
                 self.setButtonText(QWizard.NextButton, "下一步 >")
                 self.button(QWizard.FinishButton).setEnabled(False)
             except Exception:
@@ -1219,6 +1265,9 @@ class SetupWizard(QWizard):
         # 过期扫描结果（用户已切到别的路径/发起新扫描）→ 直接忽略
         if seq is not None and seq != getattr(self, "_scan_seq", 0):
             return
+        # 打开向导那一轮的自动探测：默认选「新建新实例」，现成实例只做候选（2026-11-22）
+        _autoprobe = bool(getattr(self, "_autoprobe", False))
+        self._autoprobe = False
         self._busy_scan = False
         try:
             self.pbar_scan.hide()      # 进度动画收起（结论文案接管）
@@ -1227,6 +1276,14 @@ class SetupWizard(QWizard):
         # 记住扫描根（ed_dir 之后会被 _sync_path_to_candidate 改成候选路径，范围文案要用真根）
         self._scan_root = root
         candidates = list(dict.fromkeys(candidates))
+        # 全盘探测命中的现成实例也并进候选：官方桌面版是
+        # <盘>:\Comfy-Desktop\ComfyUI-Installs\ComfyUI\ComfyUI 这种结构，
+        # 藏在别的盘，扫程序目录旁边根本看不到。只并入、不自动选（客户 2026-11-22 反馈）。
+        if _autoprobe:
+            for _h in getattr(self, "_probe_hits", []) or []:
+                if all(os.path.normpath(_h).casefold() != os.path.normpath(_c).casefold()
+                       for _c in candidates):
+                    candidates.append(_h)
         p1 = self.page(0)
         # 父目录扫描模式：用户输入的路径不存在，在这里扫到了兄弟实例
         if getattr(self, "_scan_parent", False):
@@ -1250,7 +1307,7 @@ class SetupWizard(QWizard):
                 self.lb_scan.setText(
                     f"🔍 已扫描 {root} 的全部子目录，未发现现成实例\n"
                     f"点「下一步」将在此位置全新安装：{_orig}")
-                p1.setFinalPage(False)
+                self._set_final_page(p1, False)
                 self.button(QWizard.NextButton).setEnabled(True)
                 self.button(QWizard.FinishButton).setEnabled(False)
                 return
@@ -1260,14 +1317,21 @@ class SetupWizard(QWizard):
             #   （2026-10-24 用户要求：找到实例时也允许直接选新建，而不是没得选）
             self.cb_found.addItem("➕ 新建新实例…")
             for c in candidates:
-                rel = os.path.relpath(c, root)
+                try:
+                    rel = os.path.relpath(c, root)
+                except ValueError:
+                    rel = c      # 跨盘（不同盘符）：relpath 直接抛错，显示完整路径
+                if rel.startswith(".."):
+                    rel = c      # 跨层（全盘探测到的桌面版实例）→ 也显示完整路径
                 self.cb_found.addItem(rel if rel != "." else "(此目录)")
             # 默认选中：优先选用户点的那个实例（扫父目录带出兄弟时，idx 1 不一定是它）；
             # 否则退回第一个【实例】（idx 1）——扫描出实例时主动线是添加已有
             # （在 connect 槽之前设置，不触发 _on_candidate_changed，下方手动跑一遍流程）
             _prefer = getattr(self, "_prefer_abs", "")
             self._prefer_abs = ""              # 用完即清，不影响后续手动切换
-            _default_idx = 1
+            # 自动探测轮默认「新建新实例」（下拉第 0 项）——客户不想一添加就被带去
+            # 接管别人的安装；手动扫描仍默认第一个实例（那才是他的意图）
+            _default_idx = 0 if _autoprobe else 1
             if _prefer:
                 _pnorm = os.path.normpath(_prefer).casefold()
                 for _i, _c in enumerate(candidates):
@@ -1279,12 +1343,17 @@ class SetupWizard(QWizard):
             self.cb_found.setEnabled(True)
             self.cb_found.show()
             # 明确提示可下拉选择（多个时带数量），否则单看下拉框不知道还能切
-            if len(candidates) > 1:
+            if _autoprobe:
+                # 自动探测轮：默认是新建，候选只是"想接管的人可以选"
+                self.lb_found_title.setText(
+                    f"发现 {len(candidates)} 个现成实例，可切换使用（默认仍全新安装）:")
+            elif len(candidates) > 1:
                 self.lb_found_title.setText(f"请选择实例（共 {len(candidates)} 个）:")
             else:
                 self.lb_found_title.setText("请选择实例:")
             self.lb_found_title.show()
-            self._set_mode("existing")
+            if not _autoprobe:
+                self._set_mode("existing")
             def _on_candidate_changed(_i):
                 # 连接前已 disconnect() 全部旧槽（见下），这里不再重复断开——
                 # 否则会把"正在执行的自己"断掉，下次切换就失联了
@@ -1400,7 +1469,7 @@ class SetupWizard(QWizard):
             except Exception:
                 pass
             p1 = self.page(0)
-            p1.setFinalPage(True)
+            self._set_final_page(p1, True)
             self.setButtonText(QWizard.NextButton, "完成")
             self.button(QWizard.NextButton).setEnabled(True)
             self.button(QWizard.FinishButton).hide()
@@ -1484,7 +1553,7 @@ class SetupWizard(QWizard):
                 pass
             # Qt 的 Finish 按钮只认"向导最后一页"，手动 setEnabled 有时会被 Qt 收回。
             # 标准做法：把本页设为 final page，Next 按钮即"完成"，点它触发 accept()。
-            p1.setFinalPage(True)
+            self._set_final_page(p1, True)
             self.setButtonText(QWizard.NextButton, "完成")
             self.button(QWizard.NextButton).setEnabled(True)     # 本页的「完成」= Next
             self.button(QWizard.FinishButton).hide()             # 避免两个"完成"按钮并存
@@ -1495,7 +1564,7 @@ class SetupWizard(QWizard):
         """逃生口：跳过修复、直接带病添加（高级用户自选；主推路径是「下一步：修复」）"""
         self._repair_mode = False           # 明确走"仍要添加"直接完成，不进修复
         p1 = self.page(0)
-        p1.setFinalPage(True)
+        self._set_final_page(p1, True)
         self.setButtonText(QWizard.NextButton, "仍要添加")
         self.button(QWizard.NextButton).setEnabled(True)
         self.button(QWizard.FinishButton).hide()
@@ -1534,7 +1603,7 @@ class SetupWizard(QWizard):
             self.lb_mode.setStyleSheet("color:#e8635a; font-weight:600;")
             self.lb_mode.setText("🔗 该实例缺少 Python 环境：点「下一步：修复」自动补装")
             p1 = self.page(0)
-            p1.setFinalPage(False)                                # 修复路径 = 前进，不是完成
+            self._set_final_page(p1, False)                                # 修复路径 = 前进，不是完成
             self.setButtonText(QWizard.NextButton, "下一步：修复")
             self.button(QWizard.NextButton).setEnabled(True)
             self.button(QWizard.FinishButton).hide()
@@ -1548,7 +1617,7 @@ class SetupWizard(QWizard):
             self._set_mode("fresh")
             self.b_skip_repair.hide()
             p1 = self.page(0)
-            p1.setFinalPage(False)
+            self._set_final_page(p1, False)
             self.button(QWizard.NextButton).setEnabled(True)
             self.button(QWizard.FinishButton).setEnabled(False)
             return
@@ -1560,7 +1629,7 @@ class SetupWizard(QWizard):
         self.lb_mode.setStyleSheet("color:#e8635a; font-weight:600;")
         self.lb_mode.setText("🔗 该实例缺依赖：点「下一步：修复」自动补装后再验证")
         p1 = self.page(0)
-        p1.setFinalPage(False)                                  # 修复路径 = 前进，不是完成
+        self._set_final_page(p1, False)                                  # 修复路径 = 前进，不是完成
         self.setButtonText(QWizard.NextButton, "下一步：修复")     # 主推：能运行才能完成
         self.button(QWizard.NextButton).setEnabled(True)
         self.button(QWizard.FinishButton).hide()

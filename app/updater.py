@@ -356,10 +356,25 @@ if not errorlevel 1 (
     goto waitloop
 )
 echo [%date% %time%] 启动静默安装 >> "%LOG%"
-start "" "%SETUP%" /S
-echo [%date% %time%] 启动返回 errorlevel=%errorlevel% >> "%LOG%"
-ping -n 3 127.0.0.1 >nul
-echo [%date% %time%] 更新脚本结束（安装器独立运行） >> "%LOG%"
+rem COMFYHUB_LAUNCH_AFTER：静默模式不会走 MUI_FINISHPAGE_RUN，
+rem 用它告诉安装器「装完把程序拉起来」
+set "COMFYHUB_LAUNCH_AFTER=1"
+start "" /wait "%SETUP%" /S
+echo [%date% %time%] 安装器已退出 errorlevel=%errorlevel% >> "%LOG%"
+ping -n 6 127.0.0.1 >nul
+rem 双保险（2026-11-22 客户反馈「更新完不自动打开」）：安装器的 .onInstSuccess 本该
+rem 启动程序，但 Exec 是异步的 —— 安装器退出时新进程可能还没出现，客户那边就没起来。
+rem 这里等几秒再看一眼进程列表，没有就补启动一次，两种情况都记账。
+for /f "tokens=2,*" %%a in ('reg query "HKCU\\Software\\ComfyHub" /v InstallDir 2^>nul ^| findstr /I "REG_SZ"') do set "IDIR=%%b"
+if not defined IDIR set "IDIR=%LOCALAPPDATA%\\Programs\\ComfyHub"
+tasklist /FI "IMAGENAME eq ComfyHub.exe" 2>nul | findstr /I "ComfyHub.exe" >nul
+if errorlevel 1 (
+    echo [%date% %time%] 未检测到进程，脚本补启动 "%IDIR%" >> "%LOG%"
+    start "" "%IDIR%\\ComfyHub.exe"
+) else (
+    echo [%date% %time%] 程序已由安装器启动 >> "%LOG%"
+)
+echo [%date% %time%] 更新脚本结束 >> "%LOG%"
 """
     try:
         with open(cmd_path, "w", encoding="utf-8", newline="\r\n") as f:

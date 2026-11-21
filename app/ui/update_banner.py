@@ -23,6 +23,10 @@ from PySide6.QtWidgets import (QApplication, QDialog, QFrame, QHBoxLayout, QLabe
 from app import updater
 
 
+_TIGHT_BTN = ('QPushButton{padding:0 12px;}'
+              'QPushButton[accent="true"]{padding:0 12px;}')
+
+
 class UpdateBanner(QFrame):
     """顶栏下方的更新提示条"""
     sig_update = Signal()          # 用户请求立即更新
@@ -42,22 +46,31 @@ class UpdateBanner(QFrame):
         self.lb.setStyleSheet("color:#bcd4ea; font-size:12px; background:transparent;")
         h.addWidget(self.lb)
         h.addStretch(1)
+        # 全局 QSS 给 QPushButton 设了 padding:7px 15px；本横幅把按钮压到 26px，
+        # 内容区只剩 26-14-2=10px，而 12px 字行高 15px → 文字上下各被裁 2~3px
+        # （客户 2026-11-22 报「立即更新那一行文字显示不全」；✕ 键固定 24px 宽更惨，
+        #  左右 padding 30px > 24px，整个字被压没）。
+        # 这里只覆盖内边距，颜色/边框仍走全局规则，主题翻转不受影响。
         b_go = QPushButton("立即更新")
         b_go.setProperty("accent", True)
         b_go.setFixedHeight(26)
+        b_go.setStyleSheet(_TIGHT_BTN)
         b_go.clicked.connect(self.sig_update.emit)
         h.addWidget(b_go)
         b_note = QPushButton("说明")
         b_note.setFixedHeight(26)
+        b_note.setStyleSheet(_TIGHT_BTN)
         b_note.clicked.connect(self._show_notes)
         h.addWidget(b_note)
         b_skip = QPushButton("跳过此版本")
         b_skip.setFixedHeight(26)
+        b_skip.setStyleSheet(_TIGHT_BTN)
         b_skip.clicked.connect(self.sig_skip.emit)
         h.addWidget(b_skip)
         b_close = QPushButton("✕")
         b_close.setFixedSize(24, 26)
-        b_close.setStyleSheet("QPushButton{background:transparent;border:none;color:#93a3b8;}")
+        b_close.setStyleSheet(
+            "QPushButton{background:transparent;border:none;color:#93a3b8;padding:0;}")
         b_close.clicked.connect(self.hide)
         h.addWidget(b_close)
         self._notes = ""

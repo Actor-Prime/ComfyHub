@@ -294,8 +294,61 @@ class SettingsPage(QWidget):
         self.mainwin = mainwin
         st = self.cfg.setdefault("settings", {})
         self._build(st)
+        # 2026-11-22 客户反馈：**首次安装后打开设置页，点一次「保存设置」会弹
+        # 「本次将保存 14 处修改」（PyPI 镜像 (空)→阿里云、主题 (空)→dark …）**。
+        # 原因是老 config.json 里压根没有这些键（用户从没设置过），diff 却把它们
+        # 当成「空值 → 默认值」的改动。
+        # 这里记一份「控件刚建好时的状态」当基线：老配置缺这个键、或存的是空值时，
+        # 就用它来比较 —— 用户没动过自然就没有差异。
+        self._baseline = self._collect_settings()
 
-    # ------------------------------------------------------------ UI
+    def _collect_settings(self, hf_endpoint: str | None = None,
+                          tools_dir: str | None = None) -> dict:
+        """把控件当前状态收集成 settings 字典。
+
+        保存（_save）和初始基线（__init__ 里的 self._baseline）共用这一份收集逻辑 ——
+        基线就是「用户什么都没动时各控件的值」，用来判断哪些差异是真的。
+        """
+        from app import ai_providers as _prov
+        from app import mirror as _mirror
+        if hf_endpoint is None:
+            _n = _mirror.normalize(self.ed_hf.text()) or _mirror.DEFAULT_ENDPOINT
+            hf_endpoint = "" if _n == _mirror.DEFAULT_ENDPOINT else _n
+        if tools_dir is None:
+            tools_dir = self.ed_tools.text().strip().rstrip("\\/")
+        return {
+            "mirror": self.cb_mirror.currentText(),
+            "gh_proxy": self.ed_ghproxy.text().strip(),
+            "git_proxy": self.ed_gitproxy.text().strip(),
+            "hf_endpoint": hf_endpoint,
+            "tools_dir": tools_dir,
+            "close_behavior": self.cb_close.currentData() or "ask",
+            "ai_enabled": self.ck_ai.isChecked(),
+            "ai_provider": str(self.cb_ai_provider.currentData() or "custom"),
+            "ai_base_url": self.ed_ai_base.text().strip(),
+            "ai_api_key": self.ed_ai_key.text().strip(),
+            # 模型名留空时用该服务商的默认候选兜底（候选为空的厂商才落到通用值）
+            "ai_model": (self.cb_ai_model.currentText().strip()
+                         or _prov.default_model(
+                             str(self.cb_ai_provider.currentData() or "custom"))
+                         or "deepseek-chat"),
+            "ai_think": str(self.cb_ai_think.currentData() or "off"),
+            "ai_max_tokens": int(self.sp_ai_max.value()),
+            "ai_ctx_msgs": int(self.cb_ai_ctx.currentData() or 12),
+            "ai_compress": str(self.cb_ai_compress.currentData() or "mid"),
+            "ai_persona": self.ed_ai_persona.toPlainText().strip()[:4000],
+            "ai_direct": bool(self.ck_ai_direct.isChecked()),
+            "local_llm_model": (self.card_local.cb_model.currentData() or ""),
+            "theme": self.cb_theme.currentData() or "dark",
+            "bg_image": self._bg_value,
+            "bg_zoom": round(float(self._bg_zoom), 4),
+            "bg_off_x": round(float(self._bg_off_x), 4),
+            "bg_off_y": round(float(self._bg_off_y), 4),
+            "bg_opacity": int(self.sl_alpha.value()),
+            "bg_blur": int(self.sl_blur.value()),
+            "lang": self.cb_lang.currentData() or "zh",
+        }
+
     def _build(self, st):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -1228,39 +1281,21 @@ class SettingsPage(QWidget):
         if "ai_provider" not in old:
             old["ai_provider"] = _prov.match(old.get("ai_base_url", ""))
         # 先收集到 pending，确认后才真正写入 st —— 取消则一个字节都不动
-        pending = {
-            "mirror": self.cb_mirror.currentText(),
-            "gh_proxy": self.ed_ghproxy.text().strip(),
-            "git_proxy": self.ed_gitproxy.text().strip(),
-            "hf_endpoint": new_hf,
-            "tools_dir": new_tools,
-            "close_behavior": self.cb_close.currentData() or "ask",
-            "ai_enabled": self.ck_ai.isChecked(),
-            "ai_provider": str(self.cb_ai_provider.currentData() or "custom"),
-            "ai_base_url": self.ed_ai_base.text().strip(),
-            "ai_api_key": self.ed_ai_key.text().strip(),
-            # 模型名留空时用该服务商的默认候选兜底（候选为空的厂商才落到通用值）
-            "ai_model": (self.cb_ai_model.currentText().strip()
-                         or _prov.default_model(
-                             str(self.cb_ai_provider.currentData() or "custom"))
-                         or "deepseek-chat"),
-            "ai_think": str(self.cb_ai_think.currentData() or "off"),
-            "ai_max_tokens": int(self.sp_ai_max.value()),
-            "ai_ctx_msgs": int(self.cb_ai_ctx.currentData() or 12),
-            "ai_compress": str(self.cb_ai_compress.currentData() or "mid"),
-            "ai_persona": self.ed_ai_persona.toPlainText().strip()[:4000],
-            "ai_direct": bool(self.ck_ai_direct.isChecked()),
-            "local_llm_model": (self.card_local.cb_model.currentData() or ""),
-            "theme": self.cb_theme.currentData() or "dark",
-            "bg_image": self._bg_value,
-            "bg_zoom": round(float(self._bg_zoom), 4),
-            "bg_off_x": round(float(self._bg_off_x), 4),
-            "bg_off_y": round(float(self._bg_off_y), 4),
-            "bg_opacity": int(self.sl_alpha.value()),
-            "bg_blur": int(self.sl_blur.value()),
-            "lang": self.cb_lang.currentData() or "zh",
-        }
-        changes = diff_changes(old, pending, self._SAVE_LABELS,
+        pending = self._collect_settings(hf_endpoint=new_hf, tools_dir=new_tools)
+        # 2026-11-22：diff 的基线 = 老配置 + 控件初始状态（老配置缺键/空值时才用基线）。
+        # 首次安装的 config.json 里没有这些键，直接拿它比会凭空冒出十几条"改动"
+        # （客户反馈：点一次保存弹「本次将保存 14 处修改」）。
+        _base = dict(old)
+        for _k, _v in (getattr(self, "_baseline", None) or {}).items():
+            if _k in _base and _base[_k] not in ("", None):
+                continue                       # 老配置有真值 → 它就是基线
+            if _v in ("", None, 0, False):
+                # 基线也拿不到值（本地模型列表 / AI 候选是异步填的）→ 用当前值兜底，
+                # 否则会冒出「本地模型：(空) → qwen3-vl-2b」这种必然出现的假差异
+                _base[_k] = pending.get(_k, _v)
+            else:
+                _base[_k] = _v
+        changes = diff_changes(_base, pending, self._SAVE_LABELS,
                                secret_keys=("ai_api_key",),
                                long_keys=("ai_persona",))
         if not changes:

@@ -14,7 +14,7 @@ Unicode true
 ; ---------- 基本信息 ----------
 !define APP_NAME       "ComfyHub"
 !define APP_NAME_CN    "ComfyHub 多实例管理器"
-!define APP_VERSION    "0.8.35"
+!define APP_VERSION    "0.8.36"
 !define APP_PUBLISHER  "LeiMengStudio"
 !define APP_URL        "https://gitee.com/ActorPrime/ComfyHub"
 !define APP_URL_GH     "https://github.com/Actor-Prime/ComfyHub"
@@ -33,7 +33,10 @@ SetCompressor /SOLID lzma
 ShowInstDetails show
 ShowUninstDetails show
 
-VIProductVersion "0.8.35.0"
+; 静默更新时是否在装完后自动启动程序（由 /LAUNCH 置 1，见 .onInit / .onInstSuccess）
+Var LAUNCH_AFTER
+
+VIProductVersion "0.8.36.0"
 VIAddVersionKey "ProductName"     "${APP_NAME_CN}"
 VIAddVersionKey "FileDescription" "${APP_NAME_CN} 安装程序"
 VIAddVersionKey "FileVersion"     "${APP_VERSION}"
@@ -87,13 +90,29 @@ Var RunLabelChecked
 
 ; ---- silent install (/S): launch the new version after success ----
 ; Interactive install uses MUI_FINISHPAGE_RUN; silent mode has no finish page.
+; ---------- 静默安装完成后的收尾启动 ----------
+; NSIS 静默模式不显示任何页面，MUI_FINISHPAGE_RUN 永不执行 —— 自更新把程序关掉之后，
+; 只有这里能把新版本拉回来（客户 2026-11-22 报「更新完不会自动打开」）。
+; 2026-11-22 加 Sleep 600：安装器这时还在退出，立刻 Exec 有概率让新进程拿到
+; 尚未完全释放的文件句柄 / 抢不到单实例锁，表现就是"程序闪一下就没了"。
 Function .onInstSuccess
     ${If} ${Silent}
+        Sleep 600
         Exec '"$INSTDIR\${APP_EXE}"'
     ${EndIf}
 FunctionEnd
 
 Function .onInit
+    ; ★ 静默更新收尾启动开关（2026-11-22）：自更新链路先把它放进环境变量再启动安装器。
+    ;   目前只用于日志/排查（真正启动由下方 .onInstSuccess 无条件负责），
+    ;   避免以后又出现"到底谁该拉起程序"的扯皮。
+    ;   用环境变量而不是命令行参数：ReadEnvStr 是内置命令，不依赖 FileFunc/WordFunc
+    ;   里那些需要 !insertmacro 才能用的宏（本脚本只插了 VersionCompare）。
+    ReadEnvStr $R2 "COMFYHUB_LAUNCH_AFTER"
+    ${If} $R2 == "1"
+        StrCpy $LAUNCH_AFTER "1"
+    ${EndIf}
+
     ; ★ 安装器单实例互斥（2026-11-05 实测：双安装器并发时，A 的 rd 清空会把
     ;   B 正在解压的 _internal 拆掉，装出 67/224 文件的残废状态）
     System::Call 'kernel32::CreateMutexW(i 0, i 0, t "ComfyHub_Setup_Mutex") ?e'
@@ -106,8 +125,14 @@ Function .onInit
         Abort
     ${EndIf}
 
+    ; 记住上次安装位置（升级时回到原处）。
+    ; 但命令行显式 /D= 指定的目录不能被它覆盖：/D 在 .onInit 之前就已写进 $INSTDIR，
+    ; 原来无条件 StrCpy 会让「装到指定目录」静默失效（2026-11-22 实测踩到：
+    ; 传了 /D=C:\ch_test_inst，实际还是装回了注册表里的旧路径）。
+    ; 判据：$INSTDIR 仍等于默认位置 = 用户没传 /D。
     ReadRegStr $0 HKCU "Software\${APP_NAME}" "InstallDir"
     ${If} $0 != ""
+    ${AndIf} "$INSTDIR" == "$LOCALAPPDATA\Programs\${APP_NAME}"
         StrCpy $INSTDIR $0
     ${EndIf}
 
