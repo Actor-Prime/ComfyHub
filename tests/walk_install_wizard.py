@@ -219,6 +219,11 @@ def main():
     app = QApplication(sys.argv)
     import time as _t
 
+    # 2026-11-21：必须先关掉更新弹窗——last_version 落后时它会以模态 QDialog
+    # 弹在 MainWindow 初始化期间，E2E 的 tick 还没接管就永远等不到点击。
+    import app.whats_new as _wn
+    _wn.maybe_show = lambda parent=None: False
+
     from app.ui.main_window import MainWindow
     win = MainWindow()
     win.resize(1280, 860)

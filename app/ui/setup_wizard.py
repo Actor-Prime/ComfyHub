@@ -779,10 +779,10 @@ class SetupWizard(QWizard):
         QTimer.singleShot(150, self._auto_probe)
 
     def _auto_probe(self):
-        """自动探测 _PROBE_ROOTS：找到现成 ComfyUI → 填入并触发扫描验证；
+        """自动探测 _probe_roots()：找到现成 ComfyUI → 填入并触发扫描验证；
         都没有 → 提示用户选择安装位置"""
-        from app.config import _PROBE_ROOTS
-        for root in _PROBE_ROOTS:
+        from app.config import _probe_roots
+        for root in _probe_roots():
             if os.path.isfile(os.path.join(root, "main.py")):
                 self.ed_dir.setText(os.path.normpath(root))
                 self._detect_existing()
@@ -943,6 +943,16 @@ class SetupWizard(QWizard):
                     self.button(QWizard.FinishButton).setEnabled(False)
                 except Exception:
                     pass
+            # ★ 第 1 页永远不该看到 Finish（2026-11-21 客户反馈"Finish 安不下去"）：
+            #   Qt6.12 在某些状态下会把 FinishButton 顶出来与「下一步」并排显示，
+            #   禁用态在 QSS 下和可用态几乎同色，用户当成可点按钮狂点没反应。
+            #   设计原则：扫描/验证没结束，前进键就显示"准备中…"；结束后只有
+            #   一个可点的前进键（「完成」或「下一步」）。前进动作只走 Next。
+            if self.currentPage() is getattr(self, "p1", None):
+                try:
+                    self.button(QWizard.FinishButton).hide()
+                except Exception:
+                    pass
             # ★ 扫描进行中：「下一步」由 _start_scan 禁用、_on_scan_done 解锁，
             #   守卫不得插手（否则 fresh 分支会在 300ms 后把它重新打开，前功尽弃）
             if getattr(self, "_busy_scan", False):
@@ -1090,6 +1100,9 @@ class SetupWizard(QWizard):
         self._busy_scan = True
         try:
             self.button(QWizard.NextButton).setEnabled(False)
+            # 2026-11-21 用户要求：扫描没结束，前进键显示"准备中…"（而不是
+            # 留着可点的「下一步」或一个禁用却看不出禁用的「完成」）
+            self.setButtonText(QWizard.NextButton, "准备中…")
         except Exception:
             pass
         swap_worker(self, "_scan_worker", ScanWorker(path))
@@ -1396,6 +1409,9 @@ class SetupWizard(QWizard):
             return
         self.button(QWizard.FinishButton).setEnabled(False)
         self.button(QWizard.NextButton).setEnabled(False)
+        # 2026-11-21：验证期间前进键显示"验证中…"——用户明确知道此刻点不了，
+        # 验证通过后由 _on_verify2_done / 缓存分支换成可点的「完成」
+        self.setButtonText(QWizard.NextButton, "验证中…")
         # 验证要真跑 python（import torch 等，约 2~4 秒）——必须明确告知，否则像卡住
         self.lb_scan.setStyleSheet("color:#9aa4b2;")
         self.lb_scan.setText(

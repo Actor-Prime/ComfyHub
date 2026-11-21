@@ -55,13 +55,17 @@ class FakeMain:
 
 def main():
     from app import model_store as ms
+    from app import ui_state
     from app.ui.pages import model_market_widget as mmw
     from app.ui.pages.models_page import ModelsPage
 
-    # ---------- 环境：假实例（QSettings 隔离，防上次运行残留的范围记忆污染）
-    from PySide6.QtCore import QSettings
-    QSettings("LeiMengStudio", "ComfyHub").setValue("model_scope", "local")
-    QSettings("LeiMengStudio", "ComfyHub").setValue("model_source", "all")
+    # ---------- 环境：假实例（UI 状态隔离到临时目录，防上次运行的范围记忆污染）
+    # 2026-11-21：范围/来源记忆已从注册表搬进数据目录 INI（app/ui_state.py）
+    _ui_dir = tempfile.mkdtemp(prefix="ch_models_ui_")
+    ui_state.data_root = lambda: _ui_dir
+    ui_state._ready = False
+    ui_state.set_value("model_scope", "local")
+    ui_state.set_value("model_source", "all")
     root = tempfile.mkdtemp(prefix="ch_models_")
     for sub in ("checkpoints", "loras"):
         os.makedirs(os.path.join(root, "models", sub), exist_ok=True)
@@ -279,7 +283,6 @@ def main():
     page.chip_group.button(0).setChecked(True)      # 全部类别 → 统计表
     pump(0.3)
 
-    from PySide6.QtCore import QSettings as _QS
     page.src_group.button(1).setChecked(True)       # 实例内置
     pump(0.3)
     builtin_ck = next((r for r in range(page.tb.rowCount())
@@ -287,8 +290,8 @@ def main():
     builtin_cnt = page.tb.item(builtin_ck, 1).text() if builtin_ck >= 0 else ""
     check("14a 来源=实例内置：checkpoints 只算内置文件", builtin_cnt == "2", builtin_cnt)
     check("14b 来源选择被记忆",
-          _QS("LeiMengStudio", "ComfyHub").value("model_source") == "builtin",
-          str(_QS("LeiMengStudio", "ComfyHub").value("model_source")))
+          ui_state.get("model_source") == "builtin",
+          str(ui_state.get("model_source")))
 
     page.src_group.button(2).setChecked(True)       # 外部挂载
     pump(0.3)

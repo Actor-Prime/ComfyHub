@@ -12,7 +12,7 @@ import os
 import shutil
 import datetime
 
-from PySide6.QtCore import Qt, QThread, Signal, QSettings
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QComboBox,
@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 from app.i18n import T
 from app.tools import ModelDownloader
 from app import instance as inst_lib
+from app import ui_state
 from app.workers import swap_worker
 from app.ui.pages.model_market_widget import ModelMarketWidget
 from app.ui.pages.component_card import ComponentBar
@@ -236,14 +237,14 @@ class ModelsPage(QWidget):
         root.addWidget(self.log, 0)
 
         # 初始范围（记忆上次选择；恢复时同步占位符，别只换选中态）
-        saved = QSettings("LeiMengStudio", "ComfyHub").value("model_scope", "local")
+        saved = ui_state.get("model_scope", "local")
         idx = next((i for i, (_l, k, _t) in enumerate(self._scope_defs) if k == saved), 0)
         self.scope_group.button(idx).setChecked(True)
         self.ed_search.setPlaceholderText(self._scope_defs[idx][2])
         self.stack.setCurrentIndex(0 if idx == 0 else 1)
         self.chip_group.button(0).setChecked(True)
         # 来源筛选也记忆上次选择（默认「全部」= 历史行为）
-        _saved_src = QSettings("LeiMengStudio", "ComfyHub").value("model_source", "all")
+        _saved_src = ui_state.get("model_source", "all")
         _s_idx = next((i for i, (_l, k, _t) in enumerate(self._src_defs)
                        if k == _saved_src), 0)
         self.src_group.button(_s_idx).setChecked(True)
@@ -274,7 +275,7 @@ class ModelsPage(QWidget):
         if not on:
             return
         key = self._scope_defs[idx][1]
-        QSettings("LeiMengStudio", "ComfyHub").setValue("model_scope", key)
+        ui_state.set_value("model_scope", key)
         self.ed_search.setPlaceholderText(self._scope_defs[idx][2])
         self.stack.setCurrentIndex(0 if key == "local" else 1)
         if key == "local":
@@ -300,8 +301,7 @@ class ModelsPage(QWidget):
     def _on_src_toggled(self, idx, on):
         if not on:
             return
-        QSettings("LeiMengStudio", "ComfyHub").setValue(
-            "model_source", self._src_defs[idx][1])
+        ui_state.set_value("model_source", self._src_defs[idx][1])
         if self._scope_key() == "local":
             self.refresh_stats()
         elif self.ed_search.text().strip():

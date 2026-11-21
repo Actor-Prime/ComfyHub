@@ -1,4 +1,4 @@
-APP_VERSION = "0.8.33"
+APP_VERSION = "0.8.34"
 
 # -*- coding: utf-8 -*-
 """配置管理：多实例配置持久化 + 自动探测本机 ComfyUI"""
@@ -27,29 +27,38 @@ VRAM_MODES = {
     "CPU 模式": "--cpu",
 }
 
-# 常见 ComfyUI 安装位置（用于自动探测）
-_PROBE_ROOTS = [
-    r"F:\ComfyUI",
-    r"E:\ComfyUI",
-    r"D:\ComfyUI",
-    r"C:\ComfyUI",
-    os.path.expanduser(r"~\Desktop\ComfyUI"),
-    r"F:\Comfy-Desktop\ComfyUI-Installs\ComfyUI\ComfyUI",
-    r"D:\AI\ComfyUI",
-]
+def _probe_roots() -> list:
+    """常见 ComfyUI 安装位置（用于自动探测）
+
+    2026-11-21：从写死盘符的静态表改为**按本机实际存在的盘符通配生成**。
+    背景：以前写死了 `F:\\Comfy-Desktop\\ComfyUI-Installs\\...`，只有 F 盘
+    装了官方 ComfyUI Desktop 的用户能被探测到；官方桌面版默认结构是
+    `<盘>:\\Comfy-Desktop\\ComfyUI-Installs\\ComfyUI\\ComfyUI`，装在
+    E/D/其它盘的用户直接漏掉，被客户反馈过（向导预填了错误理解的位置）。
+    """
+    import string
+    drives = [c + ":\\" for c in string.ascii_uppercase
+              if os.path.isdir(c + ":\\")]
+    roots = [os.path.expanduser(r"~\Desktop\ComfyUI")]
+    for d in drives:
+        roots.append(os.path.join(d, "ComfyUI"))
+        # 官方 ComfyUI Desktop 的默认安装结构
+        roots.append(os.path.join(
+            d, "Comfy-Desktop", "ComfyUI-Installs", "ComfyUI", "ComfyUI"))
+        roots.append(os.path.join(d, "AI", "ComfyUI"))
+    return roots
 
 
 def _find_python_for(comfyui_path: str) -> str:
     """在 ComfyUI 目录附近探测配套 Python 解释器"""
     candidates = [
-        # ComfyUI 旁边的独立 venv（如 F:\ComfyUI_env）
-        r"F:\ComfyUI_env\Scripts\python.exe",
+        # ComfyUI 旁边的独立 venv（与启动器同级，任意盘）
+        os.path.join(comfyui_path, "..", "ComfyUI_env", "Scripts", "python.exe"),
         # 便携包内置环境
         os.path.join(comfyui_path, "python_embeded", "python.exe"),
         os.path.join(comfyui_path, "..", "python_embeded", "python.exe"),
         os.path.join(comfyui_path, ".venv", "Scripts", "python.exe"),
         os.path.join(comfyui_path, "..", ".venv", "Scripts", "python.exe"),
-        os.path.join(comfyui_path, "..", "ComfyUI_env", "Scripts", "python.exe"),
         os.path.join(comfyui_path, "venv", "Scripts", "python.exe"),
     ]
     for c in candidates:
@@ -75,7 +84,7 @@ def default_instance() -> dict:
         "auto_apply_profile": True,        # 启动实例前自动应用 last_profile
         "notify_on_task_done": True,       # 任务完成时弹系统通知
     }
-    for root in _PROBE_ROOTS:
+    for root in _probe_roots():
         if os.path.isfile(os.path.join(root, "main.py")):
             inst["comfyui_path"] = os.path.normpath(root)
             inst["python_path"] = _find_python_for(root)

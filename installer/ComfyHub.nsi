@@ -14,7 +14,7 @@ Unicode true
 ; ---------- 基本信息 ----------
 !define APP_NAME       "ComfyHub"
 !define APP_NAME_CN    "ComfyHub 多实例管理器"
-!define APP_VERSION    "0.8.33"
+!define APP_VERSION    "0.8.34"
 !define APP_PUBLISHER  "LeiMengStudio"
 !define APP_URL        "https://gitee.com/yzdydwdd/ComfyHub"
 !define APP_EXE        "ComfyHub.exe"
@@ -32,7 +32,7 @@ SetCompressor /SOLID lzma
 ShowInstDetails show
 ShowUninstDetails show
 
-VIProductVersion "0.8.33.0"
+VIProductVersion "0.8.34.0"
 VIAddVersionKey "ProductName"     "${APP_NAME_CN}"
 VIAddVersionKey "FileDescription" "${APP_NAME_CN} 安装程序"
 VIAddVersionKey "FileVersion"     "${APP_VERSION}"
@@ -277,8 +277,18 @@ Section "Uninstall"
     Delete "$SMPROGRAMS\${APP_NAME}\卸载 ${APP_NAME}.lnk"
     RMDir "$SMPROGRAMS\${APP_NAME}"
 
-    DeleteRegKey HKCU "${UNINST_KEY}"
-    DeleteRegKey HKCU "Software\${APP_NAME}"
+    ; ---------- 注册表彻底清理（2026-11-21 修复"卸载后仍有残留"）----------
+    ; 根因：安装器写的是 Software\ComfyHub，而程序运行期 UI 状态走
+    ;   QSettings("LeiMengStudio","ComfyHub") → Software\LeiMengStudio\ComfyHub，
+    ;   两处不同名，原脚本只删了前者 → 残留扫描工具（Geek 等）报"残留痕迹"。
+    DeleteRegKey HKCU "${UNINST_KEY}"                       ; 控制面板卸载项
+    DeleteRegKey HKCU "Software\${APP_NAME}"                ; 安装器写的 InstallDir/Version
+    DeleteRegKey HKCU "Software\${APP_PUBLISHER}\${APP_NAME}" ; QSettings 的 UI 状态
+    ; 发布者父键只在"空"时删：同发布者将来若有别的产品不会被误伤
+    DeleteRegKey /ifempty HKCU "Software\${APP_PUBLISHER}"
+
+    ; Windows 兼容性助手（AppCompatFlags\...\Store）的清理放在段末尾，
+    ; 见 cfgDone 之后的说明。
 
     ; ---- 配置目录：默认删除（用户要求），选"否"才保留 ----
     IfFileExists "$APPDATA\ComfyHub\*.*" 0 cfgDone
@@ -295,4 +305,14 @@ Section "Uninstall"
         Pop $0
         RMDir /r /REBOOTOK "$APPDATA\ComfyHub"
     cfgDone:
+    ; ---- Windows 兼容性助手记录（放在最后，避免被重新写回）----
+    ; Windows 会在 exe 启动时把完整路径写进
+    ;   AppCompatFlags\Compatibility Assistant\Store
+    ; 所以要等本卸载程序跑完前面那些耗时操作后再删，才不会被补写回来。
+    ; 不清的话，Geek 之类扫描工具永远点名 ComfyHub.exe / Uninstall.exe。
+    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\AppCompatFlags\Compatibility Assistant\Store" "$INSTDIR\${APP_EXE}"
+    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\AppCompatFlags\Compatibility Assistant\Store" "$INSTDIR\Uninstall.exe"
+    ; 用户手动给 exe 设过"兼容模式"时才会存在的 Layers 值
+    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\AppCompatFlags\Layers" "$INSTDIR\${APP_EXE}"
+    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\AppCompatFlags\Layers" "$INSTDIR\Uninstall.exe"
 SectionEnd

@@ -17,7 +17,7 @@ import json
 import os
 import time
 
-from PySide6.QtCore import (QBuffer, QEvent, QRect, QSettings, QSize, Qt, QThread,
+from PySide6.QtCore import (QBuffer, QEvent, QRect, QSize, Qt, QThread,
                             QTime, QTimer, Signal)
 from PySide6.QtGui import (QColor, QIcon, QImage, QPainter, QPalette,
                        QPen, QPixmap)
@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog,
                                QSizePolicy, QStyle, QTabWidget, QTextEdit,
                                QToolButton, QVBoxLayout, QWidget)
 
-from app import ai_agent, ai_chat_store, ai_skills
+from app import ai_agent, ai_chat_store, ai_skills, ui_state
 from app.i18n import T
 from app.ui import theme
 
@@ -363,11 +363,9 @@ class AiPage(QWidget):
         # token 用量（2026-11-14）：按会话存内存，不落盘——重启后重新计。
         # 服务商不一定返回 usage，所以存 exact 标记决定界面怎么写。
         self._usage_map = {}        # chat_id -> {prompt,completion,cached,exact,rounds}
-        try:
-            self._right_open = bool(QSettings("LeiMengStudio", "ComfyHub")
-                                    .value("ai_right_open", False, type=bool))
-        except Exception:
-            self._right_open = False
+        # 右栏展开状态：存数据目录内的 ui_state.ini（2026-11-21 从注册表迁出，
+        # 避免卸载后注册表残留；见 app/ui_state.py）
+        self._right_open = ui_state.get("ai_right_open", False, as_bool=True)
         self._build()
         self._boot_chats()
 
@@ -786,7 +784,7 @@ class AiPage(QWidget):
         self._apply_right_open(not self.side_r.isVisible())
 
     def _apply_right_open(self, on: bool, remember: bool = True):
-        """展开/收起右侧抽屉；状态记进 QSettings（下次开程序还是老样子）"""
+        """展开/收起右侧抽屉；状态记进 ui_state.ini（下次开程序还是老样子）"""
         self._right_open = bool(on)
         self.side_r.setVisible(self._right_open)
         self.right_handle.setText("›" if self._right_open else "‹")
@@ -799,11 +797,7 @@ class AiPage(QWidget):
         # 历史气泡用的是 setFixedWidth → 不重排就会被右边裁掉字（2026-11-12 实测）。
         QTimer.singleShot(0, lambda: self._relayout_messages(force=True))
         if remember:
-            try:
-                QSettings("LeiMengStudio", "ComfyHub").setValue(
-                    "ai_right_open", self._right_open)
-            except Exception:
-                pass
+            ui_state.set_value("ai_right_open", self._right_open)
 
     def _set_usage_label(self, u):
         """刷新「用量」那一行（文案 + tooltip）"""

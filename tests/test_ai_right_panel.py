@@ -5,7 +5,7 @@
 还能看到这条对话产出的文件、以及挂了哪些 skill 的内容。
 
 断言：
-  A. 抽屉开合：把手常驻，点开/收起面板；状态记进 QSettings
+  A. 抽屉开合：把手常驻，点开/收起面板；状态记进 ui_state.ini
   B. 简介页：用途/实例/工作流/模型/消息数/压缩摘要 随会话刷新
   C. 产物页：去重收集、列表条目带真实路径、空态提示
   D. 技能页：本会话技能列出，选中显示正文（不重复描述）
@@ -26,7 +26,7 @@ os.environ["COMFYHUB_SKILL_DIR"] = os.path.join(_TMP, "skills")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from PySide6.QtCore import QSettings, Qt  # noqa: E402
+from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 PASS, FAIL = 0, 0
@@ -44,8 +44,15 @@ def check(name, cond, detail=""):
 
 app = QApplication.instance() or QApplication([])
 
-from app import ai_agent, ai_chat_store  # noqa: E402
+from app import ai_agent, ai_chat_store, ui_state  # noqa: E402
 from app.ui.pages.ai_page import AiPage  # noqa: E402
+
+# 状态目录指到临时目录：既隔离用户真实偏好，也避免把老注册表值迁进来
+# （断言从「收起」开始，2026-11-14 踩过假红）
+_UI_TMP = tempfile.mkdtemp(prefix="ch_rtpanel_ui_")
+ui_state.data_root = lambda: _UI_TMP
+ui_state._ready = False
+ui_state.set_value("ai_right_open", False)
 
 
 class _MW:
@@ -56,11 +63,6 @@ class _MW:
     def current_inst(self):
         return None
 
-
-_SET = QSettings("LeiMengStudio", "ComfyHub")
-_OLD_OPEN = _SET.value("ai_right_open", False, type=bool)
-# 断言从「收起」开始：用户自己的真实设置可能是展开的，不重置会假红（2026-11-14）
-_SET.setValue("ai_right_open", False)
 
 try:
     page = AiPage({"instances": []}, _MW())
@@ -79,9 +81,8 @@ try:
     check("点开后可见", page.side_r.isVisible(), "侧栏应显示")
     check("展开后箭头朝右", page.right_handle.text() == "›",
           page.right_handle.text())
-    check("展开状态写进 QSettings",
-          QSettings("LeiMengStudio", "ComfyHub").value(
-              "ai_right_open", False, type=bool) is True, "应为 True")
+    check("展开状态写进 ui_state",
+          ui_state.get("ai_right_open", False, as_bool=True) is True, "应为 True")
     page._toggle_right()
     app.processEvents()
     check("再点回到收起", not page.side_r.isVisible(), "侧栏应隐藏")
@@ -192,7 +193,7 @@ try:
     check("失败结果不算产物", got == [], got)
 
 finally:
-    _SET.setValue("ai_right_open", _OLD_OPEN)
+    pass
 
 print(f"\nPASS {PASS} / FAIL {FAIL}")
 sys.exit(1 if FAIL else 0)

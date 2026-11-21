@@ -1494,4 +1494,40 @@ EN_DICT = {
         "Runs on the GPU through Vulkan after start; this model can chat and call "
         "tools but cannot read images.",
     "CPU 推理": "CPU inference",
+    # —— 2026-11-21 补：AI 页左栏/工作台提示（6a 门禁扫出漏译）
+    "收起左侧会话列表": "Collapse chat list",
+    "给这条对话固定一套工作台：用途 / 实例 / 工作流 / 模型 / 技能":
+        "Pin a workspace to this chat: purpose / instance / workflow / model / skills",
+    "给这条对话固定一套工作台。不同对话各配各的——"
+    "比如「H3 视频」挂视频工作流、「Qwen 生图」挂生图工作流，"
+    "切换对话时配置与上下文互不影响。":
+        "Pin a workspace to this chat. Each chat keeps its own — e.g. \"H3 video\" "
+        "with a video workflow, \"Qwen image\" with an image workflow. Switching "
+        "chats keeps configs and context separate.",
+    # —— 2026-11-21 补：AI 页示例文案 / 环境页插件依赖自检 / 设置页背景模糊
+    "例：H3 视频制作 / Qwen 生图 / minimax 音乐":
+        "e.g. H3 video / Qwen image / minimax music",
+    "例：qwen_image_2512.safetensors（可留空）":
+        "e.g. qwen_image_2512.safetensors (optional)",
+    "发送时间": "Sent at",
+    "🔍 插件依赖自检": "🔍 Plugin dependency check",
+    "插件依赖自检": "Plugin dependency check",
+    "扫 custom_nodes 各插件的 requirements.txt，找出没装上的包"
+    "（插件报 ModuleNotFoundError / 工作流 400 的根因）":
+        "Scans requirements.txt of every plugin under custom_nodes to find packages "
+        "that failed to install (the usual cause of ModuleNotFoundError / workflow "
+        "400 errors).",
+    "首次加载需要点上方【依赖检测】；卸载前请先停止 ComfyUI。"
+    "插件节点报 ModuleNotFoundError 时，先跑【插件依赖自检】。":
+        "Click [Dependency check] above on first load; stop ComfyUI before "
+        "uninstalling. When a plugin node throws ModuleNotFoundError, run "
+        "[Plugin dependency check] first.",
+    "补装日志…": "Installing missing packages…",
+    "全选": "Select all",
+    "全不选": "Select none",
+    "补装选中": "Install selected",
+    "背景模糊:": "Background blur:",
+    "已填入本地模型地址与模型名，点底部「保存设置」后生效":
+        "Local model URL and name filled in; click [Save settings] at the bottom "
+        "to apply.",
 }
