@@ -371,9 +371,13 @@ class AiPage(QWidget):
 
     # -------------------------------------------------- UI
     def _build(self):
-        # 聊天区限宽 1100 居中（2026-11-08 第 3 版）：2560 全屏下输入框和气泡原来被
-        # 拉满 2100px，一行字横跨整个屏幕根本没法读。1100 对应约 60~70 字符的行宽，
-        # 是阅读舒适的经典 measure 区间。
+        # 三栏贴边（2026-11-22 用户第 4 次反馈）：原来是「stretch + 会话栏 + 限宽
+        # 1520 的聊天区 + 右侧抽屉 + stretch」，两侧 stretch 在 2560 屏上各吃掉
+        # 170~340px，形成两条纯空白带——看着像没铺满。限宽本意是保阅读 measure
+        # （2026-11-08 的诉求），但代价是两侧面板整块浮在屏幕中间。
+        #
+        # 现在改成：三栏都由布局拉满，左右两栏贴边；阅读宽度靠 body 内部的
+        # 22px 内边距 + 消息卡自身的定型宽度控制，不再用外层留白来限制。
         outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(10)
@@ -443,9 +447,21 @@ class AiPage(QWidget):
             "QListWidget#ChatList::item:hover { background: #262e3a; }"
             "QListWidget#ChatList::item:selected { background: #2f3a4a; color: #e6edf7; }")
 
+        # 聊天区（2026-11-22）：外层 body 铺满剩余宽度（左右两栏才能贴边），
+        # 内部再套一列限宽 1560 的「阅读列」居中——1980 以上的屏上正文一行
+        # 别超过这个宽度（2026-11-08 的原始诉求），但留白只出现在聊天区内部，
+        # 不再是两条贯穿整屏的空白带。
         body = QWidget()
-        body.setMaximumWidth(1520)
-        root = QVBoxLayout(body)
+        body.setObjectName("AiBody")
+        _hold = QHBoxLayout(body)
+        _hold.setContentsMargins(0, 0, 0, 0)
+        _hold.setSpacing(0)
+        col = QWidget()
+        col.setMaximumWidth(self.COL_MAX_W)
+        _hold.addStretch(1)
+        _hold.addWidget(col, 1000)          # 权重给大：先吃满宽度，再由 max 卡住
+        _hold.addStretch(1)
+        root = QVBoxLayout(col)
         root.setContentsMargins(22, 18, 22, 18)
         root.setSpacing(12)
 
@@ -584,14 +600,14 @@ class AiPage(QWidget):
         # 输入卡自己接鼠标 → 点内边距/空白也能立刻开始输入（见 eventFilter）
         composer.installEventFilter(self)
 
-        outer.addStretch(1)
+        # 2026-11-22：去掉两侧 addStretch，聊天区成为唯一可伸缩项 → 左右两栏贴边
         outer.addWidget(self.side)
-        outer.addWidget(body, 50)
+        self._body = body                     # 仅便于调试/度量，不参与逻辑
+        outer.addWidget(body, 1)
         # ---- 右侧概要抽屉（2026-11-12 用户建议）：贴边把手 + 可收起面板 ----
         self._build_right_drawer()
         outer.addWidget(self.right_handle)
         outer.addWidget(self.side_r)
-        outer.addStretch(1)
 
         # 首屏欢迎语由 _boot_chats 负责（_open_chat / 新建会话都会渲染）；
         # 这里别再 _greet()——否则空会话会叠出两张一模一样的欢迎卡（2026-11-12 实测）
@@ -1184,6 +1200,9 @@ class AiPage(QWidget):
     # 而实际可用只有「视口-42」（flow 左右边距 12 + 卡片左右内边距 28 + 左右描边 2），
     # 多出的 2px 把 flow_host 的最小宽度顶出视口 → 底部多一条横向滚动条。
     FLOW_PAD_L, FLOW_PAD_R = 2, 10
+    # 阅读列最大宽度（2026-11-22）：聊天区铺满窗口后，正文列在 2K 屏上不再
+    # 无限拉长。1560 是「卡片/表格放得下、单行又不至于跨屏」的折中值。
+    COL_MAX_W = 1560
     CARD_PAD, CARD_BORDER = 14, 1
     BUBBLE_PAD, BUBBLE_BORDER = 12, 1
     WIDTH_SLACK = 2          # 像素对齐余量（Qt 取整可能进 1px，留 2px 保稳）
