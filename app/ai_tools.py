@@ -18,6 +18,7 @@ import time
 import urllib.request
 
 from app import ai_skills
+from app import api_base as apib
 from app import model_store
 from app import workflow_scan
 
@@ -50,7 +51,7 @@ class ToolCtx:
         # 后工具里压根不检查，界面上的「新建对话」又因为 worker 还在而静默返回
         # —— 用户看到的就是「整个软件卡死」。
         self.cancel = cancel
-        self.api = f"http://127.0.0.1:{int(self.inst.get('port') or 8188)}"
+        self.api = apib.api_base(self.inst) or f"http://127.0.0.1:{int(self.inst.get('port') or 8188)}"
         self.comfyui_path = self.inst.get("comfyui_path") or ""
         # 实例解释器：官方模板库（comfyui_workflow_templates*）在它的
         # site-packages 里，扫模板时要靠它定位
@@ -90,23 +91,20 @@ class InstanceDown(RuntimeError):
 
 
 def _http(ctx: ToolCtx, path: str, data: dict = None, timeout: int = 30) -> dict:
-    """直连实例；显式空 ProxyHandler 绕系统代理（127.0.0.1 走代理会 10054）"""
-    body = json.dumps(data).encode("utf-8") if data is not None else None
-    req = urllib.request.Request(ctx.api + path, data=body, headers={
-        "Content-Type": "application/json", "User-Agent": "ComfyHub"})
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    """直连实例；基址与认证统一由 api_base 决定（本地绕系统代理、远程带 token）
+
+    2026-11-23（0.8.39）：原来在这里硬拼 http://127.0.0.1:{port}，远程实例
+    根本连不上。现在本地/远程同一入口，只有 inst 的字段不同。
+    """
     try:
-        with opener.open(req, timeout=timeout) as r:
-            return json.loads(r.read().decode("utf-8", "ignore"))
-    except urllib.error.URLError as e:
-        reason = getattr(e, "reason", e)
-        txt = str(reason).lower()
-        if (isinstance(reason, ConnectionRefusedError) or "10061" in txt
-                or "refused" in txt or "积极拒绝" in str(reason)):
+        return apib.request_json(ctx.inst, path, data, timeout=timeout)
+    except apib.ApiError as e:
+        msg = str(e)
+        txt = msg.lower()
+        if (e.status == 0 and ("连接被拒绝" in msg or "10061" in txt
+                              or "refused" in txt)):
             raise InstanceDown(int(ctx.inst.get("port") or 8188)) from e
         raise
-    except ConnectionRefusedError as e:
-        raise InstanceDown(int(ctx.inst.get("port") or 8188)) from e
 
 
 def _log_tail(path: str, lines: int, keyword: str = "") -> list:
@@ -128,8 +126,17 @@ def _log_tail(path: str, lines: int, keyword: str = "") -> list:
 
 
 # ---------------------------------------------------------------- 工具实现
-def _probe_ok(port: int) -> bool:
-    """轻探针：端口 HTTP 是否就绪（不带 InstanceDown 翻译，失败返回 False）"""
+def _probe_ok(port: int, inst: dict | None = None) -> bool:
+    """轻探针：实例 HTTP 是否就绪（不带 InstanceDown 翻译，失败返回 False）
+
+    0.8.39：远程实例走完整 /system_stats（带认证、可 https），不能拼 127.0.0.1。
+    """
+    if inst is not None:
+        try:
+            if apib.is_remote(inst):
+                return apib.probe(inst, timeout=4)
+        except Exception:
+            pass
     req = urllib.request.Request(
         f"http://127.0.0.1:{port}/system_stats", headers={"User-Agent": "ComfyHub"})
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -150,6 +157,13 @@ def _t_control_instance(args, ctx: ToolCtx):
     action = str(args.get("action") or "").strip().lower()
     if action not in ("start", "stop", "restart"):
         return ctx.fail("action 只支持 start / stop / restart")
+    # 远程实例（0.8.39）：进程不在这台机器上，启停必须由用户到远端操作。
+    # 明确拒绝比「假装成功」好——否则模型会回报「已启动」，用户去远端一看没动。
+    if apib.is_remote(ctx.inst):
+        return ctx.fail("这是远程实例（%s），本机无法启停它的进程。"
+                        "请到那台机器上启动/停止 ComfyUI（云镜像在平台控制台操作）；"
+                        "本机可以直接提交任务、查队列、取结果。"
+                        % (apib.api_base(ctx.inst) or "未填地址"))
     mw = ctx.mainwin
     if mw is None or not hasattr(mw, "procs"):
         return ctx.fail("无法启停实例：当前没有主界面句柄（--mcp 外挂模式）。"
@@ -245,7 +259,7 @@ def _t_control_instance(args, ctx: ToolCtx):
                             f"日志尾部：{_brief_tail()}")
         ap = procs.actual_port(inst) or port         # 端口被占自动顺延后的真实端口
         port = ap
-        if _probe_ok(ap):
+        if _probe_ok(ap, inst):
             ready = True
             break
         time.sleep(2.0)
@@ -279,6 +293,10 @@ def _t_health(args, ctx: ToolCtx):
 
 
 def _t_logs(args, ctx: ToolCtx):
+    # 远程实例的日志在远端磁盘上，本机读不到（0.8.39 明确告知，别报「文件不存在」）
+    if apib.is_remote(ctx.inst):
+        return ctx.fail("远程实例的日志在远端机器上，本机无法读取。"
+                        "请在该机器上查看 ComfyUI 控制台输出，或使用云平台提供的日志面板。")
     path = os.path.join(ctx.comfyui_path, "user", f"comfyui_{ctx.inst.get('port') or 8188}.log")
     if not os.path.isfile(path):
         return ctx.fail(f"日志文件不存在：{path}")
@@ -456,7 +474,7 @@ def _t_workflow_run(args, ctx: ToolCtx):
     with open(path, encoding="utf-8") as f:
         wf = json.load(f)
     if isinstance(wf.get("nodes"), list):          # UI 格式 → 转 API
-        obj = fetch_obj_info(ctx.api)
+        obj = fetch_obj_info(ctx.api, inst=ctx.inst)
         prompt, warns = ui2api_build(wf, obj)
     elif isinstance(wf, dict) and any(isinstance(v, dict) and "class_type" in v
                                       for v in wf.values()):
@@ -480,6 +498,26 @@ def _t_workflow_run(args, ctx: ToolCtx):
 _SUBMIT_TS = {}     # prompt_id -> 提交时间（用于识别“缓存命中、本次没真出图”）
 
 
+def _try_fetch_view(ctx, im: dict) -> str:
+    """本地没有这个文件时，向实例要一份（0.8.39）
+
+    远程实例/SSH 隧道实例的产物根本不在本机磁盘上，只 `isfile` 会全部判 missing，
+    AI 就会回报「出图完成但文件不存在」。这里改走 ComfyUI 的 GET /view 下载到
+    本地远程产物目录，返回真实本地路径——后续 os.startfile、二次处理都能用。
+    本机实例同样受益：用户自定义过 --output-directory 时也能取到图。
+    """
+    fn = str((im or {}).get("filename") or "")
+    if not fn:
+        return ""
+    try:
+        return apib.fetch_view(
+            ctx.inst, fn, (im or {}).get("subfolder") or "",
+            (im or {}).get("type") or "output",
+            dest_dir=apib.remote_output_dir(ctx.inst, ctx.cfg))
+    except Exception:
+        return ""
+
+
 def _collect_images(ctx, outputs, since=None) -> tuple:
     """从 history.outputs 抽图片绝对路径，并**逐个验存在性 + 新鲜度**。
 
@@ -495,6 +533,11 @@ def _collect_images(ctx, outputs, since=None) -> tuple:
             sub = (im.get("subfolder") or "").replace("\\", "/").strip("/")
             p = os.path.join(ctx.output_dir, sub, im.get("filename", ""))
             if not os.path.isfile(p):
+                # 本地没有 → 走 /view 要一份（远程实例的唯一出路，0.8.39）
+                got = _try_fetch_view(ctx, im)
+                if got:
+                    found.append(got)
+                    continue
                 missing.append(p)
                 continue
             if since is not None:
@@ -769,7 +812,7 @@ def _t_patch_workflow(args, ctx: ToolCtx):
         idx = op.get("index")
         if idx is None and op.get("field"):
             if obj is None:
-                obj = fetch_obj_info(ctx.api)
+                obj = fetch_obj_info(ctx.api, inst=ctx.inst)
             idx = _widget_index(obj, node.get("type"), str(op["field"]))
             if idx is None:
                 failed.append(f"节点 {key} 找不到字段 {op.get('field')}")

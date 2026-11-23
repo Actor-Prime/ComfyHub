@@ -32,7 +32,25 @@ def _pick_port(start: int = PROBE_PORT) -> int:
 
 def probe_classes(inst: dict, timeout: float = 120, log=print) -> set | None:
     """headless 拉起内核，返回 /object_info 的节点类全集（set），失败 None。
-    inst 由 profiles.prepare_launch 合成；体检后进程必杀。"""
+    inst 由 profiles.prepare_launch 合成；体检后进程必杀。
+
+    0.8.39：远程实例不在本机起内核——那台机器上本来就有一份活着的，直接读它的
+    /object_info 即可（也更准：探的就是用户实际要用的那套插件组合）。
+    """
+    from app import api_base as apib
+    if apib.is_remote(inst):
+        log("[体检] 远程实例：直接读取远端的 /object_info（不在本机起内核）")
+        try:
+            data = apib.request_json(inst, "/object_info", timeout=int(timeout))
+        except Exception as e:
+            log(f"[体检] ❌ 读取远端节点清单失败：{e}")
+            return None
+        classes = set((data or {}).keys())
+        if not classes:
+            log("[体检] ❌ 远端返回的节点清单为空")
+            return None
+        log(f"[体检] ✅ 远端已注册节点类 {len(classes)} 个")
+        return classes
     from app.process import build_command
     port = _pick_port()
     probe = dict(inst)

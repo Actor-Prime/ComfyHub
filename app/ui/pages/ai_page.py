@@ -2671,6 +2671,15 @@ class AiPage(QWidget):
             return
         name = str(inst.get("name") or "?")
         port = int(inst.get("port") or 8188)
+        # 远程实例（0.8.39）：没有本机端口可探，直接显示地址；连通性由实例页
+        # 的「测试连接」和工具调用负责，这里不做 TCP 探测（探 127.0.0.1 必假阴性）
+        if (inst.get("kind") or "local") == "remote":
+            from app import api_base as apib
+            url = apib.api_base(inst) or "（未填地址）"
+            self.lb_inst.setText("%s · %s" % (name, url))
+            self.lb_inst.setStyleSheet("color:#a9b1bd; font-size:12px;")
+            self.lb_dot.setStyleSheet("color:#7fa8d9; font-size:11px;")
+            return
         self._probe_port(port, label="%s · :%s" % (name, port))
 
     def _probe_port(self, port: int, label: str = ""):

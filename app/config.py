@@ -1,4 +1,4 @@
-APP_VERSION = "0.8.38"
+APP_VERSION = "0.8.39"
 
 # -*- coding: utf-8 -*-
 """配置管理：多实例配置持久化 + 自动探测本机 ComfyUI"""
@@ -72,9 +72,20 @@ def default_instance() -> dict:
     inst = {
         "id": "inst_default",
         "name": "默认实例",
+        # 连接方式（2026-11-23，0.8.39）：local=本机进程；remote=远程/云镜像
+        # 老配置里没有这个字段，一律按 local 处理（见 _sanitize_instances）
+        "kind": "local",
         "comfyui_path": "",
         "python_path": "",
         "port": 8188,
+        # ---- 远程连接字段（kind=remote 时生效）----
+        "base_url": "",                 # 例：http://192.168.1.20:8188 / https://xxx.platform.com
+        "auth_type": "none",            # none / bearer / basic / header
+        "auth_value": "",               # bearer token 或自定义头的值（DPAPI 加密落盘）
+        "auth_header_name": "X-API-KEY",  # auth_type=header 时的头名
+        "auth_user": "",
+        "auth_pass": "",                # DPAPI 加密落盘
+        "tls_verify": True,             # 自签证书时关掉
         "vram_mode": "自动",
         "extra_args": "",
         "auto_open_browser": True,
@@ -134,8 +145,31 @@ def load_config() -> dict:
     except Exception:
         pass
     # 用户删光实例后保持为空（显示"（无实例）"占位），不再自动生成
+    _unprotect_instances(cfg)
     _sanitize_instances(cfg)
     return cfg
+
+
+# 远程实例的敏感字段（2026-11-23，0.8.39）：和 ai_api_key 同一套 DPAPI 处理，
+# 落盘是密文、内存是明文。解不开（换机器/换用户）就当没填过，绝不发密文出去。
+_SECRET_FIELDS = ("auth_value", "auth_pass")
+
+
+def _unprotect_instances(cfg: dict) -> None:
+    try:
+        from app import secret_store
+    except Exception:
+        return
+    for inst in cfg.get("instances") or []:
+        if not isinstance(inst, dict):
+            continue
+        for f in _SECRET_FIELDS:
+            v = inst.get(f)
+            if isinstance(v, str) and secret_store.is_encrypted(v):
+                plain = secret_store.unprotect(v)
+                inst[f] = plain or ""
+                if plain is None:
+                    inst["_auth_locked"] = True     # 供界面提示「密钥无法解密」
 
 
 def _sanitize_instances(cfg: dict) -> None:
@@ -156,11 +190,28 @@ def _sanitize_instances(cfg: dict) -> None:
             changed = True
             continue
         iid = str(inst.get("id") or "")
+        # 连接方式归一（2026-11-23，0.8.39）：老配置没有 kind 字段 → local。
+        # 远程实例没有本地目录，跳过「目录重复」判定，改按 base_url + 认证比对。
+        if inst.get("kind") not in ("local", "remote"):
+            inst["kind"] = "local"
+            changed = True
+        # 关键字段补齐（2026-11-23，0.8.39）：远程实例没有本地目录，但插件页/
+        # 模型页/工作流页都在用 inst["comfyui_path"] 强取。补成空串让它们走
+        # 「空目录」分支，而不是 KeyError 崩掉整个界面。
+        for k, dflt in (("comfyui_path", ""), ("python_path", ""), ("port", 8188)):
+            if k not in inst:
+                inst[k] = dflt
+                changed = True
         # 完全重复（id/路径/端口都相同）→ 直接丢弃，保留第一条
         if iid and iid in seen_ids:
-            dup = any(o.get("id") == iid
-                      and o.get("comfyui_path") == inst.get("comfyui_path")
-                      and o.get("port") == inst.get("port") for o in out)
+            if inst.get("kind") == "remote":
+                dup = any(o.get("id") == iid
+                          and o.get("kind") == "remote"
+                          and o.get("base_url") == inst.get("base_url") for o in out)
+            else:
+                dup = any(o.get("id") == iid
+                          and o.get("comfyui_path") == inst.get("comfyui_path")
+                          and o.get("port") == inst.get("port") for o in out)
             if dup:
                 changed = True
                 continue
@@ -210,6 +261,15 @@ def save_config(cfg: dict) -> None:
             key = st.get("ai_api_key")
             if key:
                 st["ai_api_key"] = secret_store.protect(str(key))
+        # 远程实例的 token / 密码同等待遇（2026-11-23，0.8.39）
+        for inst in out.get("instances") or []:
+            if not isinstance(inst, dict):
+                continue
+            inst.pop("_auth_locked", None)
+            for f in _SECRET_FIELDS:
+                v = inst.get(f)
+                if v and not secret_store.is_encrypted(str(v)):
+                    inst[f] = secret_store.protect(str(v))
     except Exception:
         out = cfg
     tmp = CONFIG_PATH + ".tmp"

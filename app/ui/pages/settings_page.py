@@ -74,13 +74,15 @@ def _mcp_snippets() -> tuple:
     cfg = load_config()
     inst = ai_tools.current_instance(cfg) or {}
     port = int(inst.get("port") or 8188)
+    from app import api_base as apib
+    _base = apib.api_base(inst) or f"http://127.0.0.1:{port}"
     exe = os.path.abspath(_sys.argv[0])
     a = _json.dumps({"comfyhub": {
         "command": exe, "args": ["mcp"]}}, ensure_ascii=False, indent=2)
     b = _json.dumps({"comfyui": {
         "command": "node",
         "args": ["C:/path/to/node_modules/comfyui-mcp/dist/index.js"],
-        "env": {"COMFYUI_URL": f"http://127.0.0.1:{port}",
+        "env": {"COMFYUI_URL": _base,
                 "COMFYUI_CODE_PATH": inst.get("comfyui_path", "")}}},
         ensure_ascii=False, indent=2)
     return a, b, port

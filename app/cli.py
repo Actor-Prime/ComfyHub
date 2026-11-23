@@ -68,7 +68,15 @@ def _inst_log_path(inst) -> str:
     return os.path.join(_log_dir(), f"instance_{inst.get('id', 'default')}.log")
 
 
-def _port_alive(port: int, timeout=1.0) -> bool:
+def _port_alive(port: int, timeout=1.0, inst=None) -> bool:
+    """实例是否可用（0.8.39：远程实例按 base_url 探 /system_stats）"""
+    if inst is not None:
+        try:
+            from app import api_base as apib
+            if apib.is_remote(inst):
+                return apib.probe(inst, timeout=max(2.0, timeout))
+        except Exception:
+            pass
     try:
         with socket.create_connection(("127.0.0.1", int(port)), timeout=timeout):
             return True
@@ -76,8 +84,15 @@ def _port_alive(port: int, timeout=1.0) -> bool:
         return False
 
 
-def _system_ready(port: int, timeout=2.0) -> bool:
-    """ComfyUI 真正可用的判据：/system_stats 有响应"""
+def _system_ready(port: int, timeout=2.0, inst=None) -> bool:
+    """ComfyUI 真正可用的判据：/system_stats 有响应（远程走带认证的入口）"""
+    if inst is not None:
+        try:
+            from app import api_base as apib
+            if apib.is_remote(inst):
+                return apib.probe(inst, timeout=max(3.0, timeout))
+        except Exception:
+            pass
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/system_stats", timeout=timeout) as r:
             return r.status == 200
@@ -108,7 +123,9 @@ def cmd_list(args):
     if args.json:
         out = [{"index": i, "id": x.get("id"), "name": x.get("name"),
                 "path": x.get("comfyui_path"), "port": x.get("port"),
-                "running": _port_alive(int(x.get("port") or 8188))}
+                "running": _port_alive(int(x.get("port") or 8188), inst=x),
+                "kind": x.get("kind") or "local",
+                "base_url": x.get("base_url") or ""}
                for i, x in enumerate(insts)]
         print(json.dumps(out, ensure_ascii=False))
         return EXIT_OK
@@ -117,8 +134,9 @@ def cmd_list(args):
         return EXIT_OK
     print(f"{'#':<3}{'名称':<18}{'端口':<7}{'状态':<8}路径")
     for i, x in enumerate(insts):
-        run = "运行中" if _port_alive(int(x.get("port") or 8188)) else "-"
-        print(f"{i:<3}{x.get('name', '?'):<18}{x.get('port', ''):<7}{run:<8}{x.get('comfyui_path', '')}")
+        run = "运行中" if _port_alive(int(x.get("port") or 8188), inst=x) else "-"
+        where = (x.get("base_url") or "") if (x.get("kind") == "remote") else x.get("comfyui_path", "")
+        print(f"{i:<3}{x.get('name', '?'):<18}{x.get('port', ''):<7}{run:<8}{where}")
     return EXIT_OK
 
 
@@ -127,9 +145,10 @@ def cmd_status(args):
     if inst is None:
         return _fail(args, "未找到实例", EXIT_ARG)
     port = int(inst.get("port") or 8188)
-    alive = _port_alive(port)
-    ready = _system_ready(port) if alive else False
+    alive = _port_alive(port, inst=inst)
+    ready = _system_ready(port, inst=inst) if alive else False
     st = {"name": inst.get("name"), "id": inst.get("id"), "port": port,
+          "kind": inst.get("kind") or "local", "base_url": inst.get("base_url") or "",
           "running": alive, "ready": ready, "pids": _pids_by_port(port) if alive else []}
     if args.json:
         print(json.dumps(st, ensure_ascii=False))
@@ -270,7 +289,9 @@ def cmd_batch(args):
         return _fail(args, f"工作流读取失败: {e}", EXIT_ARG)
     print(f"工作流节点数: {len(prompt)}｜计划执行 {args.times} 次"
           + (f"，每 {args.restart_every} 次重启实例" if args.restart_every else ""))
-    if not _system_ready(port):
+    if not _system_ready(port, inst=inst):
+        if (inst.get("kind") or "local") == "remote":
+            return _fail(args, "远程实例的本机无法启动，请先在远端把 ComfyUI 跑起来", EXIT_NOTRUN)
         if not args.autostart:
             return _fail(args, f"端口 {port} 上的 ComfyUI 未就绪（可加 --autostart 自动启动）", EXIT_NOTRUN)
         print("实例未运行，正在启动…")
@@ -288,7 +309,7 @@ def cmd_batch(args):
 
     out = br.run_batch(port, prompt, args.times,
                        restart_every=args.restart_every,
-                       on_restart=_restart, log=print)
+                       on_restart=_restart, log=print, inst=inst)
     if args.json:
         print(json.dumps(out, ensure_ascii=False))
     else:

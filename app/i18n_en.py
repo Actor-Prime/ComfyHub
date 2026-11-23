@@ -1541,4 +1541,67 @@ EN_DICT = {
     "已填入本地模型地址与模型名，点底部「保存设置」后生效":
         "Local model URL and name filled in; click [Save settings] at the bottom "
         "to apply.",
+
+    # ================= 远程实例（2026-11-23，0.8.39）=================
+    "连接方式": "Connection",
+    "连接方式:": "Connection:",
+    "本机实例": "Local instance",
+    "远程实例": "Remote instance",
+    "访问地址": "Address",
+    "访问地址:": "Address:",
+    "认证方式": "Authentication",
+    "不需要认证": "No authentication",
+    "账号密码（Basic）": "Username & password (Basic)",
+    "自定义请求头": "Custom header",
+    "凭证": "Credential",
+    "请求头名称": "Header name",
+    "账号密码": "Username & password",
+    "TLS 证书": "TLS certificate",
+    "校验 HTTPS 证书": "Verify HTTPS certificate",
+    "测试连接": "Test connection",
+    "测试中…": "Testing…",
+    "用户名": "Username",
+    "密码": "Password",
+    "已保存（留空则不修改）": "Saved (leave blank to keep)",
+    "粘贴平台给的 Token / 请求头的值":
+        "Paste the token / header value from your platform",
+    "http://192.168.1.20:8188 或 https://xxx.platform.com":
+        "http://192.168.1.20:8188 or https://xxx.platform.com",
+    "对方 ComfyUI 的 HTTP 地址（只写 IP:端口 也行，会自动补 http://）":
+        "HTTP address of the remote ComfyUI (IP:port works too — http:// is added "
+        "automatically)",
+    "云平台多给 Token 或自定义请求头；自己内网裸 IP 直连一般选「不需要认证」":
+        "Cloud platforms usually give a token or a custom header; a plain LAN "
+        "address usually needs no authentication",
+    "加密保存在本机（DPAPI），不会明文写进配置文件":
+        "Encrypted on this machine (DPAPI); never stored in plain text",
+    "选「自定义请求头」时的头名，如 X-API-KEY / X-Token":
+        "Header name when using a custom header, e.g. X-API-KEY / X-Token",
+    "HTTP Basic 认证（少数反代/平台使用）":
+        "HTTP Basic authentication (used by some proxies/platforms)",
+    "云平台用自签证书时取消勾选，否则会报证书校验失败":
+        "Uncheck if the platform uses a self-signed certificate, otherwise "
+        "verification fails",
+    "本机实例=在这台电脑启动；远程实例=连另一台机器/云镜像上已运行的 ComfyUI"
+    "（本机只负责提交任务、看队列、取结果，不能启停远端进程）":
+        "Local = start ComfyUI on this PC; Remote = connect to a ComfyUI already "
+        "running on another machine or cloud image (this PC only submits jobs, "
+        "watches the queue and fetches results — it cannot start/stop the remote "
+        "process)",
+    "远程实例（内核版本请在该机器查看）":
+        "Remote instance (check the kernel version on that machine)",
+    "该实例不是本程序启动的，请到它的窗口/命令行停止":
+        "This instance was not started by ComfyHub; stop it from its own window "
+        "or command line",
+    "远程实例请到那台机器（或云平台控制台）启动":
+        "Start a remote instance on that machine (or in the platform console)",
+    "远程实例请到那台机器（或云平台控制台）停止":
+        "Stop a remote instance on that machine (or in the platform console)",
+    "在浏览器打开远端 ComfyUI": "Open the remote ComfyUI in a browser",
+    "连接成功：该地址上是一个运行中的 ComfyUI。":
+        "Connected: a running ComfyUI responded at that address.",
+    "请先填写访问地址，例如 http://192.168.1.20:8188":
+        "Fill in the address first, e.g. http://192.168.1.20:8188",
+    "远程实例还没填访问地址，无法打开网页。":
+        "The remote instance has no address yet; cannot open the web UI.",
 }

@@ -61,8 +61,16 @@ def sg_widget_value(sg, inst, iname):
     return _MISSING
 
 
-def fetch_obj_info(api_base: str, timeout: int = 60) -> dict:
+def fetch_obj_info(api_base: str, timeout: int = 60, inst: dict | None = None) -> dict:
+    """取 /object_info。
+
+    2026-11-23（0.8.39）：给了 inst 就走统一的 api_base 入口——远程实例需要
+    认证头、也可能走代理/https，裸 urlopen 会 401。
+    """
     import urllib.request
+    if inst is not None:
+        from app import api_base as apib
+        return apib.request_json(inst, '/object_info', timeout=timeout)
     with urllib.request.urlopen(api_base.rstrip('/') + '/object_info', timeout=timeout) as r:
         return json.loads(r.read())
 

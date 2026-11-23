@@ -13,19 +13,38 @@ import time
 import urllib.error
 import urllib.request
 
+from app import api_base as apib
+
 CLIENT_ID = "comfyhub-batch"
 
 
+# ---------------------------------------------------------------- 实例基址
+def _base(port: int, inst: dict | None = None) -> str:
+    """实例基址（0.8.39）：给了 inst 就按它算（远程=base_url，本地=127.0.0.1:port）
+
+    保留 port 形参是为了兼容 CLI 与既有测试——两条路径最终都落到同一个 URL。
+    """
+    if inst is not None:
+        b = apib.api_base(inst)
+        if b:
+            return b
+    return "http://127.0.0.1:%d" % int(port or 8188)
+
+
 # ---------------------------------------------------------------- HTTP
-def _post_json(url, payload, timeout=30):
+def _post_json(url, payload, timeout=30, inst=None):
     data = json.dumps(payload).encode("utf-8")
+    if inst is not None:
+        return json.loads(apib.open_url(inst, url, data, timeout).decode("utf-8", "ignore"))
     req = urllib.request.Request(url, data=data,
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8", "ignore"))
 
 
-def _get_json(url, timeout=15):
+def _get_json(url, timeout=15, inst=None):
+    if inst is not None:
+        return json.loads(apib.open_url(inst, url, None, timeout).decode("utf-8", "ignore"))
     with urllib.request.urlopen(url, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8", "ignore"))
 
@@ -51,44 +70,45 @@ def load_api_prompt(path: str) -> dict:
 
 
 # ---------------------------------------------------------------- 执行
-def wait_ready(port: int, timeout=180, log=print) -> bool:
+def wait_ready(port: int, timeout=180, log=print, inst: dict | None = None) -> bool:
     t0 = time.time()
     while time.time() - t0 < timeout:
         try:
-            _get_json(f"http://127.0.0.1:{port}/system_stats", timeout=3)
+            _get_json(_base(port, inst) + "/system_stats", timeout=3, inst=inst)
             return True
         except Exception:
             time.sleep(1.5)
     return False
 
 
-def submit(port: int, prompt: dict) -> str:
+def submit(port: int, prompt: dict, inst: dict | None = None) -> str:
     """提交一次任务，返回 prompt_id"""
-    r = _post_json(f"http://127.0.0.1:{port}/prompt",
-                   {"prompt": prompt, "client_id": CLIENT_ID})
+    r = _post_json(_base(port, inst) + "/prompt",
+                   {"prompt": prompt, "client_id": CLIENT_ID}, inst=inst)
     pid = r.get("prompt_id")
     if not pid:
         raise RuntimeError(f"提交失败：{str(r)[:200]}")
     return pid
 
 
-def wait_done(port: int, prompt_id: str, timeout=1800, poll=2.0, log=print) -> dict:
+def wait_done(port: int, prompt_id: str, timeout=1800, poll=2.0, log=print,
+              inst: dict | None = None) -> dict:
     """等某个 prompt 执行完，返回 history 条目（含 status/outputs）"""
     t0 = time.time()
     while time.time() - t0 < timeout:
         try:
-            h = _get_json(f"http://127.0.0.1:{port}/history/{prompt_id}")
+            h = _get_json(_base(port, inst) + f"/history/{prompt_id}", inst=inst)
         except Exception:
             h = None
         if isinstance(h, dict) and prompt_id in h:
             return h[prompt_id]
         # 队列里已消失但历史里也没有 → 可能被中断
         try:
-            q = _get_json(f"http://127.0.0.1:{port}/queue")
+            q = _get_json(_base(port, inst) + "/queue", inst=inst)
             ids = [x[1] for x in (q.get("queue_running") or []) + (q.get("queue_pending") or [])
                    if isinstance(x, list) and len(x) > 1]
             if prompt_id not in ids and time.time() - t0 > 3:
-                h2 = _get_json(f"http://127.0.0.1:{port}/history/{prompt_id}")
+                h2 = _get_json(_base(port, inst) + f"/history/{prompt_id}", inst=inst)
                 if isinstance(h2, dict) and prompt_id in h2:
                     return h2[prompt_id]
         except Exception:
@@ -117,7 +137,7 @@ def summarize(entry: dict) -> tuple:
 
 def run_batch(port: int, prompt: dict, times: int,
               restart_every: int = 0, on_restart=None,
-              log=print) -> dict:
+              log=print, inst: dict | None = None) -> dict:
     """批量执行主循环。
 
     restart_every > 0 时，每完成这么多次就调用 on_restart()（由调用方负责重启实例）。
@@ -128,8 +148,8 @@ def run_batch(port: int, prompt: dict, times: int,
     for i in range(1, times + 1):
         try:
             log(f"[批量] 第 {i}/{times} 次…")
-            pid = submit(port, prompt)
-            entry = wait_done(port, pid, log=log)
+            pid = submit(port, prompt, inst=inst)
+            entry = wait_done(port, pid, log=log, inst=inst)
             ok, summary = summarize(entry)
             if ok:
                 done += 1

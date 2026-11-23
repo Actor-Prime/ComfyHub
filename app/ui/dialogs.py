@@ -35,11 +35,23 @@ class InstanceDialog(QDialog):
         self.ed_extra.setPlaceholderText("例如: --reserve-vram 2 --fast")
         self.ck_browser = QCheckBox("服务就绪后自动打开浏览器")
         self.ck_browser.setChecked(bool(data.get("auto_open_browser", True)))
+        # 连接方式（2026-11-23，0.8.39）：远程实例没有本地目录/解释器，
+        # 只需要一个访问地址；认证等细节留到「实例设置」里填
+        self.cb_kind = QComboBox()
+        self.cb_kind.addItems(["本机实例", "远程实例"])
+        self.cb_kind.setCurrentIndex(1 if (data.get("kind") == "remote") else 0)
+        self.ed_url = QLineEdit(data.get("base_url", ""))
+        self.ed_url.setPlaceholderText(
+            "http://192.168.1.20:8188 或 https://xxx.platform.com")
+        row_url = QHBoxLayout()
+        row_url.addWidget(self.ed_url, 1)
 
         btn_pick_path = QPushButton("浏览…")
         btn_pick_path.clicked.connect(self._pick_comfyui)
         btn_pick_py = QPushButton("浏览…")
         btn_pick_py.clicked.connect(self._pick_python)
+        self.b_path = btn_pick_path
+        self.b_py = btn_pick_py
 
         row1 = QHBoxLayout()
         row1.addWidget(self.ed_path, 1)
@@ -49,13 +61,19 @@ class InstanceDialog(QDialog):
         row2.addWidget(btn_pick_py)
 
         form = QFormLayout()
+        form.addRow("连接方式:", self.cb_kind)
         form.addRow("实例名称:", self.ed_name)
+        self.row_url = row_url
+        form.addRow("访问地址:", row_url)
         form.addRow("ComfyUI 目录:", row1)
         form.addRow("Python 路径:", row2)
         form.addRow("端口:", self.sp_port)
         form.addRow("显存模式:", self.cb_vram)
         form.addRow("附加参数:", self.ed_extra)
         form.addRow("", self.ck_browser)
+        self._local_rows = [row1, row2, self.sp_port, self.cb_vram,
+                            self.ed_extra, self.ck_browser]
+        self.cb_kind.currentIndexChanged.connect(lambda _i: self._apply_kind())
 
         self.lb_hint = QLabel("")
         self.lb_hint.setStyleSheet("color: #c0392b;")
@@ -72,6 +90,26 @@ class InstanceDialog(QDialog):
         # 已有路径时给个默认名
         if not self.ed_name.text() and self.ed_path.text():
             self.ed_name.setText(os.path.basename(self.ed_path.text()))
+        self._apply_kind()
+
+    # --- 连接方式切换 ---
+    def _apply_kind(self):
+        """本机实例 ↔ 远程实例：整行显隐（QFormLayout 里控件藏了标签还在，
+        所以目录/解释器连同「浏览…」按钮一起藏）"""
+        try:
+            remote = self.cb_kind.currentIndex() == 1
+        except Exception:
+            return
+        for w in list(getattr(self, "_local_rows", [])):
+            # _local_rows 里 row1/row2 是 QHBoxLayout，没有 setVisible
+            if hasattr(w, "setVisible"):
+                w.setVisible(not remote)
+        for w in (self.ed_path, getattr(self, "b_path", None),
+                  self.ed_python, getattr(self, "b_py", None)):
+            if w is not None:
+                w.setVisible(not remote)
+        self.ed_url.setVisible(remote)
+        self.adjustSize()
 
     # --- 选择目录 ---
     def _pick_comfyui(self):
@@ -101,6 +139,20 @@ class InstanceDialog(QDialog):
 
     # --- 校验并返回 ---
     def _accept(self):
+        if self.cb_kind.currentIndex() == 1:
+            # 远程实例只校验地址（0.8.39）
+            url = self.ed_url.text().strip()
+            if not url:
+                self.lb_hint.setText(
+                    "请填写对方 ComfyUI 的访问地址，例：http://192.168.1.20:8188")
+                return
+            if "://" not in url:
+                url = "http://" + url
+            self.ed_url.setText(url)
+            if not self.ed_name.text().strip():
+                self.ed_name.setText(url.split("://", 1)[-1].split("/")[0])
+            self.accept()
+            return
         path = self.ed_path.text().strip()
         if not is_valid_comfyui(path):
             self.lb_hint.setText("该目录下没有 main.py，不是有效的 ComfyUI 根目录。")
@@ -113,10 +165,17 @@ class InstanceDialog(QDialog):
         self.accept()
 
     def result_data(self) -> dict:
+        remote = self.cb_kind.currentIndex() == 1
+        # ⚠️ normpath("") == "."，远程实例必须绕开，否则会落一个假目录
+        _path = "" if remote else os.path.normpath(self.ed_path.text().strip())
+        _py = "" if remote else os.path.normpath(self.ed_python.text().strip())
         return {
+            "kind": "remote" if remote else "local",
+            "base_url": self.ed_url.text().strip(),
+            "auth_type": "none",
             "name": self.ed_name.text().strip(),
-            "comfyui_path": os.path.normpath(self.ed_path.text().strip()),
-            "python_path": os.path.normpath(self.ed_python.text().strip()),
+            "comfyui_path": _path,
+            "python_path": _py,
             "port": self.sp_port.value(),
             "vram_mode": self.cb_vram.currentText(),
             "extra_args": self.ed_extra.text().strip(),

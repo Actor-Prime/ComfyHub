@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
     QComboBox, QSpinBox, QCheckBox, QFileDialog, QMessageBox, QFrame,
     QScrollArea, QGroupBox, QTableWidget, QTableWidgetItem, QHeaderView,
-    QTabWidget, QGridLayout,
+    QTabWidget, QGridLayout, QApplication,
 )
 
 from app.config import VRAM_MODES, save_config
@@ -313,6 +313,82 @@ class ComfyuiPage(QWidget):
         self.ed_name = QLineEdit()
         t1v.addWidget(_Row("实例名称", "实例显示名称", self.ed_name))
 
+        # ---- 连接方式 + 远程连接参数（2026-11-23，0.8.39）----
+        # 一个实例列表、一套状态机，只有「连哪」不同。远程模式下本机专属的
+        # 目录/引擎/显存/参数行全部隐藏（见 _apply_kind_visibility）——这些设置
+        # 对远端不起作用，留着只会让人以为改了会生效。
+        self.cb_kind = QComboBox()
+        self.cb_kind.addItems(["本机实例", "远程实例"])
+        self.cb_kind.setToolTip(
+            "本机实例：在这台电脑上启动并管理 ComfyUI（原有行为）\n"
+            "远程实例：连接另一台机器或云镜像上已经跑着的 ComfyUI\n"
+            "　　　　　例：http://192.168.1.20:8188、https://xxx.platform.com")
+        self.cb_kind.currentIndexChanged.connect(self._on_kind_changed)
+        t1v.addWidget(_Row(
+            "连接方式",
+            "本机实例=在这台电脑启动；远程实例=连另一台机器/云镜像上已运行的 ComfyUI"
+            "（本机只负责提交任务、看队列、取结果，不能启停远端进程）",
+            self.cb_kind))
+
+        h_url = QHBoxLayout()
+        self.ed_url = QLineEdit()
+        self.ed_url.setPlaceholderText("http://192.168.1.20:8188 或 https://xxx.platform.com")
+        self.b_test = QPushButton("测试连接")
+        self.b_test.clicked.connect(self._test_remote)
+        h_url.addWidget(self.ed_url, 1)
+        h_url.addWidget(self.b_test)
+        wrap_url = QWidget(); wrap_url.setLayout(h_url)
+        self.row_url = _Row(
+            "访问地址",
+            "对方 ComfyUI 的 HTTP 地址（只写 IP:端口 也行，会自动补 http://）",
+            wrap_url)
+        t1v.addWidget(self.row_url)
+
+        self.cb_auth = QComboBox()
+        self.cb_auth.addItems(["不需要认证", "Bearer Token", "账号密码（Basic）", "自定义请求头"])
+        self.cb_auth.currentIndexChanged.connect(lambda _i: self._apply_auth_rows())
+        self.row_auth = _Row(
+            "认证方式",
+            "云平台多给 Token 或自定义请求头；自己内网裸 IP 直连一般选「不需要认证」",
+            self.cb_auth)
+        t1v.addWidget(self.row_auth)
+
+        self.ed_token = QLineEdit()
+        self.ed_token.setEchoMode(QLineEdit.Password)
+        self.ed_token.setPlaceholderText("粘贴平台给的 Token / 请求头的值")
+        self.row_token = _Row(
+            "凭证", "加密保存在本机（DPAPI），不会明文写进配置文件", self.ed_token)
+        t1v.addWidget(self.row_token)
+
+        self.ed_hname = QLineEdit()
+        self.ed_hname.setPlaceholderText("X-API-KEY")
+        self.row_hname = _Row(
+            "请求头名称", "选「自定义请求头」时的头名，如 X-API-KEY / X-Token",
+            self.ed_hname)
+        t1v.addWidget(self.row_hname)
+
+        h_basic = QHBoxLayout()
+        self.ed_user = QLineEdit(); self.ed_user.setPlaceholderText("用户名")
+        self.ed_pass = QLineEdit(); self.ed_pass.setEchoMode(QLineEdit.Password)
+        self.ed_pass.setPlaceholderText("密码")
+        h_basic.addWidget(self.ed_user, 1)
+        h_basic.addWidget(self.ed_pass, 1)
+        wrap_basic = QWidget(); wrap_basic.setLayout(h_basic)
+        self.row_basic = _Row("账号密码", "HTTP Basic 认证（少数反代/平台使用）", wrap_basic)
+        t1v.addWidget(self.row_basic)
+
+        self.ck_tls = QCheckBox("校验 HTTPS 证书")
+        self.ck_tls.setChecked(True)
+        self.row_tls = _Row(
+            "TLS 证书", "云平台用自签证书时取消勾选，否则会报证书校验失败", self.ck_tls)
+        t1v.addWidget(self.row_tls)
+
+        self._remote_rows = [self.row_url, self.row_auth, self.row_token,
+                             self.row_hname, self.row_basic, self.row_tls]
+        self._t1v = t1v
+        # 本机专属行的起点（含「高级设置」标题）；终点在参数行之后记
+        self._local_start = len(t1v._items)
+
         h_dir = QHBoxLayout()
         self.ed_path = QLineEdit();  self.ed_path.setReadOnly(True)
         b_dir = QPushButton("修改目录")
@@ -472,6 +548,8 @@ class ComfyuiPage(QWidget):
         self.ed_extra = QLineEdit()
         self.ed_extra.setPlaceholderText("例如: --reserve-vram 2")
         t1v.addWidget(_Row("启动参数", "附加的命令行参数（空格分隔的高阶用法）", self.ed_extra))
+        # 本机专属行的终点（不含后面的 stretch 与两列重排）
+        self._local_end = len(t1v._items)
 
         # 2026-10-28 用户要求：专家模式整块移除（全局启动参数不再暴露 UI）
 
@@ -630,14 +708,42 @@ class ComfyuiPage(QWidget):
                 w.clear()
             self.ck_mount.setChecked(False)
             self._on_mount_toggled(False)
+            self.cb_kind.setCurrentIndex(0)
+            self.ed_url.clear()
+            self.ed_token.clear()
+            self.ed_pass.clear()
+            self._apply_kind_visibility()
             self._loaded = None
             return
         self.ed_name.setText(inst.get("name", ""))
+        # 连接方式与远程参数（2026-11-23，0.8.39）
+        _remote = (inst.get("kind") or "local") == "remote"
+        self.cb_kind.blockSignals(True)
+        self.cb_kind.setCurrentIndex(1 if _remote else 0)
+        self.cb_kind.blockSignals(False)
+        self.ed_url.setText(inst.get("base_url") or "")
+        _auth = str(inst.get("auth_type") or "none").lower()
+        self.cb_auth.blockSignals(True)
+        self.cb_auth.setCurrentIndex(
+            {"none": 0, "bearer": 1, "basic": 2, "header": 3}.get(_auth, 0))
+        self.cb_auth.blockSignals(False)
+        self.ed_hname.setText(inst.get("auth_header_name") or "X-API-KEY")
+        # 凭证不回填真值：只提示「已保存，留空不修改」，避免明文停在界面上
+        self.ed_token.clear()
+        self.ed_token.setPlaceholderText(
+            "已保存（留空则不修改）" if str(inst.get("auth_value") or "").strip()
+            else "粘贴平台给的 Token / 请求头的值")
+        self.ed_user.setText(inst.get("auth_user") or "")
+        self.ed_pass.clear()
+        self.ed_pass.setPlaceholderText(
+            "已保存（留空则不修改）" if str(inst.get("auth_pass") or "").strip() else "密码")
+        self.ck_tls.setChecked(bool(inst.get("tls_verify", True)))
+        self._apply_kind_visibility()
         self.ed_path.setText(inst.get("comfyui_path", ""))
         # 模型目录：配置为空 = 跟随默认（<comfyui_path>/models）。输入框留空、
         # 灰字显示默认路径；别把默认路径写死进配置，否则以后挪 ComfyUI 目录时
         # 这一栏还钉在旧位置（2026-11-07）。已经写死成默认路径的老配置也顺手净化回空
-        _dflt_models = os.path.join(inst["comfyui_path"], "models")
+        _dflt_models = os.path.join(inst.get("comfyui_path") or "", "models")
         _md = (inst.get("models_dir") or "").strip()
         if _md and os.path.normpath(_md) == os.path.normpath(_dflt_models):
             _md = ""
@@ -696,6 +802,9 @@ class ComfyuiPage(QWidget):
     def _km(self):
         from app.tools import KernelManager
         inst = self.mainwin.current_inst()
+        # 远程实例没有本地内核目录（0.8.39）
+        if not inst or (inst.get("kind") or "local") == "remote":
+            return None
         # git fetch/pull 走实例代理（2026-10-29：GitHub 直连慢时靠它）
         return KernelManager(inst["comfyui_path"],
                              proxy=inst.get("proxy") or "") if inst else None
@@ -705,6 +814,11 @@ class ComfyuiPage(QWidget):
         （2026-10-31 卡顿修复，见 _KernelInfoWorker 注释）"""
         inst = self.mainwin.current_inst()
         if not inst or not hasattr(self, "lb_kver"):
+            return
+        if (inst.get("kind") or "local") == "remote":
+            # 远程实例拿不到本地内核版本（0.8.39）；真有需要可查 /system_stats
+            self.lb_kver.setText("远程实例（内核版本请在该机器查看）")
+            self.lb_kver.setStyleSheet("color:#9aa4b2;")
             return
         iid = inst.get("id")
         cache = getattr(self, "_kinfo_cache", None)
@@ -1050,13 +1164,26 @@ class ComfyuiPage(QWidget):
 
     def _update_state(self):
         inst = self.mainwin.current_inst()
-        running = bool(inst and self.mainwin.procs.is_running(inst))
-        self.b_start.setEnabled(bool(inst) and not running)
-        self.b_stop.setEnabled(running)
-        # 未启动不能打开网页（用户定）；运行中按实际端口打开
+        procs = self.mainwin.procs
+        remote = bool(inst and (inst.get("kind") or "local") == "remote")
+        own = bool(inst and procs.is_own(inst))
+        running = bool(inst and procs.is_running(inst))
+        # 远程实例（0.8.39）：进程不在这台机器上，「启动/停止」不该可点；
+        # 「打开网页」直接去远端地址。外部启动的本地实例同理不给停止
+        # （_procs 里没有它，点了会 KeyError）。
+        self.b_start.setEnabled(bool(inst) and not running and not remote)
+        self.b_stop.setEnabled(own)
         self.b_web.setEnabled(running)
-        self.b_web.setToolTip("打开当前实例网页（自动识别实际端口）"
-                              if running else "实例启动后可用")
+        if remote:
+            self.b_start.setToolTip("远程实例请到那台机器（或云平台控制台）启动")
+            self.b_stop.setToolTip("远程实例请到那台机器（或云平台控制台）停止")
+            self.b_web.setToolTip("在浏览器打开远端 ComfyUI")
+        else:
+            self.b_start.setToolTip("")
+            self.b_stop.setToolTip(
+                "" if own else "该实例不是本程序启动的，请到它的窗口/命令行停止")
+            self.b_web.setToolTip("打开当前实例网页（自动识别实际端口）"
+                                  if running else "实例启动后可用")
         self.lb_state.setText("● 运行中" if running else "未运行")
         self.lb_state.setObjectName("StatusRun" if running else "StatusStop")
         # QSS objectName 变更后需重刷样式
@@ -1079,12 +1206,17 @@ class ComfyuiPage(QWidget):
         "lan_access": "局域网访问", "hf_offline": "HF 离线模式",
         "auto_open_browser": "自动打开浏览器", "extra_args": "额外启动参数",
         "engine": "生成引擎",
+        # 连接方式（0.8.39）
+        "kind": "连接方式", "base_url": "访问地址", "auth_type": "认证方式",
+        "auth_value": "凭证", "auth_header_name": "请求头名称",
+        "auth_user": "账号", "auth_pass": "密码", "tls_verify": "校验 HTTPS 证书",
     }
     # 这些字段留空 = 用默认值，对比框里别显示成「（空）」让人以为没配
     _SAVE_EMPTY_TEXT = {
         "models_dir": "默认（<根目录>/models）",
         "mount_dir": "未选择",
         "extra_args": "无",
+        "base_url": "未填写",
     }
 
     # 参与保存/对比的字段
@@ -1093,7 +1225,95 @@ class ComfyuiPage(QWidget):
               "no_smart_memory", "cpu_vae", "deterministic", "channels_last",
               "cuda_malloc", "multi_user", "lan_access", "hf_offline",
               "auto_open_browser", "extra_args",
-              "mount_enabled", "mount_dir")
+              "mount_enabled", "mount_dir",
+              # 连接方式（0.8.39）
+              "kind", "base_url", "auth_type", "auth_value", "auth_header_name",
+              "auth_user", "auth_pass", "tls_verify")
+
+    # ---------- 连接方式（2026-11-23，0.8.39）----------
+    def _is_remote_form(self) -> bool:
+        return self.cb_kind.currentIndex() == 1
+
+    def _on_kind_changed(self, *_a):
+        self._apply_kind_visibility()
+
+    def _apply_kind_visibility(self):
+        """本机专属行 vs 远程连接行，二选一显示
+
+        坑：_FlowBox 自己维护 _items（不是 QLayout），所以按索引取控件，
+        不能用 widget(i)。隐藏后 QGridLayout 会收回占位，不会留空白。
+        """
+        if not hasattr(self, "_remote_rows"):
+            return
+        remote = self._is_remote_form()
+        for w in self._remote_rows:
+            w.setVisible(remote)
+        items = getattr(self._t1v, "_items", [])
+        for i in range(self._local_start, min(self._local_end, len(items))):
+            w = items[i][1]
+            # _items 里混着 ("gap", 10) 这种整数占位，只处理真控件
+            if w is not None and hasattr(w, "setVisible"):
+                w.setVisible(not remote)
+        self._apply_auth_rows()
+        # 内核版本 / 共享外挂库都是本地文件操作，远程实例上没意义
+        for idx in (1, 2):
+            try:
+                self.tabs.setTabVisible(idx, not remote)
+            except Exception:
+                pass
+        if remote:
+            self.tabs.setCurrentIndex(0)
+
+    def _apply_auth_rows(self):
+        if not hasattr(self, "_remote_rows"):
+            return
+        remote = self._is_remote_form()
+        kind = self.cb_auth.currentIndex()      # 0 无 / 1 bearer / 2 basic / 3 header
+        self.row_token.setVisible(remote and kind in (1, 3))
+        self.row_hname.setVisible(remote and kind == 3)
+        self.row_basic.setVisible(remote and kind == 2)
+
+    def _collect_remote(self, inst: dict) -> dict:
+        """表单里的远程字段写进 inst（保存与「测试连接」共用一份逻辑）"""
+        idx = self.cb_auth.currentIndex()
+        inst["kind"] = "remote"
+        inst["base_url"] = self.ed_url.text().strip()
+        inst["auth_type"] = ("none", "bearer", "basic", "header")[idx]
+        # 凭证留空 = 保持原值。否则「打开设置→点保存」会把已存 token 清空，
+        # 用户下次连不上还得重新找平台要一遍（这类投诉最难查）。
+        tok = self.ed_token.text().strip()
+        if tok:
+            inst["auth_value"] = tok
+        inst["auth_header_name"] = self.ed_hname.text().strip() or "X-API-KEY"
+        if self.ed_user.text().strip():
+            inst["auth_user"] = self.ed_user.text().strip()
+        if self.ed_pass.text():
+            inst["auth_pass"] = self.ed_pass.text()
+        inst["tls_verify"] = self.ck_tls.isChecked()
+        return inst
+
+    def _test_remote(self):
+        """测试连接：真打一次 /system_stats，报错按原因分开说"""
+        url = self.ed_url.text().strip()
+        if not url:
+            QMessageBox.warning(self, "ComfyHub",
+                                "请先填写访问地址，例如 http://192.168.1.20:8188")
+            return
+        inst = self._collect_remote(dict(self._current_inst() or {}))
+        from app import api_base as apib
+        self.b_test.setEnabled(False)
+        self.b_test.setText("测试中…")
+        QApplication.processEvents()
+        try:
+            ok, reason = apib.probe_reason(inst, timeout=8)
+        finally:
+            self.b_test.setEnabled(True)
+            self.b_test.setText("测试连接")
+        if ok:
+            QMessageBox.information(self, "ComfyHub",
+                                    "连接成功：该地址上是一个运行中的 ComfyUI。")
+        else:
+            QMessageBox.warning(self, "ComfyHub", f"连接失败：\n{reason}")
 
     def _snapshot(self) -> dict:
         """界面当前取值（键与 _TRACK 一致，外加 engine）
@@ -1125,6 +1345,15 @@ class ComfyuiPage(QWidget):
             "mount_enabled": self.ck_mount.isChecked(),
             "mount_dir": self.ed_mount.text().strip(),
             "engine": (self.cb_eng.currentData() or ("auto", None)),
+            # 连接方式（0.8.39）
+            "kind": "remote" if self._is_remote_form() else "local",
+            "base_url": self.ed_url.text().strip(),
+            "auth_type": ("none", "bearer", "basic", "header")[self.cb_auth.currentIndex()],
+            "auth_value": self.ed_token.text().strip(),
+            "auth_header_name": self.ed_hname.text().strip() or "X-API-KEY",
+            "auth_user": self.ed_user.text().strip(),
+            "auth_pass": self.ed_pass.text(),
+            "tls_verify": self.ck_tls.isChecked(),
         }
 
     def _save(self):
@@ -1141,7 +1370,25 @@ class ComfyuiPage(QWidget):
         new = self._snapshot()
         if not new["name"]:
             new["name"] = inst.get("name") or ""
-        changes = diff_changes(old, new, self._SAVE_LABELS,
+        # 远程连接（0.8.39）：凭证留空 = 保持原值，避免「打开设置→保存」把
+        # 已存的 Token 清空（用户下次连不上还得回平台重新要一遍）
+        if new.get("kind") == "remote":
+            for _k in ("auth_value", "auth_user", "auth_pass"):
+                if not new.get(_k):
+                    new[_k] = inst.get(_k) or ""
+            if not new.get("base_url"):
+                QMessageBox.warning(self, "ComfyHub",
+                                    "连接方式选了「远程实例」，但访问地址是空的。\n"
+                                    "请填写对方 ComfyUI 的地址（例：http://192.168.1.20:8188），"
+                                    "或把连接方式改回「本机实例」。")
+                return
+        # 凭证不回显：确认框只用于「看清改了什么」，把 token/密码原文打在屏幕上
+        # 没必要（旁边可能有人看着）。改过的就标一句「已更新」。
+        _disp = dict(new)
+        for _k in ("auth_value", "auth_pass"):
+            if _disp.get(_k) and _disp.get(_k) != (old.get(_k) or ""):
+                _disp[_k] = "（已更新，不回显）"
+        changes = diff_changes(old, _disp, self._SAVE_LABELS,
                                defaults=self._SAVE_EMPTY_TEXT)
         # 挂载开关开了却没选目录 / 目录已失效 → 直接拦下，别写一份空挂载
         if new["mount_enabled"]:
@@ -1545,6 +1792,15 @@ class ComfyuiPage(QWidget):
                 "[ComfyHub] 实例未启动，无法打开网页。")
             return
         cfg = int(inst.get("port") or 8188)
+        # 远程实例（0.8.39）：直接开 base_url，没有「本机端口」这回事
+        url = self.mainwin.procs.web_url(inst)
+        if not url:
+            self.mainwin.console_page.append_line(
+                "[ComfyHub] 远程实例还没填访问地址，无法打开网页。")
+            return
+        if (inst.get("kind") or "local") == "remote":
+            webbrowser.open(url)
+            return
         port = self.mainwin.procs.actual_port(inst) or cfg
         if port != cfg:
             self.mainwin.console_page.append_line(

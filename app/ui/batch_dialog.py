@@ -47,8 +47,9 @@ class BatchWorker(QThread):
                     break
                 self.sig_log.emit(f"第 {i}/{self.times} 次…")
                 try:
-                    pid = br.submit(port, self.prompt)
-                    entry = br.wait_done(port, pid, log=self.sig_log.emit)
+                    pid = br.submit(port, self.prompt, inst=self.inst)
+                    entry = br.wait_done(port, pid, log=self.sig_log.emit,
+                                         inst=self.inst)
                     ok, summary = br.summarize(entry)
                     if ok:
                         done += 1
@@ -189,7 +190,7 @@ class BatchRunDialog(QDialog):
 
     def _port_ready(self):
         port = int(self.inst.get("port") or 8188)
-        return br.wait_ready(port, timeout=1)
+        return br.wait_ready(port, timeout=1, inst=self.inst)
 
     def _start(self):
         if not self.prompt:
@@ -211,6 +212,12 @@ class BatchRunDialog(QDialog):
         inst = self.inst
 
         def _autostart():
+            if (inst.get("kind") or "local") == "remote":
+                if self._port_ready():
+                    return
+                raise RuntimeError(
+                    "这是远程实例，本机无法启动它。请先在远端（或云平台控制台）"
+                    "把 ComfyUI 跑起来，再点开始。")
             if self._port_ready():
                 self._append("实例已在运行")
                 return
@@ -219,7 +226,7 @@ class BatchRunDialog(QDialog):
             self._append("实例未运行，正在启动…")
             procs.get(inst).start(inst)
             if not br.wait_ready(int(inst.get("port") or 8188), timeout=300,
-                                 log=lambda m: None):
+                                 log=lambda m: None, inst=inst):
                 raise RuntimeError("实例启动超时（300s）")
 
         def _restart():
@@ -232,7 +239,8 @@ class BatchRunDialog(QDialog):
                     break
             self._append("重新启动实例…")
             procs.get(inst).start(inst)
-            if not br.wait_ready(int(inst.get("port") or 8188), timeout=300, log=lambda m: None):
+            if not br.wait_ready(int(inst.get("port") or 8188), timeout=300,
+                                 log=lambda m: None, inst=inst):
                 raise RuntimeError("重启后等待就绪超时")
 
         self.worker = BatchWorker(inst, self.prompt, times, every,

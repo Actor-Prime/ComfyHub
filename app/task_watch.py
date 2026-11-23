@@ -22,8 +22,12 @@ import urllib.request
 from PySide6.QtCore import QThread, Signal
 
 
-def _get_json(url: str, timeout=4.0):
+def _get_json(url: str, timeout=4.0, inst: dict | None = None):
     try:
+        if inst is not None:
+            from app import api_base as apib
+            return json.loads(apib.open_url(inst, url, None, timeout)
+                              .decode("utf-8", "ignore"))
         with urllib.request.urlopen(url, timeout=timeout) as r:
             return json.loads(r.read().decode("utf-8", "ignore"))
     except Exception:
@@ -36,10 +40,17 @@ class TaskWatcher(QThread):
     sig_task_done = Signal(str, str)      # (实例名, 摘要文本)
     sig_task_error = Signal(str, str)     # (实例名, 错误摘要)
 
-    def __init__(self, inst_name: str, port: int, parent=None):
+    def __init__(self, inst_name: str, port: int, parent=None,
+                 inst: dict | None = None):
         super().__init__(parent)
         self.inst_name = inst_name
-        self.base = f"http://127.0.0.1:{int(port)}"
+        # 0.8.39：远程实例按 base_url 轮询（含认证头），本地仍走 127.0.0.1
+        self.inst = dict(inst) if inst else None
+        if self.inst is not None:
+            from app import api_base as apib
+            self.base = apib.api_base(self.inst) or f"http://127.0.0.1:{int(port)}"
+        else:
+            self.base = f"http://127.0.0.1:{int(port)}"
         self._had_task = False
         self._seen_ids = set()
         self._stop = threading.Event()
@@ -52,12 +63,12 @@ class TaskWatcher(QThread):
 
     def run(self):
         # 启动时先记一份现有历史，避免把上一次会话的旧任务当成"刚完成"
-        h = _get_json(self.base + "/history?max_items=50")
+        h = _get_json(self.base + "/history?max_items=50", inst=self.inst)
         if isinstance(h, dict):
             self._seen_ids = set(h.keys())
         idle_ticks = 0
         while not self._stop.wait(2.0):   # 2 秒一拍；stop() 可立即打断等待
-            q = _get_json(self.base + "/queue")
+            q = _get_json(self.base + "/queue", inst=self.inst)
             if not isinstance(q, dict):
                 idle_ticks += 1
                 if idle_ticks > 15:      # 30 秒连不上 → 停（实例已停）
@@ -73,7 +84,7 @@ class TaskWatcher(QThread):
                 continue                  # 一直空闲，不处理
             # 从"有任务"变为"队列空" → 查历史找新条目
             self._had_task = False
-            h = _get_json(self.base + "/history?max_items=8")
+            h = _get_json(self.base + "/history?max_items=8", inst=self.inst)
             if not isinstance(h, dict) or not h:
                 continue
             new_ids = [pid for pid in h.keys() if pid not in self._seen_ids]

@@ -554,7 +554,8 @@ class MainWindow(QMainWindow):
     def _ensure_watcher(self, inst):
         from app.task_watch import TaskWatcher
         try:
-            w = TaskWatcher(inst.get("name") or "实例", int(inst.get("port") or 8188), self)
+            w = TaskWatcher(inst.get("name") or "实例",
+                            int(inst.get("port") or 8188), self, inst=inst)
             w.sig_task_done.connect(self._on_task_done)
             w.sig_task_error.connect(self._on_task_error)
             w.start()
@@ -674,7 +675,10 @@ class MainWindow(QMainWindow):
         for inst in self.cfg["instances"]:
             name = inst.get("name", "?")
             path = inst.get("comfyui_path") or ""
-            if not path or not os.path.isdir(path):
+            if (inst.get("kind") or "local") == "remote":
+                # 远程实例本来就没有本地目录，别打「目录不存在」的红字警告（0.8.39）
+                name += "  ☁ 远程"
+            elif not path or not os.path.isdir(path):
                 name += "  ⚠ 目录不存在"      # 僵尸实例一眼可见，别对着它点启动
             self.cb_inst.addItem(name, userData=inst.get("id"))
         if not self.cfg["instances"]:
