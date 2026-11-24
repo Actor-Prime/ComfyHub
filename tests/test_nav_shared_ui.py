@@ -102,8 +102,13 @@ def main():
         check("2a 找到 ComfyUI 页", page is not None)
         tabs = page.tabs
         tab_names = [tabs.tabText(i) for i in range(tabs.count())]
-        check("2b 第三个 Tab 是「📚 共享外挂库」",
-              tabs.count() == 3 and tab_names[2] == "📚 共享外挂库", str(tab_names))
+        # 2026-11-24：0.8.40（T05）加了第 4 个页签「🛠 远程运维」，所以 count 从 3
+        # 变 4。注意它**只在 kind=remote 时可见**（`_apply_kind_visibility` 调
+        # `setTabVisible`，QTabWidget 会收回按钮占位、不留空位），但 count() 恒为 4；
+        # 本用例建的是本机实例，所以第 4 个页签是"存在但不可见"。
+        check("2b 第三个 Tab 是「📚 共享外挂库」，第四个是「🛠 远程运维」",
+              tabs.count() == 4 and tab_names[2] == "📚 共享外挂库"
+              and tab_names[3] == "🛠 远程运维", str(tab_names))
         check("2c 共享库控件就位",
               hasattr(page, "ck_share") and hasattr(page, "ed_share_root")
               and hasattr(page, "b_share") and hasattr(page, "lb_share_state"))

@@ -375,6 +375,25 @@ finally:
 _rc_state = w.settings_page.lb_rc_state.text()
 check("V6-6m 「正在清理…」状态行已英译", not cn(_rc_state), _rc_state[:40])
 
+# =====================================================================
+# D-05 是本版最后一次动 i18n 的功能改动（云平台钩子 headers 下方加一行灰字）。
+# 它的句式是「中文长句 + 建议」，最容易「词表里补了、调用点没走 T()」——
+# 这一整轮我们踩的就是这个坑，所以这里**运行期**实测，不只查词表。
+print("== V6-7 D-05 新增的灰字提示（本版最后一次动 i18n）==")
+from PySide6.QtWidgets import QLabel                            # noqa: E402
+
+_D05_TIP = "请求头里的密钥会明文保存在配置文件中，建议用专用、可随时吊销的 Token。"
+check("V6-7a D-05 灰字在词表里", _D05_TIP in i18n._EN,
+      i18n._EN.get(_D05_TIP))
+_lab_texts = [lb.text() for lb in ro.findChildren(QLabel) if lb.text()]
+_cn_hint = [t for t in _lab_texts if "明文保存在配置文件" in t]
+check("V6-7b 英文模式下那句灰字不含中文", not _cn_hint, [t[:40] for t in _cn_hint])
+_en_hint = [t for t in _lab_texts if "stored in the config file" in t]
+check("V6-7c 英文模式下确实能看到它的英文", bool(_en_hint), [t[:50] for t in _en_hint])
+check("V6-7d 「请求头」占位符在英文模式下不含中文",
+      not cn(ro.pt_cs_headers.placeholderText()),
+      ro.pt_cs_headers.placeholderText()[:50])
+
 i18n.set_lang("zh")
 
 print()
