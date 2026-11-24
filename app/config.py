@@ -1,7 +1,8 @@
-APP_VERSION = "0.8.39"
+APP_VERSION = "0.8.40"
 
 # -*- coding: utf-8 -*-
 """配置管理：多实例配置持久化 + 自动探测本机 ComfyUI"""
+import copy
 import json
 import os
 import sys
@@ -26,6 +27,67 @@ VRAM_MODES = {
     "禁用显存优化": "--novram",
     "CPU 模式": "--cpu",
 }
+
+# ---------------------------------------------------------------- 远程运维字段
+# （2026-12-01，0.8.40）远程实例的 SSH / 云钩子 / 隧道配置。
+# 设计要点：
+#   · 启动/停止命令必须有合理的预填值（PRD A4），用户新加远程实例即可用；
+#   · 端口/天数/GB 全部 clamp，脏配置不会把界面或轮询逻辑带偏；
+#   · 这里只管「默认值 + 归一」，不做任何 IO，可在离屏环境直接导入。
+_SSH_START_CMD_DEFAULT = ("cd ~/ComfyUI && nohup python main.py --listen 0.0.0.0 "
+                          "--port 8188 > ~/comfyui.log 2>&1 &")
+_SSH_STOP_CMD_DEFAULT = 'pkill -f "main.py --listen" || true'
+
+_INST_DEFAULTS = {
+    # ---- SSH 连接 ----
+    "ssh_host": "",
+    "ssh_port": 22,
+    "ssh_user": "",
+    "ssh_auth": "password",         # password / key
+    "ssh_password": "",             # DPAPI（_SECRET_FIELDS）
+    "ssh_key_path": "",
+    "ssh_key_passphrase": "",       # DPAPI（_SECRET_FIELDS）
+    "ssh_start_cmd": _SSH_START_CMD_DEFAULT,
+    "ssh_stop_cmd": _SSH_STOP_CMD_DEFAULT,
+    "ssh_host_fingerprint": "",     # 空 = 未记录（首次连接时写入）
+    # ---- 云平台开关机（HTTP 钩子）----
+    # {url, method, headers, body}；url 空 = 通道未配置。
+    # 默认空表，由 UI 侧 `.get()` 兜底，避免老配置里出现半截骨架。
+    "cloud_start": {},
+    "cloud_stop": {},
+    "cloud_start_timeout_s": 300,   # 本版固定 300，不暴露给用户
+    # ---- 隧道 ----
+    "tunnel_local_port": 8189,
+    "tunnel_remote_host": "127.0.0.1",
+    "tunnel_remote_port": 8188,
+    # ---- 告警与通道记忆 ----
+    "insecure_warn_muted": False,
+    "last_ops_channel": "ssh",      # ssh / cloud
+}
+
+# 整数字段的归一规则：字段 -> (默认值, 下界, 上界)
+_CLAMPS = {
+    "ssh_port": (22, 1, 65535),
+    "tunnel_local_port": (8189, 1024, 65535),
+    "tunnel_remote_port": (8188, 1, 65535),
+    "cloud_start_timeout_s": (300, 1, 3600),
+}
+
+# 枚举字段：字段 -> 允许值（小写比对，非法值回落默认）
+_ENUM_FIELDS = {
+    "ssh_auth": ("password", "key"),
+    "last_ops_channel": ("ssh", "cloud"),
+}
+
+# 需要 strip 的字符串字段（命令模板不 strip，避免用户刻意写的行尾空白被吃掉）
+_STRIP_FIELDS = ("ssh_host", "ssh_user", "ssh_key_path",
+                 "ssh_host_fingerprint", "tunnel_remote_host")
+
+
+def instance_ops_defaults() -> dict:
+    """远程运维字段的默认值（深拷贝：cloud_start/cloud_stop 是 dict）"""
+    return copy.deepcopy(_INST_DEFAULTS)
+
 
 def _probe_roots() -> list:
     """常见 ComfyUI 安装位置（用于自动探测）
@@ -95,6 +157,9 @@ def default_instance() -> dict:
         "auto_apply_profile": True,        # 启动实例前自动应用 last_profile
         "notify_on_task_done": True,       # 任务完成时弹系统通知
     }
+    # 远程运维字段（2026-12-01，0.8.40）：新实例直接预填启动/停止命令与隧道默认值，
+    # 用户切到「远程实例」就能点「远程启动」（PRD A4：清空才拦，预填不当默认值看）
+    inst.update(instance_ops_defaults())
     for root in _probe_roots():
         if os.path.isfile(os.path.join(root, "main.py")):
             inst["comfyui_path"] = os.path.normpath(root)
@@ -146,13 +211,114 @@ def load_config() -> dict:
         pass
     # 用户删光实例后保持为空（显示"（无实例）"占位），不再自动生成
     _unprotect_instances(cfg)
-    _sanitize_instances(cfg)
+    st_changed = _sanitize_settings(cfg)
+    _sanitize_instances(cfg, extra_changed=st_changed)
     return cfg
+
+
+# 全局设置默认值（2026-12-01，0.8.40 远程产物清理）
+# remote_output_dir 是 0.8.39 既有字段，不在此表内（不补、不改默认）。
+_SETTINGS_DEFAULTS = {
+    "remote_cleanup_enabled": False,
+    "remote_cleanup_policy": "days",      # days / size
+    "remote_cleanup_days": 30,
+    "remote_cleanup_max_gb": 10,
+}
+_SETTINGS_CLAMPS = {"remote_cleanup_days": (30, 1, 365),
+                    "remote_cleanup_max_gb": (10, 1, 500)}
+
+
+def _sanitize_settings(cfg: dict) -> bool:
+    """settings 自愈：补远程产物清理字段 + 归一；返回是否改变"""
+    st = cfg.get("settings")
+    if not isinstance(st, dict):
+        st = {}
+        cfg["settings"] = st
+        changed = True
+    else:
+        changed = False
+    for k, v in _SETTINGS_DEFAULTS.items():
+        if k not in st:
+            st[k] = v
+            changed = True
+    for k, (dflt, lo, hi) in _SETTINGS_CLAMPS.items():
+        v = _clamp(st.get(k), dflt, lo, hi)
+        if st.get(k) != v:
+            st[k] = v
+            changed = True
+    policy = str(st.get("remote_cleanup_policy") or "").strip().lower()
+    if policy not in ("days", "size"):
+        policy = _SETTINGS_DEFAULTS["remote_cleanup_policy"]
+    if st.get("remote_cleanup_policy") != policy:
+        st["remote_cleanup_policy"] = policy
+        changed = True
+    if not isinstance(st.get("remote_cleanup_enabled"), bool):
+        st["remote_cleanup_enabled"] = _as_bool(st.get("remote_cleanup_enabled"))
+        changed = True
+    return changed
 
 
 # 远程实例的敏感字段（2026-11-23，0.8.39）：和 ai_api_key 同一套 DPAPI 处理，
 # 落盘是密文、内存是明文。解不开（换机器/换用户）就当没填过，绝不发密文出去。
-_SECRET_FIELDS = ("auth_value", "auth_pass")
+# 0.8.40 追加 SSH 密码与私钥口令（PRD X1）。
+_SECRET_FIELDS = ("auth_value", "auth_pass", "ssh_password", "ssh_key_passphrase")
+
+
+# ---------------------------------------------------------------- 字段归一
+def _as_int(value, default: int) -> int:
+    """能转 int 就转，转不了用默认值（脏配置不抛异常）"""
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _clamp(value, default: int, lo: int, hi: int) -> int:
+    return max(int(lo), min(int(hi), _as_int(value, default)))
+
+
+def _as_bool(value) -> bool:
+    """宽松布尔：`bool("false")` 是 True，手改配置里的 "false" 不能变成「已忽略告警」"""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
+
+
+def _normalize_inst_ops(inst: dict) -> bool:
+    """补齐 + 归一远程运维字段；返回是否发生改变（供自愈落盘判断）"""
+    changed = False
+    for k, v in _INST_DEFAULTS.items():
+        if k not in inst:
+            inst[k] = copy.deepcopy(v)          # dict 必须深拷贝，禁止共享默认对象
+            changed = True
+    for k, (dflt, lo, hi) in _CLAMPS.items():
+        v = _clamp(inst.get(k), dflt, lo, hi)
+        if inst.get(k) != v:
+            inst[k] = v
+            changed = True
+    for k, allowed in _ENUM_FIELDS.items():
+        cur = str(inst.get(k) or "").strip().lower()
+        if cur not in allowed:
+            cur = _INST_DEFAULTS[k]
+        if inst.get(k) != cur:
+            inst[k] = cur
+            changed = True
+    for k in _STRIP_FIELDS:
+        if isinstance(inst.get(k), str):
+            v = inst[k].strip()
+            if v != inst[k]:
+                inst[k] = v
+                changed = True
+    for k in ("cloud_start", "cloud_stop"):
+        if not isinstance(inst.get(k), dict):
+            inst[k] = {}
+            changed = True
+    if not isinstance(inst.get("insecure_warn_muted"), bool):
+        inst["insecure_warn_muted"] = _as_bool(inst.get("insecure_warn_muted"))
+        changed = True
+    return changed
 
 
 def _unprotect_instances(cfg: dict) -> None:
@@ -172,19 +338,22 @@ def _unprotect_instances(cfg: dict) -> None:
                     inst["_auth_locked"] = True     # 供界面提示「密钥无法解密」
 
 
-def _sanitize_instances(cfg: dict) -> None:
+def _sanitize_instances(cfg: dict, extra_changed: bool = False) -> None:
     """实例列表自愈（2026-11-03）：修重复 id / 完全重复项 / 悬空 last_instance_id。
 
     背景：测试脚本往真实配置里塞写死 id 的实例后，跑几次就叠出多条同 id 副本
     （用户实测出现过 3 条一模一样的 PPTEST）。同 id 会让「按 id 查找」全部命中
     第一条（选中、删除、切页都会串），属于数据完整性问题，不能只当脏数据看。
+
+    extra_changed（2026-12-01，0.8.40）：settings 侧也做了自愈时由调用方传入，
+    使整次 load_config 只在末尾落盘一次（PRD §6「老配置自愈」）。
     """
     insts = cfg.get("instances")
     if not isinstance(insts, list):
         cfg["instances"] = []
         return
     import uuid as _uuid
-    seen_ids, out, changed = set(), [], False
+    seen_ids, out, changed = set(), [], bool(extra_changed)
     for inst in insts:
         if not isinstance(inst, dict):
             changed = True
@@ -202,6 +371,9 @@ def _sanitize_instances(cfg: dict) -> None:
             if k not in inst:
                 inst[k] = dflt
                 changed = True
+        # 远程运维字段补齐与归一（0.8.40）
+        if _normalize_inst_ops(inst):
+            changed = True
         # 完全重复（id/路径/端口都相同）→ 直接丢弃，保留第一条
         if iid and iid in seen_ids:
             if inst.get("kind") == "remote":

@@ -262,7 +262,10 @@ for _p in _pathlib.Path("app/ui").rglob("*.py"):
 _MERGED = dict(EN_DICT)
 _MERGED.update(i18n._EN)
 _missing = [k for k in _found if k not in _MERGED and k not in {"简体中文"}]
-check("6a 可扫描文案全部有英文", not _missing, str(_missing[:3]))
+check("6a 可扫描文案全部有英文", not _missing,
+      # 只打前 3 条会被误读成「每次只漏 3 条、补完就露下一批」——
+      # 实际是详情被 _missing[:3] 截断了，断言本身是稳定的。这里放开到 30 条。
+      "共 %d 条：" % len(_missing) + str(_missing[:30]))
 check("6b 词表规模 ≥ 300", len(EN_DICT) >= 300, str(len(EN_DICT)))
 i18n.set_lang("en")
 check("6c 抽查译文", i18n.T("插件市场") == "Marketplace"

@@ -27,7 +27,9 @@ _COLOR_RULES = [
     (re.compile(r"Prompt executed|got prompt|Starting server|To see the GUI|成功|完成"), "#4cd47c"),
     (re.compile(r"\[INFO\]"), "#7fa8d9"),
 ]
-_SELF_PREFIX = re.compile(r"^\[(ComfyHub|计划|插件|工具|救援)\]")
+# 0.8.40：`[远程启动 xx]` / `[远程停止 xx]` / `[隧道 xx]` 也归「本软件操作」色，
+# 免得远程任务的输出被当成远端 ComfyUI 的日志（前缀里有实例名，用 [^\]]* 带过）
+_SELF_PREFIX = re.compile(r"^\[(ComfyHub|计划|插件|工具|救援|远程[^\]]*|隧道[^\]]*)\]")
 # 外部环境注入的删除防护层日志（如 WorkBuddy safe-delete shim），不是本软件错误——降噪显示
 _ENV_NOISE = re.compile(r"\[safe-delete\]|SAFE_DELETE_", re.I)
 

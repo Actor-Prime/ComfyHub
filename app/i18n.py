@@ -10,8 +10,12 @@
   局限：动态文本（运行日志、弹窗正文、表格行数据）不在扫描范围内，
         需要翻译时在调用点写 T("...")。
 
-QComboBox 暂不扫描：页面逻辑里有按 currentText() 取值的写法（如镜像源下拉），
-翻译会改掉存储值。等这批下拉统一改成 currentData() 后再开。
+QComboBox 默认不扫描：页面逻辑里有按 currentText() 取值的写法（如镜像源下拉、
+显存模式），翻译会改掉**落盘的存储值**（"自动" 变 "Auto" 就再也没法匹配）。
+所以下拉走**逐控件显式登记**：只有把 item 存进 itemData（`addItem(显示文, 值)`）
+且取值一律走 currentData() 的下拉，才调 `w.setProperty("i18n_items", True)` 打开。
+2026-11-25 起登记的：远程运维页的 认证方式 / 默认通道 / 平台模板 / 方法，
+实例对话框的 类型。
 
 语言可即时切换：apply_language(root, lang) 双向替换（英文查 _EN、
 中文查反向表 _EN_REV），设置页保存后立刻扫一遍整窗。
@@ -73,11 +77,23 @@ _EN = {
         "Applies immediately after saving (dynamic text aligns on page switch)",
 }
 
+# 符号键词表（gettext 式）：给「带 {占位符} 的多行模板」和超长文案用。
+# 这类串逐字抄进 _EN 当键有两个毛病：① 抄错一个标点就永远不命中；
+# ② 中文原文一改，词表里的键悄悄失配、英文静默退回中文。
+# 改成稳定符号键后，中文原文只存在于业务模块里，词表只放译文。
+_KEYED = {}
+
 # 首批词表在上，完整词表在 app/i18n_en.py（第二批按页补齐，数据与逻辑分离便于维护）
 try:
     from app.i18n_en import EN_DICT as _EN_FULL
     _EN.update(_EN_FULL)
 except Exception:       # 数据文件缺失也不能让界面起不来
+    pass
+
+try:
+    from app.i18n_en import EN_KEYED as _KEYED_FULL
+    _KEYED.update(_KEYED_FULL)
+except Exception:       # 同上：符号键词表缺失不影响界面起不来
     pass
 
 # 反向表（英文 → 中文）：即时切回中文时用。译文重复时取第一个键，
@@ -104,6 +120,17 @@ def T(text: str) -> str:
     return _EN.get(text, text)
 
 
+def TK(name: str) -> str:
+    """按符号键取译文（模板类文案用）
+
+    中文模式或键未登记时返回空串，调用点写成 `TK("x") or 中文原串` 即可：
+    中文永不查表、英文查不到也仍显示中文（不会出现空白）。
+    """
+    if _LANG == ZH:
+        return ""
+    return _KEYED.get(str(name or ""), "")
+
+
 def _tr(text: str, lang: str) -> str:
     """按目标语言翻译一条文案（en=查正向表，zh=查反向表恢复中文）
 
@@ -124,7 +151,8 @@ def _translate_tree(root, lang: str = EN) -> int:
     """把控件树里命中的静态文案换成目标语言，返回替换条数"""
     from PySide6.QtWidgets import (
         QLabel, QAbstractButton, QGroupBox, QLineEdit, QTabWidget,
-        QTableWidget, QListWidget, QMainWindow, QDialog,
+        QTableWidget, QListWidget, QMainWindow, QDialog, QComboBox,
+        QPlainTextEdit,
     )
     n = 0
 
@@ -138,9 +166,15 @@ def _translate_tree(root, lang: str = EN) -> int:
     for w in root.findChildren(QLabel):
         if w.text():
             _set(w, "setText", w.text())
+        if w.toolTip():
+            _set(w, "setToolTip", w.toolTip())
     for w in root.findChildren(QAbstractButton):
         if w.text():
             _set(w, "setText", w.text())
+        # 2026-11-25：按钮/单选框的 tooltip 之前完全没扫（只扫了 QLineEdit 的），
+        # 远程运维页的「建立隧道」「重连」灰字提示因此永远是中文。
+        if w.toolTip():
+            _set(w, "setToolTip", w.toolTip())
     for w in root.findChildren(QGroupBox):
         if w.title():
             _set(w, "setTitle", w.title())
@@ -149,6 +183,22 @@ def _translate_tree(root, lang: str = EN) -> int:
             _set(w, "setPlaceholderText", w.placeholderText())
         if w.toolTip():
             _set(w, "setToolTip", w.toolTip())
+    # 2026-11-25：QPlainTextEdit 的占位符（远程运维的启动/停止命令、请求头、请求体）。
+    # 占位符只做显示、不参与任何取值判断，全量扫是安全的。
+    for w in root.findChildren(QPlainTextEdit):
+        if w.placeholderText():
+            _set(w, "setPlaceholderText", w.placeholderText())
+    # 2026-11-25：下拉项 —— **只翻显式登记过 i18n_items 的**（见模块 docstring）。
+    # 全量翻会把 "自动"/"强制 FP16" 之类的 currentText() 落盘值改成英文。
+    for w in root.findChildren(QComboBox):
+        if not w.property("i18n_items"):
+            continue
+        for i in range(w.count()):
+            cur = w.itemText(i)
+            new = _tr(cur, lang)
+            if new != cur:
+                w.setItemText(i, new)
+                n += 1
     for w in root.findChildren(QTabWidget):
         for i in range(w.count()):
             new = _tr(w.tabText(i), lang)

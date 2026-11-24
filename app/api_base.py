@@ -37,6 +37,10 @@ AUTH_TYPES = ("none", "bearer", "basic", "header")
 
 UA = "ComfyHub"
 
+# 隧道覆盖开关（ARCH §11 风险 1 的回退手段）：改成 False 即恢复 0.8.39 行为，
+# 隧道功能整体失效但不影响任何其它功能。默认开着。
+_TUNNEL_ENABLED = True
+
 
 # ---------------------------------------------------------------- 实例属性
 def is_remote(inst: dict) -> bool:
@@ -53,11 +57,62 @@ def normalize_url(u: str) -> str:
     return u.rstrip("/")
 
 
-def api_base(inst: dict) -> str:
-    """实例的 HTTP 基址；远程没填地址时返回空串"""
+def api_base(inst: dict, *, saved: bool = False) -> str:
+    """实例的 HTTP 基址；远程没填地址时返回空串
+
+    2026-12-01（0.8.40）：远程实例先查「运行期基址覆盖」注册表（隧道激活时是
+    `http://127.0.0.1:<隧道端口>`），查不到才回落已保存的 `base_url`。
+    `saved=True` 强制走已保存值（测试连接 / MCP 片段导出等「要真地址」的场合）。
+
+    ⚠ 查表那段**必须**包 try/except：这里一抛异常，全仓 HTTP 全挂（本机实例也连不上），
+    是本版唯一「致命」级风险（ARCH §11 风险 1）。异常一律当作「没有覆盖」。
+    """
     if is_remote(inst):
+        if not saved and _TUNNEL_ENABLED:
+            try:
+                from app import remote_registry
+                ov = remote_registry.registry.override_for(inst)
+            except Exception:               # noqa: BLE001 - 宁可回落，也不能让 HTTP 全挂
+                ov = ""
+            if ov:
+                return ov
         return normalize_url((inst or {}).get("base_url") or "")
     return "http://127.0.0.1:%d" % _port(inst)
+
+
+def saved_api_base(inst: dict) -> str:
+    """用户保存的基址（忽略隧道覆盖）——MCP 片段、诊断信息该用这个"""
+    return api_base(inst, saved=True)
+
+
+def effective_base_info(inst: dict) -> dict:
+    """生效基址的完整描述（告警条 / 状态灯 / 诊断共用一份口径）
+
+    `via_tunnel`：注册表里有没有这条覆盖（**真正的真相源**，不靠字符串比大小——
+    用户手填的 base_url 有可能本来就是 127.0.0.1:8189）。
+    `is_insecure`：远程 + http:// + host 不是回环。隧道激活时生效基址是回环 →
+    不告警（隧道本身已经是加密的，PRD D1）。
+    """
+    base = api_base(inst)
+    saved = api_base(inst, saved=True)
+    remote = is_remote(inst)
+    loop = _is_loopback(base) if base else False
+    via = False
+    if remote:
+        try:
+            from app import remote_registry
+            via = remote_registry.registry.is_active(inst)
+        except Exception:                   # noqa: BLE001 - 诊断信息绝不能抛
+            via = False
+    return {
+        "base": base,
+        "saved": saved,
+        "via_tunnel": bool(remote and (via or (base and base != saved))),
+        "is_loopback": loop,
+        "is_remote": remote,
+        "is_insecure": bool(remote and base.lower().startswith("http://")
+                            and not loop),
+    }
 
 
 def _port(inst: dict) -> int:
@@ -115,8 +170,8 @@ def headers(inst: dict, extra: dict | None = None) -> dict:
 
 
 # ---------------------------------------------------------------- 传输
-def _opener(inst: dict):
-    base = api_base(inst)
+def _opener(inst: dict, *, saved: bool = False):
+    base = api_base(inst, saved=saved)
     if _is_loopback(base) or not is_remote(inst):
         # 本机（含 SSH 隧道映射到 127.0.0.1）绝不走代理
         return urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -128,6 +183,27 @@ def _opener(inst: dict):
         handlers.append(urllib.request.HTTPSHandler(context=ctx))
     return urllib.request.build_opener(*handlers) if handlers \
         else urllib.request.build_opener()
+
+
+def opener_for_url(url: str, inst: dict | None = None, *,
+                   tls_verify: bool = True):
+    """按**URL 自身**是否回环决定代理（云平台钩子等「自己拼完整 URL」的场合）
+
+    不能复用 `_opener(inst)`：那里的回环判定看的是实例基址，而钩子请求打的是平台
+    域名——两者完全可能是不同的目标（PRD B5：回环直连，其余走系统代理）。
+    """
+    is_loop = _is_loopback(normalize_url(str(url or "")))
+    if is_loop:
+        return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    verify = bool(tls_verify)
+    if inst is not None and "tls_verify" in (inst or {}):
+        verify = bool(inst.get("tls_verify", True))
+    if verify:
+        return urllib.request.build_opener()
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
 
 
 class ApiError(RuntimeError):
@@ -154,9 +230,9 @@ def open_url(inst: dict, url: str, data: bytes | None = None,
 
 
 def request_json(inst: dict, path: str, data: dict | None = None,
-                 timeout: int = 30) -> dict:
+                 timeout: int = 30, *, saved: bool = False) -> dict:
     """GET/POST 一个 JSON 端点（data 非空即 POST）"""
-    base = api_base(inst)
+    base = api_base(inst, saved=saved)
     if not base:
         raise ApiError("远程实例未填写访问地址", 0)
     url = base + path
@@ -164,7 +240,7 @@ def request_json(inst: dict, path: str, data: dict | None = None,
     h = headers(inst, {"Content-Type": "application/json"} if body else None)
     req = urllib.request.Request(url, data=body, headers=h)
     try:
-        with _opener(inst).open(req, timeout=timeout) as r:
+        with _opener(inst, saved=saved).open(req, timeout=timeout) as r:
             raw = r.read().decode("utf-8", "ignore")
         return json.loads(raw) if raw.strip() else {}
     except urllib.error.HTTPError as e:
@@ -178,13 +254,14 @@ def request_json(inst: dict, path: str, data: dict | None = None,
         raise ApiError(_translate_net(e), 0) from e
 
 
-def request_bytes(inst: dict, path: str, timeout: int = 60) -> bytes:
-    base = api_base(inst)
+def request_bytes(inst: dict, path: str, timeout: int = 60, *,
+                  saved: bool = False) -> bytes:
+    base = api_base(inst, saved=saved)
     if not base:
         raise ApiError("远程实例未填写访问地址", 0)
     req = urllib.request.Request(base + path, headers=headers(inst))
     try:
-        with _opener(inst).open(req, timeout=timeout) as r:
+        with _opener(inst, saved=saved).open(req, timeout=timeout) as r:
             return r.read()
     except urllib.error.HTTPError as e:
         raise ApiError(f"HTTP {e.code}", e.code) from e
@@ -211,24 +288,27 @@ def _translate_net(e) -> str:
 
 
 # ---------------------------------------------------------------- 连通探测
-def probe(inst: dict, timeout: float = 4) -> bool:
+def probe(inst: dict, timeout: float = 4, *, saved: bool = False) -> bool:
     """是否是一个活着的 ComfyUI（不只是端口有人监听）
 
     0.8.39：作为「外部已启动实例」的判定依据。只探 TCP 会把「端口被别的程序
     占着」误判成实例运行中，所以必须 GET /system_stats 且返回里有 system/devices
     这类 ComfyUI 特征字段。
+
+    0.8.40：默认走**生效基址**（隧道激活时探隧道），`saved=True` 探用户填的真地址。
     """
     try:
-        d = request_json(inst, "/system_stats", timeout=timeout)
+        d = request_json(inst, "/system_stats", timeout=timeout, saved=saved)
     except Exception:
         return False
     return isinstance(d, dict) and ("system" in d or "devices" in d)
 
 
-def probe_reason(inst: dict, timeout: float = 4) -> tuple:
+def probe_reason(inst: dict, timeout: float = 4, *,
+                 saved: bool = False) -> tuple:
     """(是否就绪, 失败原因) —— UI 的「测试连接」按钮要用原因做提示"""
     try:
-        d = request_json(inst, "/system_stats", timeout=timeout)
+        d = request_json(inst, "/system_stats", timeout=timeout, saved=saved)
     except ApiError as e:
         return False, str(e)
     except Exception as e:
@@ -293,4 +373,11 @@ def fetch_view(inst: dict, filename: str, subfolder: str = "",
     with open(tmp, "wb") as f:
         f.write(data)
     os.replace(tmp, target)
+    # 2026-12-01（0.8.40 T07）：用户真的在取远程产物了 → 顺手触发一次自动清理
+    # （默认关；开启后 10 分钟节流，异步跑，绝不阻塞这次取图）
+    try:
+        from app import remote_cleanup
+        remote_cleanup.schedule_auto()
+    except Exception:                   # noqa: BLE001 - 清理失败绝不能影响取图
+        pass
     return target

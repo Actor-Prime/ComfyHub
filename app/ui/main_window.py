@@ -189,6 +189,16 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
         self.procs = ProcManager()
+        # 隧道（2026-12-01，0.8.40 T06）：管理器 + 回调桥，必须在建页之前就绪 ——
+        # 「🛠 远程运维」页签构造时会读 tunnel_manager 决定按钮是否可点。
+        from app import tunnel as _tunnel
+        from app.workers import TunnelBridge as _TunnelBridge
+        self.tunnel_manager = _tunnel.TunnelManager()
+        self.tunnel_bridge = _TunnelBridge()
+        self.tunnel_bridge.sig_state.connect(self._on_tunnel_state)
+        self.tunnel_bridge.sig_log.connect(self._on_tunnel_log)
+        self._tunnel_worker = None
+        self._insecure_shown = set()    # 本会话已提示过明文告警的实例 id（D3 只提示一次）
         self._quit_direct = False    # 托盘「退出」直通标志（防被关闭行为「最小化」分支截胡）
 
         central = _Backdrop()
@@ -288,8 +298,11 @@ class MainWindow(QMainWindow):
         b_setup = QPushButton("＋ 添加 ComfyUI")
         b_setup.setProperty("accent", True)
         b_setup.setFixedHeight(30)
-        b_setup.clicked.connect(self._run_setup_wizard)
+        # 0.8.40：点它弹两项菜单（新建本机实例 / 添加远程实例）。
+        # 不用 setMenu()：那会在按钮上多画一个下拉箭头，外观就变了。
+        b_setup.clicked.connect(self._open_add_menu)
         tb.addWidget(b_setup)
+        self.b_setup = b_setup
         right.addWidget(self.title_bar)
 
         # 无边框窗口的边缘缩放热区（装完先摆一次位，之后 resizeEvent 跟随）
@@ -311,6 +324,11 @@ class MainWindow(QMainWindow):
         self.plugin_banner.sig_fix.connect(self._on_deps_fix_clicked)
         right.addWidget(self.plugin_banner)
         self._deps_inst = ""        # 横幅当前对应的实例 id
+
+        # http 明文告警条（2026-12-01，0.8.40）：连接成功时给一条不打断的提示（PRD D3）
+        from app.ui.remote_banner import RemoteBanner
+        self.remote_banner = RemoteBanner(self)
+        right.addWidget(self.remote_banner)
 
         self.stack = QStackedWidget()
         right.addWidget(self.stack, 1)
@@ -356,6 +374,14 @@ class MainWindow(QMainWindow):
 
         # 插件加载失败 → 顶部提示条（进程层解析日志，UI 层只负责展示）
         self.procs.on_plugin_failed = self._on_plugin_failed
+
+        # 自动清理远程产物（0.8.40 T07）：纯逻辑模块只留一个回调位，
+        # 「控制台记一行 + 单次释放 ≥500MB 弹 toast」由主窗实现（PRD 5.5.3）
+        try:
+            from app import remote_cleanup
+            remote_cleanup.set_reporter(self._on_auto_clean)
+        except Exception:                   # noqa: BLE001
+            pass
 
         self._init_tray()
         self._init_task_watch()
@@ -595,6 +621,156 @@ class MainWindow(QMainWindow):
                     w.wait(5000)
             except Exception:
                 pass
+
+    # ---------- 隧道（2026-12-01，0.8.40 T06）----------
+    def _inst_by_id(self, iid: str):
+        iid = str(iid or "")
+        for i in self.cfg.get("instances") or []:
+            if str(i.get("id") or "") == iid:
+                return i
+        return None
+
+    def _inst_label(self, iid: str) -> str:
+        inst = self._inst_by_id(iid) or {}
+        return str(inst.get("name") or iid or "远端")
+
+    def start_tunnel(self, inst: dict):
+        """建隧道：`TunnelManager.start` 会阻塞到握手完成（最长 15s），
+        必须放后台线程；状态/日志经 `TunnelBridge` 排队回到主线程。"""
+        from app.workers import StepWorker, swap_worker
+        iid = str((inst or {}).get("id") or "")
+        if not iid:
+            return
+        mgr, bridge = self.tunnel_manager, self.tunnel_bridge
+        self.console_page.append_line(
+            f"[隧道 {self._inst_label(iid)}] 正在建立隧道…")
+        w = StepWorker(lambda: mgr.start(dict(inst or {}),
+                                         on_state=bridge.state_cb(iid),
+                                         on_log=bridge.log_cb(iid)))
+        w.sig_done.connect(
+            lambda ok, result, err, _i=iid: self._on_tunnel_started(_i, ok, result, err))
+        swap_worker(self, "_tunnel_worker", w)
+        w.start()
+
+    def _on_tunnel_started(self, iid: str, ok: bool, result, err: str):
+        name = self._inst_label(iid)
+        if not ok:
+            self.console_page.append_line(f"[隧道 {name}] 建立失败：{str(err)[:200]}")
+            self._refresh_tunnel_ui(iid)
+            return
+        okk, text = (result if isinstance(result, tuple) and len(result) == 2
+                     else (True, ""))
+        if not okk:
+            # 端口占用 / SSH 失败：文案由 tunnel 给出（PRD 5.3.3 原文）
+            for line in str(text or "").splitlines():
+                self.console_page.append_line(f"[隧道 {name}] {line}")
+        self._refresh_tunnel_ui(iid)
+
+    def stop_tunnel(self, iid: str):
+        try:
+            self.tunnel_manager.stop(str(iid or ""))
+        except Exception:                   # noqa: BLE001 - 断开失败也不能崩界面
+            pass
+        self.console_page.append_line(f"[隧道 {self._inst_label(iid)}] 隧道已断开")
+        self._refresh_tunnel_ui(iid)
+
+    def _refresh_tunnel_ui(self, iid: str):
+        """隧道状态变了：清探活缓存 + 刷新状态灯 + 页签状态行"""
+        inst = self._inst_by_id(iid)
+        if inst is not None:
+            try:
+                self.procs.invalidate(inst)
+            except Exception:               # noqa: BLE001
+                pass
+        try:
+            self.comfyui_page.remote_ops.refresh_tunnel()
+            self.comfyui_page._update_state()
+        except Exception:                   # noqa: BLE001
+            pass
+
+    def _on_tunnel_state(self, iid: str, state: str, text: str):
+        """`TunnelBridge.sig_state` 的槽（已在主线程，可以碰控件）"""
+        from app import tunnel
+        name = self._inst_label(iid)
+        if state in (tunnel.ST_CONNECTED, tunnel.ST_FAILED, tunnel.ST_STOPPED):
+            self.console_page.append_line(f"[隧道 {name}] {text}")
+        self._refresh_tunnel_ui(iid)
+        if state == tunnel.ST_FAILED:
+            try:
+                from app.ui.toast import show_toast
+                show_toast(self, f"隧道 {name}：{text}", level="error")
+            except Exception:               # noqa: BLE001
+                pass
+
+    def _on_tunnel_log(self, iid: str, text: str):
+        line = str(text or "").strip()
+        if line:
+            self.console_page.append_line(f"[隧道 {self._inst_label(iid)}] {line}")
+
+    # ---------- http 明文告警（2026-12-01，0.8.40 T06）----------
+    def maybe_insecure_banner(self, inst: dict):
+        """连接成功时给一条不打断的黄条（PRD D3）
+
+        同实例同会话只出现一次；勾过「不再提示」的实例永不出现；
+        判定用**生效基址**（隧道激活 → 回环 → 不告警）。
+        """
+        iid = str((inst or {}).get("id") or "")
+        if not iid or iid in self._insecure_shown:
+            return
+        if bool((inst or {}).get("insecure_warn_muted")):
+            return
+        from app import remote_ops
+        try:
+            base = remote_ops.ops.insecure_reason(inst)
+        except Exception:                   # noqa: BLE001 - 提示功能不能反过来添乱
+            base = ""
+        if not base:
+            return
+        self._insecure_shown.add(iid)
+        try:
+            self.remote_banner.show_hit(base, str((inst or {}).get("name") or ""))
+        except Exception:                   # noqa: BLE001
+            pass
+
+    def restore_insecure_warn(self) -> int:
+        """设置页「恢复明文告警」：清空所有实例的忽略标记，返回清掉的条数"""
+        n = 0
+        for inst in self.cfg.get("instances") or []:
+            if inst.get("insecure_warn_muted"):
+                inst["insecure_warn_muted"] = False
+                n += 1
+        if n:
+            save_config(self.cfg)
+            self._insecure_shown.clear()
+        return n
+
+    # ---------- 远程产物自动清理（2026-12-01，0.8.40 T07）----------
+    def _on_auto_clean(self, res: dict):
+        """自动清理完成（可能在后台线程 → 用排队方式碰控件）
+
+        Qt 不允许跨线程 setText；这里统一走 `QTimer.singleShot(0, ...)` 回主线程。
+        """
+        n = int((res or {}).get("deleted") or 0)
+        freed = int((res or {}).get("freed") or 0)
+        if not n:
+            return
+        from app import remote_cleanup as rc
+        line = f"自动清理：删除 {n} 个旧产物，释放 {rc.human_size(freed)}"
+
+        def _apply():
+            try:
+                self.console_page.append_line(f"[ComfyHub] {line}")
+                if freed >= rc.TOAST_MIN_BYTES:
+                    from app.ui.toast import show_toast
+                    show_toast(self, line)
+            except Exception:               # noqa: BLE001
+                pass
+
+        try:
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, _apply)
+        except Exception:                   # noqa: BLE001
+            pass
 
     def _notify(self, title: str, msg: str, err=False):
         try:
@@ -1005,9 +1181,41 @@ class MainWindow(QMainWindow):
         self._sync_instances()
         self.comfyui_page.load_current()
 
-    def _add_instance(self):
+    def _open_add_menu(self, _checked: bool = False):
+        """顶栏「＋ 添加 ComfyUI」的入口菜单（0.8.40）
+
+        两项：新建本机实例（走原有安装向导，行为一字未改）/ 添加远程实例。
+        `clicked` 会把 checked 传进来，所以第一个参数要吃掉它。
+        菜单弹在按钮左下角正下方，观感和普通下拉一致；**不用 setMenu()**，
+        否则按钮上会多出一个下拉箭头，把原有外观改掉。
+        """
+        from PySide6.QtWidgets import QMenu
+        from app.i18n import T
+        menu = QMenu(self)
+        act_local = menu.addAction(T("新建本机实例…"))
+        act_remote = menu.addAction(T("添加远程实例…"))
+        chosen = self._pick_add_action(menu)
+        if chosen is act_local:
+            self._run_setup_wizard()
+        elif chosen is act_remote:
+            self._add_instance(kind="remote")
+
+    def _pick_add_action(self, menu):
+        """弹出入口菜单并返回被选中的 QAction（模态，取消时返回 None）
+
+        单独成方法有两个理由：
+          · 弹窗位置策略只在这一处，调整观感不必碰菜单结构；
+          · 离屏测试可以只替换这一个点。**别去 patch `QMenu.exec`**：Shiboken
+            解析槽函数时先查 C++ 方法表，类级赋值会被忽略，测试会直接卡在真
+            模态上（已实测）。
+        """
+        anchor = getattr(self, "b_setup", None) or self
+        return menu.exec(anchor.mapToGlobal(anchor.rect().bottomLeft()))
+
+    def _add_instance(self, kind: str = "local"):
+        """弹「添加实例」对话框并落盘；`kind="remote"` 时连接方式预置为远程"""
         from app.ui.dialogs import InstanceDialog
-        dlg = InstanceDialog(self)
+        dlg = InstanceDialog(self, default_kind=kind)
         if dlg.exec() != InstanceDialog.Accepted:
             return
         data = dlg.result_data()
@@ -1246,6 +1454,13 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
         self.procs.stop_all()
+        # 隧道先于监听线程收掉：它是进程内转发（无线程池外泄），但必须显式关监听、
+        # 清注册表覆盖，否则退出后「127.0.0.1:8189 还在 listen」会假装实例还活着。
+        # 退出路径一律吞异常（PRD C5 / X4：不允许任何 traceback 露出）。
+        try:
+            self.tunnel_manager.stop_all()
+        except Exception:                   # noqa: BLE001
+            pass
         # 本地模型服务（可选组件）是独立子进程，必须显式收——否则退出后
         # llama-server 会留在后台占着端口和内存（2026-11-15 新功能）
         try:

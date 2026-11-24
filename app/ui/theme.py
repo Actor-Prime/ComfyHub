@@ -482,6 +482,14 @@ QGroupBox::title {
 }
 #PluginBanner QLabel { background: transparent; color: #d8c9a3; }
 
+/* http 明文告警条（remote_banner.py，0.8.40）：暗琥珀偏黄，比插件条更"警示"一点。
+   同样放全局表，浅色主题交给 _LIGHT_MAP。 */
+#RemoteBanner {
+    background: #3d3418;
+    border-bottom: 1px solid #6a5a20;
+}
+#RemoteBanner QLabel { background: transparent; color: #e8c46a; }
+
 #Banner {
     background: rgba(255, 255, 255, 0.025);
     border: 1px solid #343e4d;
@@ -820,6 +828,9 @@ _LIGHT_MAP = {
     "#e35f66": "#c9503f", "#35a06a": "#1b7d4e", "#47536a": "#aeb9c8",
     # 插件加载失败横幅（#PluginBanner）
     "#332b1a": "#f3ead6", "#59492a": "#d9c697", "#d8c9a3": "#5a4a22",
+    # 明文告警条（#RemoteBanner）
+    "#3d3418": "#fbf2d4", "#6a5a20": "#e0c268", "#e8c46a": "#7a5b00",
+    "#a9944f": "#9a7c1e",
     "#e2888a": "#c0392b", "#e24b4a": "#c0392b", "#ff9c9c": "#b42318",
     "#ff6b6b": "#b42318",
     # 运行期着色（QColor / 富文本）用到的

@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QComboBox,
     QPushButton, QGroupBox, QFormLayout, QMessageBox, QScrollArea,
     QFileDialog, QCheckBox, QSlider, QSpinBox, QDialog, QPlainTextEdit,
-    QFrame,
+    QFrame, QRadioButton, QTableWidget, QTableWidgetItem, QHeaderView,
 )
 
 from app.config import save_config, APP_VERSION
@@ -21,6 +21,7 @@ from app.ui import theme
 from app.bootstrap import PYPI_MIRRORS
 from app.i18n import T
 from app.ui.toast import show_toast
+from app.workers import CleanupStatsWorker, CleanupWorker, swap_worker
 
 
 class _AiTestWorker(QThread):
@@ -75,7 +76,9 @@ def _mcp_snippets() -> tuple:
     inst = ai_tools.current_instance(cfg) or {}
     port = int(inst.get("port") or 8188)
     from app import api_base as apib
-    _base = apib.api_base(inst) or f"http://127.0.0.1:{port}"
+    # 0.8.40：导出给外部 MCP 客户端的必须是**用户保存的地址**，不能是隧道端口
+    # （127.0.0.1:8189 只在 ComfyHub 进程活着时有效，粘到别的程序里必然连不上）
+    _base = apib.saved_api_base(inst) or f"http://127.0.0.1:{port}"
     exe = os.path.abspath(_sys.argv[0])
     a = _json.dumps({"comfyhub": {
         "command": exe, "args": ["mcp"]}}, ensure_ascii=False, indent=2)
@@ -349,6 +352,12 @@ class SettingsPage(QWidget):
             "bg_opacity": int(self.sl_alpha.value()),
             "bg_blur": int(self.sl_blur.value()),
             "lang": self.cb_lang.currentData() or "zh",
+            # 远程产物清理（2026-12-01，0.8.40 T07）
+            "remote_cleanup_enabled": bool(self.ck_rc_auto.isChecked()),
+            "remote_cleanup_policy": ("days" if self.rb_rc_days.isChecked()
+                                      else "size"),
+            "remote_cleanup_days": int(self.sp_rc_days.value()),
+            "remote_cleanup_max_gb": int(self.sp_rc_gb.value()),
         }
 
     def _build(self, st):
@@ -402,6 +411,18 @@ class SettingsPage(QWidget):
         self.lb_hf.setWordWrap(True)
         f1.addRow("", self.lb_hf)
         self._refresh_hf_label()
+        # 「恢复明文告警」（2026-12-01，0.8.40 PRD D4）：明文告警是实例级可忽略的，
+        # 忽略错了得有个出口，否则用户只能手改 config.json
+        row_warn = QHBoxLayout()
+        self.b_restore_warn = QPushButton("恢复明文告警")
+        self.b_restore_warn.setToolTip(
+            "清空所有实例的「不再提示这个实例」标记，下次连接会重新提示")
+        self.b_restore_warn.clicked.connect(self._restore_insecure_warn)
+        row_warn.addWidget(self.b_restore_warn)
+        self.lb_restore_warn = QLabel("")
+        self.lb_restore_warn.setStyleSheet("color:#888; background:transparent;")
+        row_warn.addWidget(self.lb_restore_warn, 1)
+        f1.addRow("明文告警:", row_warn)
         root.addWidget(g1)
 
         # ---- 目录：共享工具（便携 Python/MinGit/torch）安装位置 ----
@@ -425,6 +446,9 @@ class SettingsPage(QWidget):
         tip_dir.setStyleSheet("color:#888;")
         f_dir.addRow("", tip_dir)
         root.addWidget(g_dir)
+
+        # ---- 远程产物（2026-12-01，0.8.40 T07 / PRD 5.5）----
+        self._build_remote_group(root, st)
 
         # 共享外挂模型库整块已搬到「ComfyUI → 📚 共享外挂库」Tab（2026-11-08 用户要求：
         # 模型相关设置集中在 ComfyUI 页，系统设置只留网络/目录/界面/关于）
@@ -854,6 +878,270 @@ class SettingsPage(QWidget):
         except Exception:
             pass
 
+    # ------------------------------------------------------------ 远程产物
+    def _build_remote_group(self, root, st):
+        """「远程产物」分组（PRD 5.5.1）：四列表 + 自动清理控件 + 底部两按钮"""
+        g = QGroupBox("远程产物")
+        v = QVBoxLayout(g)
+        v.setSpacing(8)
+
+        # 灰字：`缓存在 <路径>，删的是本地副本，远端原图不受影响`
+        # 含动态路径 → 走 `T()` 拼片段（控件树扫描只认静态整句），并且**整句一个
+        # 可换行 QLabel**：路径长（英文句子更长）+ 三段 HBox 会把路径/后半句挤到裁字
+        self.lb_rc_dir = QLabel("")
+        self.lb_rc_dir.setWordWrap(True)
+        self.lb_rc_dir.setStyleSheet("color:#888; background:transparent;")
+        v.addWidget(self.lb_rc_dir)
+
+        self.tb_remote = QTableWidget(0, 4)
+        self.tb_remote.setHorizontalHeaderLabels(["实例", "文件数", "占用", "动作"])
+        _hh = self.tb_remote.horizontalHeader()
+        _hh.setSectionResizeMode(0, QHeaderView.Stretch)
+        _hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        _hh.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        _hh.setSectionResizeMode(3, QHeaderView.Fixed)
+        self.tb_remote.setColumnWidth(3, 210)
+        self.tb_remote.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.tb_remote.setSelectionBehavior(QTableWidget.SelectRows)
+        # 行高 30：动作列里是两个 26px 的按钮，默认行高会把它们压扁/截断
+        self.tb_remote.verticalHeader().setVisible(False)
+        self.tb_remote.verticalHeader().setDefaultSectionSize(30)
+        self.tb_remote.setMinimumHeight(96)
+        v.addWidget(theme.card_table(self.tb_remote))
+
+        # 自动清理（默认关）：策略单选 + 两个数字
+        h_auto = QHBoxLayout()
+        h_auto.setSpacing(8)
+        self.ck_rc_auto = QCheckBox("自动清理远程产物")
+        self.ck_rc_auto.setToolTip("默认关闭；开启后每次取到远端产物时检查一次（10 分钟最多一次）")
+        self.rb_rc_days = QRadioButton("保留最近")
+        self.sp_rc_days = QSpinBox()
+        self.sp_rc_days.setRange(1, 365)
+        self.lb_rc_days = QLabel("天")
+        self.rb_rc_size = QRadioButton("总量不超过")
+        self.sp_rc_gb = QSpinBox()
+        self.sp_rc_gb.setRange(1, 500)
+        self.lb_rc_gb = QLabel("GB")
+        _pol = str(st.get("remote_cleanup_policy") or "days").lower()
+        self.rb_rc_days.setChecked(_pol != "size")
+        self.rb_rc_size.setChecked(_pol == "size")
+        self.sp_rc_days.setValue(int(st.get("remote_cleanup_days") or 30))
+        self.sp_rc_gb.setValue(int(st.get("remote_cleanup_max_gb") or 10))
+        self.ck_rc_auto.setChecked(bool(st.get("remote_cleanup_enabled")))
+        for w in (self.ck_rc_auto, self.rb_rc_days, self.sp_rc_days,
+                  self.lb_rc_days, self.rb_rc_size, self.sp_rc_gb, self.lb_rc_gb):
+            h_auto.addWidget(w)
+        h_auto.addStretch(1)
+        v.addLayout(h_auto)
+        self.rb_rc_days.toggled.connect(lambda _c: self._sync_rc_policy())
+        self.ck_rc_auto.toggled.connect(lambda _c: self._sync_rc_policy())
+        self._sync_rc_policy()
+
+        tip_rc = QLabel("超限时从最旧的文件开始删，跳过最近 1 小时内还在用的文件。"
+                        "删除后需要时重新取图")
+        tip_rc.setWordWrap(True)
+        tip_rc.setStyleSheet("color:#888; background:transparent;")
+        v.addWidget(tip_rc)
+
+        h_btn = QHBoxLayout()
+        self.lb_rc_state = QLabel("")
+        self.lb_rc_state.setStyleSheet("color:#888; background:transparent;")
+        h_btn.addWidget(self.lb_rc_state, 1)
+        self.b_rc_clean_all = QPushButton("全部清空")
+        self.b_rc_clean_all.clicked.connect(self._remote_clean_all)
+        self.b_rc_refresh = QPushButton("重新统计")
+        self.b_rc_refresh.clicked.connect(lambda: self._refresh_remote_stats(force=True))
+        h_btn.addWidget(self.b_rc_clean_all)
+        h_btn.addWidget(self.b_rc_refresh)
+        v.addLayout(h_btn)
+
+        self._rc_rows = []          # 表格行 ↔ 目录的映射（按钮回调要用）
+        self._rc_busy = False
+        self._rc_worker = None
+        self._rc_clean_worker = None
+        root.addWidget(g)
+        self._fit_remote_table()
+
+    def _sync_rc_policy(self):
+        """只有勾了自动清理，策略控件才可编辑；策略决定哪个数字框亮"""
+        on = self.ck_rc_auto.isChecked()
+        days = self.rb_rc_days.isChecked()
+        for w in (self.rb_rc_days, self.rb_rc_size):
+            w.setEnabled(on)
+        self.sp_rc_days.setEnabled(on and days)
+        self.sp_rc_gb.setEnabled(on and not days)
+
+    def _remote_root(self) -> str:
+        from app import api_base
+        return os.path.dirname(api_base.remote_output_dir({}, self.cfg))
+
+    def _refresh_remote_stats(self, force: bool = False):
+        """后台统计（缓存 5 分钟）；期间显示「统计中…」，界面绝不卡（PRD E1）"""
+        if not hasattr(self, "tb_remote") or self._rc_busy:
+            return
+        self._rc_busy = True
+        self.lb_rc_state.setText(T("统计中…"))
+        _root = self._remote_root()
+        self.lb_rc_dir.setText(T("缓存在") + " " + _root
+                               + T("，删的是本地副本，远端原图不受影响"))
+        self.lb_rc_dir.setToolTip(_root)
+        w = CleanupStatsWorker(self.cfg.get("instances") or [], self.cfg, force=force)
+        w.sig_done.connect(self._on_remote_stats)
+        swap_worker(self, "_rc_worker", w)
+        w.start()
+
+    def _on_remote_stats(self, res: dict):
+        self._rc_busy = False
+        from app import remote_cleanup as rc
+        res = res or {}
+        rows = list(res.get("rows") or [])
+        self._rc_rows = rows
+        self.tb_remote.setRowCount(0)
+        for row in rows:
+            r = self.tb_remote.rowCount()
+            self.tb_remote.insertRow(r)
+            self.tb_remote.setItem(r, 0, QTableWidgetItem(str(row.get("name") or "")))
+            if not row.get("exists"):
+                # 目录不存在 → 「尚无缓存」（不是 0 B、不报错，PRD E1）
+                self.tb_remote.setItem(r, 1, QTableWidgetItem(T("尚无缓存")))
+                self.tb_remote.setItem(r, 2, QTableWidgetItem("—"))
+            else:
+                self.tb_remote.setItem(
+                    r, 1, QTableWidgetItem(self._count_text(row.get("files"))))
+                if row.get("error"):
+                    self.tb_remote.setItem(r, 2, QTableWidgetItem(str(row["error"])))
+                else:
+                    self.tb_remote.setItem(
+                        r, 2, QTableWidgetItem(rc.human_size(row.get("bytes"))))
+            self.tb_remote.setCellWidget(r, 3, self._rc_actions(row))
+        _total = res.get("total") or {}
+        self.tb_remote.insertRow(self.tb_remote.rowCount())
+        r = self.tb_remote.rowCount() - 1
+        it = QTableWidgetItem(T("总计"))
+        it.setForeground(QColor("#7fa8d9"))
+        self.tb_remote.setItem(r, 0, it)
+        self.tb_remote.setItem(r, 1, QTableWidgetItem(
+            self._count_text(_total.get("files"))))
+        self.tb_remote.setItem(r, 2, QTableWidgetItem(rc.human_size(_total.get("bytes"))))
+        self.tb_remote.setItem(r, 3, QTableWidgetItem(""))
+        self._fit_remote_table()
+        if res.get("error"):
+            self.lb_rc_state.setText(T("统计失败：") + str(res["error"]))
+        else:
+            self.lb_rc_state.setText(
+                T("已统计") if rows else T("还没有远程实例，暂无缓存"))
+
+    def _count_text(self, n) -> str:
+        """「6 张」/「6 files」：中文量词不分单复数，英文单数把词表里的复数尾 s 去掉
+
+        不能给单数再开一个 key —— 中文模式下 `T()` 是恒等，会把 key 本身（"张单数"）
+        直接显示出来。词表只留 "张" → "files"。
+        """
+        from app import i18n as _i18n
+        cnt = int(n or 0)
+        unit = T("张")
+        if _i18n.get_lang() != "zh" and cnt == 1 and unit.endswith("s"):
+            unit = unit[:-1]
+        return f"{cnt} {unit}"
+
+    def _fit_remote_table(self):
+        """按行数收放表格高度：3 行时不要留一大片空白，实例多了也不无限拉长"""
+        rows = self.tb_remote.rowCount()
+        hh = self.tb_remote.horizontalHeader().height()
+        body = sum(self.tb_remote.rowHeight(r) for r in range(rows))
+        h = hh + body + 2 * self.tb_remote.frameWidth() + 10
+        self.tb_remote.setFixedHeight(max(96, min(320, h)))
+        self.tb_remote.setVerticalScrollBarPolicy(
+            Qt.ScrollBarAsNeeded if h > 320 else Qt.ScrollBarAlwaysOff)
+
+    def _rc_actions(self, row: dict):
+        """每行的「打开目录 / 清空」按钮"""
+        from app import remote_cleanup as rc
+        w = QWidget()
+        h = QHBoxLayout(w)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(6)
+        b_open = QPushButton("打开目录")
+        b_open.setFixedHeight(26)
+        path = str(row.get("dir") or "")
+        b_open.setEnabled(bool(path) and os.path.isdir(path))
+        b_open.clicked.connect(lambda _c=False, p=path: self._open_path(p))
+        b_clean = QPushButton("清空")
+        b_clean.setFixedHeight(26)
+        b_clean.setEnabled(bool(row.get("exists")))
+        b_clean.clicked.connect(lambda _c=False, r=dict(row): self._remote_clean_one(r))
+        h.addWidget(b_open)
+        h.addWidget(b_clean)
+        h.addStretch(1)
+        return w
+
+    def _open_path(self, path: str):
+        try:
+            os.startfile(path)          # noqa: S606 - Windows 资源管理器
+        except Exception:               # noqa: BLE001
+            QMessageBox.information(self, "ComfyHub", f"打不开目录：\n{path}")
+
+    def _remote_clean_one(self, row: dict):
+        """单个实例清空（PRD 5.5.3 逐字确认文案）"""
+        from app import remote_cleanup as rc
+        n = int(row.get("files") or 0)
+        size = rc.human_size(row.get("bytes"))
+        name = str(row.get("name") or "")
+        box = QMessageBox(self)
+        box.setWindowTitle("ComfyHub")
+        box.setIcon(QMessageBox.Warning)
+        box.setText(f"将删除本地缓存里「{name}」的 {n} 个文件（{size}）。\n"
+                    "删的是 ComfyHub 的本地副本，远端原图不受影响；"
+                    "下次看这张图会重新下载。\n确认删除？")
+        b_ok = box.addButton("删除本地副本", QMessageBox.DestructiveRole)
+        box.addButton("取消", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is not b_ok:
+            return
+        self._start_clean(str(row.get("dir") or ""))
+
+    def _remote_clean_all(self):
+        """全部清空（含孤儿目录）：确认文案要写明文件数与总大小"""
+        from app import remote_cleanup as rc
+        files = sum(int(r.get("files") or 0) for r in self._rc_rows)
+        size = rc.human_size(sum(int(r.get("bytes") or 0) for r in self._rc_rows))
+        box = QMessageBox(self)
+        box.setWindowTitle("ComfyHub")
+        box.setIcon(QMessageBox.Warning)
+        box.setText(f"将删除全部远程实例的本地副本：共 {files} 个文件（{size}）。\n"
+                    "远端原图不受影响，下次取图会重新下载。\n确认删除？")
+        b_ok = box.addButton("删除本地副本", QMessageBox.DestructiveRole)
+        box.addButton("取消", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is not b_ok:
+            return
+        self._start_clean("")
+
+    def _start_clean(self, path: str):
+        self.lb_rc_state.setText(T("正在清理…"))
+        w = CleanupWorker(path, self.cfg.get("instances") or [], self.cfg)
+        w.sig_done.connect(self._on_cleanup_done)
+        swap_worker(self, "_rc_clean_worker", w)
+        w.start()
+
+    def _on_cleanup_done(self, res: dict):
+        from app import remote_cleanup as rc
+        res = res or {}
+        n = int(res.get("deleted") or 0)
+        freed = rc.human_size(res.get("freed"))
+        skip = int(res.get("skipped") or 0)
+        msg = f"已删除 {n} 个文件，释放 {freed}。"
+        if skip:
+            msg += f"\n{skip} 个文件正在使用，没删。关掉预览或稍后再清。"
+        errs = list(res.get("errors") or [])
+        if res.get("error"):
+            errs.append(str(res["error"]))
+        if errs:
+            msg += "\n" + "\n".join(errs[:3])
+        self.lb_rc_state.setText(msg.replace("\n", "  "))
+        QMessageBox.information(self, "ComfyHub", msg)
+        self._refresh_remote_stats(force=True)
+
     # ------------------------------------------------------------ 打开链接
     @staticmethod
     def _open_url(url: str):
@@ -986,6 +1274,22 @@ class SettingsPage(QWidget):
         self._refresh_bg_label()
 
     # ------------------------------------------------------------ 显示同步
+    def _restore_insecure_warn(self):
+        """清空所有实例的「不再提示明文告警」（PRD D4）；主窗不在也能自己干"""
+        n = 0
+        try:
+            n = int(self.mainwin.restore_insecure_warn())
+        except Exception:                   # noqa: BLE001 - 离屏/无主窗时自己来
+            for inst in self.cfg.get("instances") or []:
+                if inst.get("insecure_warn_muted"):
+                    inst["insecure_warn_muted"] = False
+                    n += 1
+            if n:
+                save_config(self.cfg)
+        self.lb_restore_warn.setText(
+            f"已恢复 {n} 个实例的明文告警" if n
+            else "所有实例都在提示明文告警，无需恢复")
+
     def on_show(self):
         """每次切到本页时，把「外部可能被改过的设置」同步回控件。
 
@@ -999,6 +1303,8 @@ class SettingsPage(QWidget):
             self.cb_close.blockSignals(True)
             self.cb_close.setCurrentIndex(idx)
             self.cb_close.blockSignals(False)
+        # 远程产物统计：走 5 分钟缓存，重复切页不会反复扫盘（PRD E1）
+        self._refresh_remote_stats()
 
     # ---------------- AI 接口测试 ----------------
     # ---------- 版本更新（2026-11-04）----------
@@ -1253,6 +1559,11 @@ class SettingsPage(QWidget):
         "local_llm_model": "本地模型",
         "bg_opacity": "面板不透明度", "bg_blur": "背景模糊", "lang": "界面语言",
         "bg_zoom": "背景缩放", "bg_off_x": "背景横向位置", "bg_off_y": "背景纵向位置",
+        # 远程产物清理（0.8.40 T07）
+        "remote_cleanup_enabled": "自动清理远程产物",
+        "remote_cleanup_policy": "远程清理策略",
+        "remote_cleanup_days": "远程产物保留天数",
+        "remote_cleanup_max_gb": "远程产物上限(GB)",
     }
 
     def _save(self):

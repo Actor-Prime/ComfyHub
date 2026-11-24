@@ -1604,4 +1604,300 @@ EN_DICT = {
         "Fill in the address first, e.g. http://192.168.1.20:8188",
     "远程实例还没填访问地址，无法打开网页。":
         "The remote instance has no address yet; cannot open the web UI.",
+    # ---------- 0.8.40 远程运维页签（T05）----------
+    "🛠 远程运维": "🛠 Remote ops",
+    "SSH 连接": "SSH connection",
+    "云平台开关机（HTTP）": "Cloud power on/off (HTTP)",
+    "隧道": "Tunnel",
+    "主机 / 端口 / 用户名": "Host / port / user",
+    "云平台给的 SSH 地址（不含用户名部分）；端口不是 22 的填平台映射的端口":
+        "The SSH address from your cloud console (without the user part); "
+        "if the port is not 22, use the mapped port",
+    "认证方式": "Authentication",
+    "密码登录最省事；密钥更适合长期使用":
+        "Password is the quickest; a key is better for long-term use",
+    "密码": "Password",
+    "加密保存在本机（DPAPI）": "Encrypted on this PC (DPAPI)",
+    "加密保存在本机（DPAPI），不会明文写进配置文件":
+        "Encrypted on this PC (DPAPI); never written to the config file in plain text",
+    "密钥文件": "Key file",
+    "OpenSSH 私钥（id_rsa / id_ed25519），不支持 PuTTY 的 .ppk":
+        "OpenSSH private key (id_rsa / id_ed25519); PuTTY .ppk is not supported",
+    "密钥口令": "Key passphrase",
+    "私钥没设口令就留空；加密保存在本机（DPAPI）":
+        "Leave empty if the key has no passphrase; encrypted on this PC (DPAPI)",
+    "私钥没设口令就留空": "Leave empty if the key has no passphrase",
+    "连通性": "Connectivity",
+    "只复测 SSH，不改实例配置，也不影响 ComfyUI 本身":
+        "Only re-tests SSH; does not change the instance or affect ComfyUI itself",
+    "测试 SSH": "Test SSH",
+    "测试中…": "Testing…",
+    "启动命令": "Start command",
+    "按自己的目录和解释器改（例如 ~/ComfyUI 或 /root/ComfyUI，python main.py 或 python3 main.py）":
+        "Adjust to your own directory and interpreter (e.g. ~/ComfyUI or "
+        "/root/ComfyUI, python main.py or python3 main.py)",
+    "停止命令": "Stop command",
+    "pkill -f 按命令行匹配，会杀掉远端所有匹配的进程；远端还有别的实例时请按实际路径收窄":
+        "pkill -f matches by command line and kills every match on the remote "
+        "host; narrow it by real path if other instances exist there",
+    "执行后每 2 秒探测 /system_stats，最多等 5 分钟；命令退出码为 0 不等于启动成功，以探针就绪为准":
+        "After dispatch /system_stats is probed every 2 seconds for up to 5 "
+        "minutes; exit code 0 is not success — only a ready probe is",
+    "只用于远程实例的运维命令，不参与 ComfyUI 本身的 HTTP 认证":
+        "Only used for remote ops commands; not part of ComfyUI HTTP auth",
+    "适用：只给 Web API、不给 SSH 的云镜像。填完先点「发开机请求」试一次":
+        "For cloud images that only expose a web API (no SSH). "
+        "Fill it in and try “Send start request” once",
+    "平台模板": "Platform template",
+    "套用后请按平台 API 文档核对参数":
+        "After applying, check the parameters against the platform API docs",
+    "套用": "Apply",
+    "开机请求": "Start request",
+    "关机请求": "Stop request",
+    "请求 URL": "Request URL",
+    "要填完整地址，包含 http:// 或 https://":
+        "Use a full URL including http:// or https://",
+    "方法": "Method",
+    "平台文档里写的 HTTP 方法": "The HTTP method from the platform docs",
+    "请求头": "Headers",
+    "一行一个 Key: Value；空行与 # 开头的行会被忽略":
+        "One Key: Value per line; blank lines and lines starting with # are ignored",
+    "一行一个 Key: Value，例如 Authorization: Bearer <TOKEN>":
+        "One Key: Value per line, e.g. Authorization: Bearer <TOKEN>",
+    "请求体": "Request body",
+    "填了就必须是合法 JSON（保存/发送前会校验行号）":
+        "If filled in it must be valid JSON (validated with line number)",
+    "试一次": "Try it",
+    "和「远程启动」走同一条链路：发请求 → 等就绪 → 读状态":
+        "Same chain as “Remote start”: send request → wait ready → read state",
+    "发开机请求": "Send start request",
+    "发关机请求": "Send stop request",
+    "默认通道": "Default channel",
+    "两个通道都配好时，「远程启动」默认走这里选的通道":
+        "When both channels are configured, “Remote start” uses the channel "
+        "selected here by default",
+    "用 SSH 启动": "Start via SSH",
+    "用云平台 API 启动": "Start via cloud API",
+    "转发目标": "Forward target",
+    "远端 ComfyUI 监听在哪，一般就是 127.0.0.1:8188；本地端口被占用会明确报错，不自动换端口":
+        "Where the remote ComfyUI listens (usually 127.0.0.1:8188); a busy local "
+        "port is reported clearly instead of switching ports silently",
+    "本地端口": "Local port",
+    "远端": "Remote",
+    "隧道状态": "Tunnel status",
+    "SSH 连接复用上面的配置与认证，不用重复填":
+        "Reuses the SSH settings and credentials above; no need to retype them",
+    "建立隧道": "Open tunnel",
+    "断开": "Disconnect",
+    "重连": "Reconnect",
+    "隧道已断开": "Tunnel disconnected",
+    "隧道激活期间，ComfyHub 访问这个实例会自动走 127.0.0.1:<本地端口>，已保存的访问地址不变；断开后自动恢复":
+        "While the tunnel is up, ComfyHub reaches this instance through "
+        "127.0.0.1:<local port>; the saved address is unchanged and resumes "
+        "after disconnecting",
+    "建议：只走隧道访问时，远端启动命令的 --listen 用 127.0.0.1 更安全":
+        "Tip: when you only use the tunnel, --listen 127.0.0.1 in the start "
+        "command is safer",
+    "远程启动": "Remote start",
+    "远程停止": "Remote stop",
+    "启动中…": "Starting…",
+    "还没配远程启动方式。到「ComfyUI → 🛠 远程运维」填 SSH 或云平台开关机接口":
+        "No remote start method yet. Open ComfyUI → 🛠 Remote ops and fill in "
+        "SSH or the cloud power API",
+    "还没配远程停止方式。到「ComfyUI → 🛠 远程运维」填 SSH 停止命令或云平台关机接口":
+        "No remote stop method yet. Open ComfyUI → 🛠 Remote ops and fill in an "
+        "SSH stop command or the cloud shutdown API",
+    "请先填主机地址（云平台给的 SSH 地址，不含用户名部分）。":
+        "Fill in the host first (the SSH address from your cloud console, "
+        "without the user part).",
+    "请先填 SSH 用户名（如 root）。": "Fill in the SSH user first (e.g. root).",
+    "启动命令不能为空。": "The start command cannot be empty.",
+    "停止命令不能为空。": "The stop command cannot be empty.",
+    # ---------- 0.8.40 明文告警 / 隧道（T06）----------
+    "⚠ 这个实例走 http 明文：Token 和生成的图同网络可见。　加 HTTPS 或用隧道可避免。":
+        "⚠ This instance uses plain HTTP: tokens and generated images are visible "
+        "on the same network.　Add HTTPS or use a tunnel to avoid it.",
+    "知道了": "Got it",
+    "关闭本次提示；下次连接这个实例还会再提醒一次":
+        "Dismiss this hint; it will appear again the next time you connect",
+    "关闭这条提示": "Dismiss this hint",
+    "恢复明文告警": "Restore plain-HTTP warning",
+    "清空所有实例的「不再提示这个实例」标记，下次连接会重新提示":
+        "Clear the “do not warn again” flag on every instance; the warning "
+        "will show again on the next connection",
+    "明文告警:": "Plain-HTTP warning:",
+    "不再提示这个实例": "Do not warn again for this instance",
+    "我知道了": "Got it",
+    "改地址": "Change address",
+    "正在请求平台开机…": "Requesting the platform to power on…",
+    "正在请求平台关机…": "Requesting the platform to power off…",
+    "平台已受理关机，正在确认实例已停止…":
+        "The platform accepted the shutdown; confirming the instance is stopped…",
+    "命令在远端执行，输出实时回显。关掉这个窗口不会中断任务":
+        "The command runs on the remote host and its output is echoed live. "
+        "Closing this window does not interrupt the task",
+    "请求发往云平台接口，进度实时回显。关掉这个窗口不会中断任务":
+        "The request goes to the cloud API and progress is echoed live. "
+        "Closing this window does not interrupt the task",
+    "停止等待": "Stop waiting",
+    "只中止本轮就绪轮询，不会杀掉远端进程":
+        "Only aborts this readiness polling round; never kills the remote process",
+    "正在停止等待…": "Stopping the wait…",
+    "正在准备…": "Preparing…",
+    "✅ 已就绪": "✅ Ready",
+    "已停止等待（远端进程未受影响，仍在继续启动）":
+        "Stopped waiting (the remote process is untouched and keeps starting)",
+    "🚀 隧道已连接": "🚀 Tunnel connected",
+    # ---------- 0.8.40 远程产物清理（T07）----------
+    "远程产物": "Remote artifacts",
+    # 整句含动态路径会永远匹配不上，源码里拆成三段控件（铁律：翻译按控件逐字）
+    "缓存在": "Cached in",
+    "，删的是本地副本，远端原图不受影响":
+        ", only the local copies are deleted; the originals on the remote host "
+        "are untouched",
+    "文件数": "Files",
+    # 动态行文案用 `i18n.T()` 拼片段：「6 张」→「6 files」
+    "张": "files",
+    "总计": "Total",
+    "动作": "Actions",
+    "尚无缓存": "No cache yet",
+    "清空": "Clear",
+    "打开目录": "Open folder",
+    "统计中…": "Scanning…",
+    "已统计": "Scanned",
+    "统计失败：": "Scan failed: ",
+    "自动清理远程产物": "Auto-clean remote artifacts",
+    "默认关闭；开启后每次取到远端产物时检查一次（10 分钟最多一次）":
+        "Off by default; once enabled it checks each time a remote artifact is "
+        "fetched (at most once per 10 minutes)",
+    "保留最近": "Keep last",
+    "天": "days",
+    "总量不超过": "Total under",
+    "GB": "GB",
+    "超限时从最旧的文件开始删，跳过最近 1 小时内还在用的文件。删除后需要时重新取图":
+        "When over the limit the oldest files are deleted first; files used "
+        "within the last hour are skipped. Deleted images are downloaded again "
+        "when needed",
+    "还没有远程实例，暂无缓存": "No remote instances yet, nothing cached",
+    "全部清空": "Clear all",
+    "重新统计": "Rescan",
+    "远程清理策略": "Remote cleanup policy",
+    "远程产物保留天数": "Remote artifact retention (days)",
+    "远程产物上限(GB)": "Remote artifact limit (GB)",
+    # ---------- 0.8.40 T05 遗漏（test_theme_i18n 6a 抓到的三条）----------
+    "请填写对方 ComfyUI 的访问地址，例：http://192.168.1.20:8188":
+        "Fill in the address of the remote ComfyUI, e.g. "
+        "http://192.168.1.20:8188",
+    "■ 远程停止": "■ Remote stop",
+    "正在启动，等待实例就绪（最多 5 分钟）":
+        "Starting, waiting for the instance to be ready (up to 5 minutes)",
+    "中止本轮等待并执行停止命令（不会杀无关进程）":
+        "Abort this wait and run the stop command (unrelated processes are kept)",
+    "在远端执行停止命令，或请求云平台关机":
+        "Run the stop command on the remote host, or ask the cloud platform "
+        "to power off",
+    "实例已在运行，如需重启请先「远程停止」":
+        "The instance is already running; use “Remote stop” first to restart",
+    "在远端执行启动命令，或请求云平台开机":
+        "Run the start command on the remote host, or ask the cloud platform "
+        "to power on",
+    "在远端执行的启动命令": "Start command to run on the remote host",
+    "在远端执行的停止命令": "Stop command to run on the remote host",
+    "如 C:\\Users\\你\\.ssh\\id_ed25519":
+        "e.g. C:\\Users\\you\\.ssh\\id_ed25519",
+    "JSON，可留空": "JSON, optional",
+    "✅ SSH 连接与认证都正常": "✅ SSH connection and authentication OK",
+    "隧道功能还没就绪：请重启 ComfyHub 后再试":
+        "Tunnel support is not ready yet; restart ComfyHub and try again",
+    "套用模板会覆盖当前已填的开机/关机请求，继续？":
+        "Applying a template overwrites the current power-on/power-off "
+        "requests. Continue?",
+    "正在清理…": "Cleaning up…",
+    # ---------- 0.8.40 D-03：「词表里有」但运行时翻不过来的那批（QA V6 复核） ----------
+    # 之前只补了词、没补 T()/扫描类型，这些词条是补链路的配套。
+    "▶ 远程启动": "▶ Remote start",
+    "● 启动中…": "● Starting…",
+    "● 停止中…": "● Stopping…",
+    "● 运行中": "● Running",
+    "（经隧道）": " (via tunnel)",
+    "覆盖": "Overwrite",
+    "已结束": "Finished",
+    "先在上面填 SSH 主机与用户名":
+        "Fill in the SSH host and user name above first",
+    "SSH 连接成功：登录与认证都没问题。":
+        "SSH connected: login and authentication are both fine.",
+    "模板只是骨架，参数（实例 ID、区域、Token）请按平台 API 文档核对后再保存":
+        "The template is only a skeleton — check the instance ID, region and "
+        "token against the platform API docs before saving",
+    "通用（自己填）": "Generic (fill in)",
+    "表单 POST": "Form POST",
+    "无鉴权 GET": "Unauthenticated GET",
+    "打开当前实例网页（自动识别实际端口）":
+        "Open the current instance in a browser (real port detected "
+        "automatically)",
+    "实例启动后可用": "Available once the instance is running",
+    # 顶栏「＋ 添加 ComfyUI」的入口菜单（每次打开都重建，所以 T() 取当下语言）
+    "新建本机实例…": "New local instance…",
+    "添加远程实例…": "Add a remote instance…",
+    # ---------- 0.8.40 D-02 ----------
+    "已在运行": "is already running",
+    "✅ 实例本来就在运行（启动命令已执行，未计入本次启动）":
+        "✅ The instance was already running (the start command still ran; this "
+        "was not counted as a fresh start)",
+    # ---------- 0.8.40 D-05 ----------
+    "请求头里的密钥会明文保存在配置文件中，建议用专用、可随时吊销的 Token。":
+        "Keys in the request headers are stored in the config file in plain "
+        "text — use a dedicated token you can revoke at any time.",
 }
+
+# 符号键词表：带 {占位符} 的多行模板（PRD 5.1.3 的 SSH 失败引导文案）。
+# 中文原文在 app/ui/pages/remote_ops_page.py 的 _SSH_FAIL_TPL / _SSH_FAIL_GENERIC /
+# _SSH_FAIL_SHORT 里；这里只放译文，改中文不会让词表静默失配。
+# 占位符必须原样保留：{host} {port} {user} {path} {detail}
+EN_KEYED = {
+    "ssh_fail.auth_password": (
+        "SSH authentication failed: wrong user name or password.\n"
+        "First make sure you can log in from this same PC with "
+        "`ssh {user}@{host}`. Some cloud platforms hand out a temporary "
+        "password, or require resetting it on first use."),
+    "ssh_fail.auth_passphrase": (
+        "SSH authentication failed: wrong passphrase for the private key.\n"
+        "This key is protected by a passphrase, and it must match the one used "
+        "when the key was created. If you have forgotten it, generate a new key "
+        "pair and copy the new public key to the remote host."),
+    "ssh_fail.auth_key": (
+        "SSH authentication failed: the remote host does not accept this key.\n"
+        "Check that `~/.ssh/authorized_keys` on the remote host contains the "
+        "public key of this private key (the `.pub` file), and check the "
+        "permissions: `~/.ssh` 700, `authorized_keys` 600."),
+    "ssh_fail.key_missing": (
+        "Can't read the key file: `{path}`. Check that the path still exists "
+        "and has not been moved, and that the key is not a PuTTY `.ppk` "
+        "(not supported in this version — use an OpenSSH key)."),
+    "ssh_fail.fingerprint": (
+        "The SSH host key of this machine differs from the one recorded last "
+        "time.\nThe machine may have been reinstalled, or someone may be "
+        "impersonating it (man-in-the-middle).\nOnly click “Trust new "
+        "fingerprint” if you know it was reinstalled; otherwise stop and "
+        "verify first."),
+    "ssh_fail.sudo": (
+        "SSH works, but the remote command needs an interactive sudo "
+        "password. ComfyHub does not do interactive privilege escalation."),
+    "ssh_fail.timeout": (
+        "Can't reach SSH: `{host}:{port}` is not responding (timed out).\n"
+        "Check three things: the host address; the port (some platforms map "
+        "SSH to a non-22 port); and whether the machine is powered on and its "
+        "security group / firewall allows the connection."),
+    "ssh_fail.generic": (
+        "Can't reach SSH: `{host}:{port}` is not responding.\n"
+        "Check three things: the host address; the port (some platforms map "
+        "SSH to a non-22 port); and whether the machine is powered on and its "
+        "security group / firewall allows the connection.\n"
+        "Click “Test SSH” to retest it alone — this does not touch the "
+        "instance config."),
+    "ssh_fail.short": "Can't reach SSH: `{host}:{port}` is not responding.",
+    # 附在通用长文末尾的异常原文（一般是英文）
+    "ssh_fail.detail": "({detail})",
+}
+
+

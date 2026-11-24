@@ -22,3 +22,12 @@ def log_exc(context: str):
     import traceback
     _logger.debug("swallowed exception at %s\n%s", context,
                   traceback.format_exc())
+
+
+def log_info(msg: str):
+    """记一条「不该打扰用户」的操作日志（自动清理这类静默动作，PRD 5.5.3）"""
+    try:
+        _logger.info("%s", msg)
+    except Exception:       # noqa: BLE001 - 记日志本身绝不能反过来抛
+        pass
+

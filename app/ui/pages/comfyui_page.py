@@ -17,10 +17,12 @@ from PySide6.QtWidgets import (
 from app.config import VRAM_MODES, save_config
 from app.log import log_exc
 from app.ui.nav import NAV
-from app.workers import BgWorker, RmWorker, swap_worker, wait_all
+from app.workers import BgWorker, RemoteOpsWorker, RmWorker, swap_worker, wait_all
 from app.process import build_command, port_in_use
+from app.i18n import T
 from app.ui import theme
 from app.ui.theme import card_table
+from app.ui.pages.remote_ops_page import RemoteOpsPanel
 
 
 class _Row(QFrame):
@@ -263,6 +265,9 @@ class ComfyuiPage(QWidget):
         # 加载时界面取值快照：保存前对比用（2026-11-08 用户要求「空 = 默认值」，
         # 老配置缺字段时界面会显示默认值，不该被算成一次改动）
         self._loaded = None
+        # 远程运维字段（2026-12-01，0.8.40）：取值来源 = 「🛠 远程运维」页签的
+        # `self.remote_ops.collect()`（0.8.40 T05 接线）。第一批曾用 `_ops_values`
+        # 兜底（那时还没有页签），现在必须走页签，否则「页签改了保存不生效」。
         self._build()
         self.load_current()
         self.load_shared()          # 共享外挂库是全局设置，只加载一次
@@ -698,6 +703,15 @@ class ComfyuiPage(QWidget):
         self.b_del.clicked.connect(self._delete)
         bottom.addWidget(self.b_del)
         outer.addLayout(bottom)
+
+        # ---- Tab4 🛠 远程运维（2026-12-01，0.8.40 T05）----
+        # 只在 kind=remote 时可见（_apply_kind_visibility 调 setTabVisible）；
+        # 初始隐藏：本机实例绝不该看到这一页（PRD A1）。
+        self.remote_ops = RemoteOpsPanel(self.mainwin)
+        self.remote_ops.sig_hook_request.connect(self._on_hook_request)
+        self.tabs.addTab(self.remote_ops, "🛠 远程运维")
+        self.tabs.setTabVisible(3, False)
+
     # ---------- 数据 ----------
     def load_current(self):
         inst = self.mainwin.current_inst()
@@ -713,9 +727,12 @@ class ComfyuiPage(QWidget):
             self.ed_token.clear()
             self.ed_pass.clear()
             self._apply_kind_visibility()
+            self.remote_ops.clear()
             self._loaded = None
             return
         self.ed_name.setText(inst.get("name", ""))
+        # 远程运维字段（0.8.40）：页签控件与实例值双向同步（collect() 是取值唯一入口）
+        self.remote_ops.load(inst)
         # 连接方式与远程参数（2026-11-23，0.8.39）
         _remote = (inst.get("kind") or "local") == "remote"
         self.cb_kind.blockSignals(True)
@@ -1162,33 +1179,97 @@ class ComfyuiPage(QWidget):
         cur = self.cb_eng.currentData()
         self.cb_vram.setEnabled(not (cur and cur[0] == "cpu"))
 
+    def _set_lamp(self, running: bool, text: str):
+        """状态灯唯一写入口：文案 + objectName + 重刷 QSS"""
+        self.lb_state.setText(text)
+        self.lb_state.setObjectName("StatusRun" if running else "StatusStop")
+        self.lb_state.style().unpolish(self.lb_state)
+        self.lb_state.style().polish(self.lb_state)
+
     def _update_state(self):
         inst = self.mainwin.current_inst()
         procs = self.mainwin.procs
         remote = bool(inst and (inst.get("kind") or "local") == "remote")
+        if remote:
+            # 远程实例（0.8.40）：按钮态按 PRD 5.1.2 表格走，本机分支完全不动
+            self._update_remote_state(inst)
+            return
         own = bool(inst and procs.is_own(inst))
         running = bool(inst and procs.is_running(inst))
-        # 远程实例（0.8.39）：进程不在这台机器上，「启动/停止」不该可点；
-        # 「打开网页」直接去远端地址。外部启动的本地实例同理不给停止
-        # （_procs 里没有它，点了会 KeyError）。
-        self.b_start.setEnabled(bool(inst) and not running and not remote)
+        self.b_start.setText(T("▶ 启动"))
+        self.b_start.setEnabled(bool(inst) and not running)
+        self.b_stop.setText(T("■ 停止"))
         self.b_stop.setEnabled(own)
         self.b_web.setEnabled(running)
-        if remote:
-            self.b_start.setToolTip("远程实例请到那台机器（或云平台控制台）启动")
-            self.b_stop.setToolTip("远程实例请到那台机器（或云平台控制台）停止")
-            self.b_web.setToolTip("在浏览器打开远端 ComfyUI")
+        self.b_start.setToolTip("")
+        self.b_stop.setToolTip(
+            "" if own else T("该实例不是本程序启动的，请到它的窗口/命令行停止"))
+        self.b_web.setToolTip(T("打开当前实例网页（自动识别实际端口）")
+                              if running else T("实例启动后可用"))
+        self._set_lamp(running, T("● 运行中") if running else T("未运行"))
+
+    def _update_remote_state(self, inst: dict):
+        """远程实例的按钮态与状态灯（PRD 5.1.2 表格 + ARCH §4.7.1）
+
+        状态灯**只在这里改**（T06 的隧道状态变化也走 `_update_state()` 刷新），
+        避免「页签里改了状态行、顶栏还是旧文案」的分裂。
+        """
+        from app import api_base as apib
+        from app import remote_ops as ro
+        procs = self.mainwin.procs
+        st = ro.ops.state_of(inst) or {}
+        state = str(st.get("state") or ro.ST_IDLE)
+        via = False
+        try:
+            via = bool(apib.effective_base_info(inst).get("via_tunnel"))
+        except Exception:                   # noqa: BLE001 - 诊断信息绝不能抛
+            via = False
+        running = bool(procs.is_running(inst))
+        start_ch = ro.ops.available_channels(inst, action="start")
+        stop_ch = ro.ops.available_channels(inst, action="stop")
+        starting = state in (ro.ST_CONNECTING, ro.ST_EXECUTING, ro.ST_WAITING_READY)
+        stopping = state == ro.ST_STOPPING
+
+        self.b_start.setText(T("启动中…") if starting else T("▶ 远程启动"))
+        self.b_start.setEnabled(bool(start_ch) and not starting and not stopping
+                                and not running)
+        self.b_stop.setText(T("■ 远程停止"))
+        # 「启动中」也允许点停止（中断误启动，PRD 边界 #5）
+        self.b_stop.setEnabled(bool(stop_ch) and not stopping)
+        self.b_web.setEnabled(running)
+        if not start_ch:
+            self.b_start.setToolTip(T(
+                "还没配远程启动方式。到「ComfyUI → 🛠 远程运维」"
+                "填 SSH 或云平台开关机接口"))
+        elif starting:
+            self.b_start.setToolTip(T("正在启动，等待实例就绪（最多 5 分钟）"))
+        elif running:
+            self.b_start.setToolTip(T("实例已在运行，如需重启请先「远程停止」"))
         else:
-            self.b_start.setToolTip("")
-            self.b_stop.setToolTip(
-                "" if own else "该实例不是本程序启动的，请到它的窗口/命令行停止")
-            self.b_web.setToolTip("打开当前实例网页（自动识别实际端口）"
-                                  if running else "实例启动后可用")
-        self.lb_state.setText("● 运行中" if running else "未运行")
-        self.lb_state.setObjectName("StatusRun" if running else "StatusStop")
-        # QSS objectName 变更后需重刷样式
-        self.lb_state.style().unpolish(self.lb_state)
-        self.lb_state.style().polish(self.lb_state)
+            self.b_start.setToolTip(T("在远端执行启动命令，或请求云平台开机"))
+        if not stop_ch:
+            self.b_stop.setToolTip(T(
+                "还没配远程停止方式。到「ComfyUI → 🛠 远程运维」"
+                "填 SSH 停止命令或云平台关机接口"))
+        elif starting:
+            self.b_stop.setToolTip(T("中止本轮等待并执行停止命令（不会杀无关进程）"))
+        else:
+            self.b_stop.setToolTip(T("在远端执行停止命令，或请求云平台关机"))
+        self.b_web.setToolTip(T("在浏览器打开远端 ComfyUI")
+                             + (T("（经隧道）") if via and running else ""))
+        if starting:
+            self._set_lamp(True, T("● 启动中…"))
+        elif stopping:
+            self._set_lamp(True, T("● 停止中…"))
+        elif running:
+            self._set_lamp(True, T("● 运行中") + (T("（经隧道）") if via else ""))
+            # PRD D3：连接成功那一刻给一次明文告警条（去重与「不再提示」在主窗）
+            try:
+                self.mainwin.maybe_insecure_banner(inst)
+            except Exception:               # noqa: BLE001 - 提示不能反过来添乱
+                pass
+        else:
+            self._set_lamp(False, "未运行")
 
     # ---------- 动作 ----------
     def _current_inst(self):
@@ -1210,6 +1291,16 @@ class ComfyuiPage(QWidget):
         "kind": "连接方式", "base_url": "访问地址", "auth_type": "认证方式",
         "auth_value": "凭证", "auth_header_name": "请求头名称",
         "auth_user": "账号", "auth_pass": "密码", "tls_verify": "校验 HTTPS 证书",
+        # 远程运维（0.8.40）：SSH / 云钩子 / 隧道
+        "ssh_host": "SSH 主机", "ssh_port": "SSH 端口", "ssh_user": "SSH 用户名",
+        "ssh_auth": "SSH 认证方式", "ssh_password": "SSH 密码",
+        "ssh_key_path": "SSH 密钥文件", "ssh_key_passphrase": "SSH 密钥口令",
+        "ssh_start_cmd": "远程启动命令", "ssh_stop_cmd": "远程停止命令",
+        "ssh_host_fingerprint": "SSH 主机指纹",
+        "cloud_start": "云平台开机请求", "cloud_stop": "云平台关机请求",
+        "tunnel_local_port": "隧道本地端口", "tunnel_remote_host": "隧道远端主机",
+        "tunnel_remote_port": "隧道远端端口",
+        "insecure_warn_muted": "已忽略明文告警", "last_ops_channel": "上次远程通道",
     }
     # 这些字段留空 = 用默认值，对比框里别显示成「（空）」让人以为没配
     _SAVE_EMPTY_TEXT = {
@@ -1217,6 +1308,11 @@ class ComfyuiPage(QWidget):
         "mount_dir": "未选择",
         "extra_args": "无",
         "base_url": "未填写",
+        "ssh_password": "未填写",
+        "ssh_key_passphrase": "未填写",
+        "cloud_start": "未配置",
+        "cloud_stop": "未配置",
+        "ssh_host_fingerprint": "未记录",
     }
 
     # 参与保存/对比的字段
@@ -1228,7 +1324,25 @@ class ComfyuiPage(QWidget):
               "mount_enabled", "mount_dir",
               # 连接方式（0.8.39）
               "kind", "base_url", "auth_type", "auth_value", "auth_header_name",
-              "auth_user", "auth_pass", "tls_verify")
+              "auth_user", "auth_pass", "tls_verify",
+              # 远程运维（0.8.40）：cloud_start_timeout_s 不暴露给用户，故不入表
+              "ssh_host", "ssh_port", "ssh_user", "ssh_auth", "ssh_password",
+              "ssh_key_path", "ssh_key_passphrase", "ssh_start_cmd",
+              "ssh_stop_cmd", "ssh_host_fingerprint",
+              "cloud_start", "cloud_stop",
+              "tunnel_local_port", "tunnel_remote_host", "tunnel_remote_port",
+              "insecure_warn_muted", "last_ops_channel")
+
+    # ---------- 远程运维字段（2026-12-01，0.8.40）----------
+    # 约定（ARCH §9）：新增实例字段必须同时出现在 _INST_DEFAULTS / _TRACK /
+    # _SAVE_LABELS / _snapshot / remote_ops_page.collect 五处，漏一处就会
+    # 「改了不保存」或「保存了不显示」。第 4 处（_snapshot）在这里接线，
+    # 第 5 处是 `self.remote_ops.collect()`，两边的键名逐字一致。
+    #
+    # 两个字段**不经页签回写**（所以 collect() 不返回它们）：
+    #   · ssh_host_fingerprint —— 首次连接时由 remote_fingerprint 写入；
+    #   · insecure_warn_muted  —— 明文告警模态 / 设置页「恢复明文告警」写入。
+    # 若把它们也塞进 collect()，用户在页签点保存就会把后台刚记下的指纹冲回旧值。
 
     # ---------- 连接方式（2026-11-23，0.8.39）----------
     def _is_remote_form(self) -> bool:
@@ -1261,7 +1375,16 @@ class ComfyuiPage(QWidget):
                 self.tabs.setTabVisible(idx, not remote)
             except Exception:
                 pass
+        # 「🛠 远程运维」只在远程实例上出现（PRD A1）；隐藏即收起按钮占位，不留空位
+        try:
+            self.tabs.setTabVisible(3, remote)
+        except Exception:
+            pass
         if remote:
+            # 用户可能正停在远程运维页签上填表，别硬拽回第 1 个页签
+            if self.tabs.currentIndex() not in (0, 3):
+                self.tabs.setCurrentIndex(0)
+        elif self.tabs.currentIndex() == 3:
             self.tabs.setCurrentIndex(0)
 
     def _apply_auth_rows(self):
@@ -1305,7 +1428,9 @@ class ComfyuiPage(QWidget):
         self.b_test.setText("测试中…")
         QApplication.processEvents()
         try:
-            ok, reason = apib.probe_reason(inst, timeout=8)
+            # saved=True（0.8.40）：隧道开着时也必须测**用户填的真地址**，
+            # 否则隧道通了会把「远端其实连不上」测成「成功」，是假成功。
+            ok, reason = apib.probe_reason(inst, timeout=8, saved=True)
         finally:
             self.b_test.setEnabled(True)
             self.b_test.setText("测试连接")
@@ -1322,7 +1447,7 @@ class ComfyuiPage(QWidget):
         load_current 填成默认值，快照里就是那个默认值，于是「没动过 = 没改动」，
         不会再刷出一串「（空）→ 自动」的假改动（2026-11-08 用户报障）。
         """
-        return {
+        d = {
             "name": self.ed_name.text().strip(),
             "models_dir": self.ed_models.text().strip(),
             "python_path": self.ed_python.text().strip(),
@@ -1355,6 +1480,11 @@ class ComfyuiPage(QWidget):
             "auth_pass": self.ed_pass.text(),
             "tls_verify": self.ck_tls.isChecked(),
         }
+        # 远程运维字段（0.8.40）：唯一来源 = 「🛠 远程运维」页签
+        # ⚠ 这一行就是「页签改了保存不生效」的分水岭：换成 collect() 之后，
+        # 页签里的 15 个字段才真正进入 _save 的写回循环。
+        d.update(self.remote_ops.collect())
+        return d
 
     def _save(self):
         from app.ui.changes_dialog import diff_changes, confirm_changes
@@ -1382,13 +1512,37 @@ class ComfyuiPage(QWidget):
                                     "请填写对方 ComfyUI 的地址（例：http://192.168.1.20:8188），"
                                     "或把连接方式改回「本机实例」。")
                 return
+            # SSH 密码 / 私钥口令同样「留空 = 保持原值」（页签 collect() 已实现，
+            # 这里再兜一层：万一将来有别的入口改了表单，也不能把密文冲掉）
+            for _k in ("ssh_password", "ssh_key_passphrase"):
+                if not str(new.get(_k) or ""):
+                    new[_k] = inst.get(_k) or ""
+            # PRD A4：启动/停止命令清空后不许保存（否则远程启停必然 E3）
+            if not str(new.get("ssh_start_cmd") or "").strip():
+                QMessageBox.warning(self, "ComfyHub",
+                                    "启动命令不能为空。\n"
+                                    "到「🛠 远程运维」页签填一条能在远端执行起来 ComfyUI 的命令，"
+                                    "或点那一行的「恢复默认」。")
+                return
+            if not str(new.get("ssh_stop_cmd") or "").strip():
+                QMessageBox.warning(self, "ComfyHub",
+                                    "停止命令不能为空。\n"
+                                    "到「🛠 远程运维」页签填一条能停掉远端 ComfyUI 的命令，"
+                                    "或点那一行的「恢复默认」。")
+                return
         # 凭证不回显：确认框只用于「看清改了什么」，把 token/密码原文打在屏幕上
-        # 没必要（旁边可能有人看着）。改过的就标一句「已更新」。
+        # 没必要（旁边可能有人看着）。**新旧两侧都要遮**：先前只遮了新值，
+        # 用户改密码时确认框里就把旧口令明文打了出来（QA V2 L1b 抓到的缺陷）。
         _disp = dict(new)
-        for _k in ("auth_value", "auth_pass"):
-            if _disp.get(_k) and _disp.get(_k) != (old.get(_k) or ""):
+        _old_disp = dict(old)
+        for _k in ("auth_value", "auth_pass", "ssh_password", "ssh_key_passphrase"):
+            _o = old.get(_k) or ""
+            _n = _disp.get(_k) or ""
+            if _o and _n != _o:
+                _old_disp[_k] = "（已设置，不回显）"
+            if _n and _n != _o:
                 _disp[_k] = "（已更新，不回显）"
-        changes = diff_changes(old, _disp, self._SAVE_LABELS,
+        changes = diff_changes(_old_disp, _disp, self._SAVE_LABELS,
                                defaults=self._SAVE_EMPTY_TEXT)
         # 挂载开关开了却没选目录 / 目录已失效 → 直接拦下，别写一份空挂载
         if new["mount_enabled"]:
@@ -1408,6 +1562,9 @@ class ComfyuiPage(QWidget):
         # 用户要求（2026-11-06）：保存前列出改了什么，防手滑改错配置后无感落盘
         if not confirm_changes(self, f"实例「{inst.get('name')}」", changes, "保存设置"):
             return
+        # PRD D2：改动确认之后、写盘之前弹一次 http 明文告警（可永久忽略）
+        if self._insecure_modal(inst, new) == "abort":
+            return
         for k in self._TRACK:
             if k in new:
                 inst[k] = new[k]
@@ -1426,6 +1583,57 @@ class ComfyuiPage(QWidget):
         self._loaded = dict(new)      # 基准跟着更新，连点保存不会再刷一堆假改动
         QMessageBox.information(self, "ComfyHub", "✅ 设置已保存")
 
+    def _insecure_modal(self, inst: dict, new: dict) -> str:
+        """保存时的 http 明文告警（PRD D2 / D1）
+
+        返回 `"ok"`（继续保存）/ `"abort"`（用户去改地址了）。
+        判定用**生效基址**（`remote_ops.insecure_reason`）：隧道激活时是 127.0.0.1，
+        本身已经加密 → 不弹。勾「不再提示这个实例」= 立即把标记写进 new（跟着本次
+        保存落盘），不阻断保存。
+        """
+        from app import remote_ops
+        if bool(new.get("insecure_warn_muted")):
+            return "ok"
+        merged = dict(inst or {})
+        for k in ("kind", "base_url", "tls_verify", "insecure_warn_muted"):
+            if k in new:
+                merged[k] = new[k]
+        try:
+            base = remote_ops.ops.insecure_reason(merged)
+        except Exception:                   # noqa: BLE001 - 提示不能反过来阻断保存
+            base = ""
+        if not base:
+            return "ok"
+        name = str(new.get("name") or inst.get("name") or "这个实例")
+        box = QMessageBox(self)
+        box.setWindowTitle("ComfyHub")
+        box.setIcon(QMessageBox.Warning)
+        box.setText(f"「{name}」用的是 http 明文连接（{base}）。")
+        box.setInformativeText(
+            "Token 和生成的图会以明文经过网络，同一网络里的人能看到。\n"
+            "内网自用一般可以接受；跨公网或多人共用的网络，"
+            "建议在远端加 HTTPS 反代，或用隧道。")
+        ck = QCheckBox("不再提示这个实例")
+        box.setCheckBox(ck)
+        b_ok = box.addButton("我知道了", QMessageBox.AcceptRole)
+        b_edit = box.addButton("改地址", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is b_edit:
+            self.ed_url.setFocus()
+            self.ed_url.selectAll()
+            return "abort"
+        if ck.isChecked():
+            new["insecure_warn_muted"] = True
+            # 立刻落盘：用户可能接着点「取消」这次保存，但「不再提示」的意愿是真的
+            inst["insecure_warn_muted"] = True
+            try:
+                save_config(self.cfg)
+            except Exception:               # noqa: BLE001
+                pass
+        if box.clickedButton() is b_ok:
+            return "ok"
+        return "ok"
+
     def _delete(self):
         inst = self._current_inst()
         if not inst:
@@ -1442,6 +1650,10 @@ class ComfyuiPage(QWidget):
         box.addButton("取消", QMessageBox.RejectRole)
         box.exec()
         clicked = box.clickedButton()
+        # 删实例前先收掉它的隧道与运行期基址覆盖（PRD C5 / 边界 #20）：
+        # 留着的话「127.0.0.1:8189」会继续 listen，看起来像这个实例还活着。
+        if clicked in (b_keep, b_del):
+            self._drop_remote_resources(inst)
         if clicked is b_keep:
             self.mainwin.procs.get(inst).stop()
             self.cfg["instances"].remove(inst)
@@ -1450,6 +1662,28 @@ class ComfyuiPage(QWidget):
             self.load_current()
         elif clicked is b_del:
             self._delete_files(inst)
+
+    def _drop_remote_resources(self, inst: dict):
+        """停掉该实例的隧道 + 清注册表覆盖（异常全吞：删除流程不能被它带崩）"""
+        iid = str((inst or {}).get("id") or "")
+        if not iid:
+            return
+        mgr = getattr(self.mainwin, "tunnel_manager", None)
+        if mgr is not None:
+            try:
+                mgr.stop(iid)
+            except Exception:               # noqa: BLE001
+                pass
+        try:
+            from app import remote_registry
+            remote_registry.registry.clear_override(iid)
+        except Exception:                   # noqa: BLE001
+            pass
+        try:
+            from app import remote_ssh
+            remote_ssh.manager.release(iid)
+        except Exception:                   # noqa: BLE001
+            pass
 
     def _swap_worker(self, attr, worker, timeout=60000):
         """替换 worker：旧线程断开信号后放入墓碑（持引用防 GC，后台自然结束）。
@@ -1745,6 +1979,10 @@ class ComfyuiPage(QWidget):
         inst = self._current_inst()
         if not inst:
             return
+        # 远程实例（0.8.40）：走 SSH / 云钩子启停，本机分支一个字节都不动
+        if (inst.get("kind") or "local") == "remote":
+            self._remote_start()
+            return
         # ★ 启动前环境预检弹窗（2026-11-09）：CPU 版 torch + CUDA 引擎时
         #   ComfyUI import 阶段就崩（Torch not compiled with CUDA enabled），
         #   提前拦下给三条路：去修复 / 仍以 CPU 模式启动 / 取消。
@@ -1776,9 +2014,203 @@ class ComfyuiPage(QWidget):
 
     def stop(self):
         inst = self._current_inst()
-        if inst:
-            self.mainwin.procs.get(inst).stop()
-            self._update_state()
+        if not inst:
+            return
+        if (inst.get("kind") or "local") == "remote":
+            self._remote_stop()
+            return
+        self.mainwin.procs.get(inst).stop()
+        self._update_state()
+
+    # ---------- 远程启停（2026-12-01，0.8.40 T05）----------
+    def _on_hook_request(self, action: str, inst: dict):
+        """页签「发开机/关机请求」：与「远程启动」走同一条链路（PRD 5.2.1）"""
+        if str(action) == "stop":
+            self._run_ops(dict(inst or {}), "stop", "cloud")
+            return
+        self._run_ops(dict(inst or {}), "start", "cloud")
+
+    def _remote_start(self, channel: str | None = None, inst: dict | None = None):
+        """远程启动：通道预检 → 进度对话框 → RemoteOpsWorker
+
+        无通道时**不弹失败框**，直接写一行控制台并跳到「🛠 远程运维」页签
+        （PRD 5.1.2 流程图 B1「提示：还没配 SSH / 自动跳到远程运维页签」）。
+        """
+        from app import remote_ops as ro
+        inst = dict(inst or self._current_inst() or {})
+        if not inst:
+            return
+        chans = ro.ops.available_channels(inst, action="start")
+        if not chans:
+            self.mainwin.console_page.append_line(
+                "[ComfyHub] 还没配远程启动方式。到「ComfyUI → 🛠 远程运维」"
+                "填 SSH 或云平台开关机接口")
+            try:
+                self.tabs.setCurrentIndex(3)
+            except Exception:
+                pass
+            return
+        chan = str(channel or "").lower()
+        if chan not in chans:
+            chan = str(inst.get("last_ops_channel") or "").lower()
+        if chan not in chans:
+            chan = chans[0]
+        self._run_ops(inst, "start", chan)
+
+    def _remote_stop(self):
+        """远程停止：先打断正在等待的启动（PRD 边界 #5），再下发停止"""
+        from app import remote_ops as ro
+        inst = dict(self._current_inst() or {})
+        if not inst:
+            return
+        chans = ro.ops.available_channels(inst, action="stop")
+        if not chans:
+            self.mainwin.console_page.append_line(
+                "[ComfyHub] 还没配远程停止方式。到「ComfyUI → 🛠 远程运维」"
+                "填 SSH 停止命令或云平台关机接口")
+            try:
+                self.tabs.setCurrentIndex(3)
+            except Exception:
+                pass
+            return
+        chan = str(inst.get("last_ops_channel") or "").lower()
+        if chan not in chans:
+            chan = chans[0]
+        # 启动等待中 → 先中止轮询（只中止，不杀远端），stop worker 会对 busy 短暂重试
+        w = getattr(self, "_ops_worker", None)
+        if w is not None and w.isRunning():
+            try:
+                w.cancel()
+            except Exception:
+                pass
+        self._run_ops(inst, "stop", chan)
+
+    def _run_ops(self, inst: dict, action: str, channel: str):
+        """起一次远程启停任务：worker 归本页持有，对话框只负责显示"""
+        from app import remote_ops as ro
+        from app.ui.remote_start_dialog import RemoteStartDialog
+        verb = "远程停止" if action == "stop" else "远程启动"
+        prefix = ro.log_prefix(verb, inst)
+        dlg = None
+        if action == "start":
+            dlg = RemoteStartDialog(self, inst, action, channel)
+            self._ops_dialog = dlg
+        w = RemoteOpsWorker(inst, action, channel)
+        w.sig_log.connect(lambda line, _p=prefix: self._ops_log(_p, line))
+        w.sig_state.connect(lambda text, _d=dlg: self._ops_state(text, _d))
+        w.sig_done.connect(lambda payload, _d=dlg, _p=prefix, _i=inst:
+                           self._ops_done(payload, _d, _p, _i))
+        if dlg is not None:
+            dlg.sig_cancel_wait.connect(w.cancel)
+            dlg.show()
+        swap_worker(self, "_ops_worker", w)
+        w.start()
+        self._update_state()
+
+    def _ops_log(self, prefix: str, line: str):
+        text = str(line or "")
+        if not text:
+            return
+        try:
+            self.mainwin.console_page.append_line(f"{prefix} {text}")
+        except Exception:                   # noqa: BLE001 - 日志写不进去也不能中断任务
+            pass
+        dlg = getattr(self, "_ops_dialog", None)
+        if dlg is not None:
+            try:
+                dlg.append_log(text)
+            except Exception:
+                pass
+
+    def _ops_state(self, text: str, dlg=None):
+        if dlg is not None:
+            try:
+                dlg.set_state(str(text or ""))
+            except Exception:
+                pass
+        self._update_state()
+
+    def _ops_done(self, payload: dict, dlg=None, prefix: str = "", inst=None):
+        ok = bool((payload or {}).get("ok"))
+        text = self._ops_result_text(payload or {})
+        if dlg is not None:
+            try:
+                dlg.finish(ok, text.splitlines()[0] if text else "")
+            except Exception:
+                pass
+        if prefix:
+            try:
+                self.mainwin.console_page.append_line(f"{prefix} {text.splitlines()[0]}")
+            except Exception:
+                pass
+        self._update_state()
+        name = str((inst or {}).get("name") or (payload or {}).get("iid") or "实例")
+        try:
+            from app.ui.toast import show_toast
+            if ok:
+                # D-02：本来就在跑时提示「已在运行」，与结果行文案一致
+                _pre = bool((payload or {}).get("pre_ready"))
+                show_toast(self.window(),
+                           f"{name} " + (T("已在运行") if _pre else T("已就绪")))
+            else:
+                show_toast(self.window(), f"{name}：{text.splitlines()[0]}",
+                           level="error")
+        except Exception:                   # noqa: BLE001 - toast 失败不影响结果
+            pass
+
+    def _ops_result_text(self, payload: dict) -> str:
+        """结果 dict → 中文原因（只按 err_kind 查，绝不匹配错误字符串）"""
+        from app import cloud_hooks
+        from app import remote_ops as ro
+        if payload.get("ok"):
+            # D-02：预探针就绪（启动前实例本来就在跑）不能报「启动成功」，
+            # 否则用户会以为是自己刚点的那次启动生效了。
+            # 注意措辞：命令/请求**确实发出去了**（`_probe` 之后仍照常执行），
+            # 所以不能写「未执行启动命令」——那反而是假话。
+            if payload.get("pre_ready"):
+                return "✅ 实例本来就在运行（启动命令已执行，未计入本次启动）"
+            return "✅ 已就绪"
+        kind = str(payload.get("err_kind") or "")
+        detail = str(payload.get("detail") or "")
+        lines = list(payload.get("last_lines") or [])
+        if kind == ro.ERR_CANCELLED or payload.get("cancelled"):
+            return "已停止等待（远端进程未受影响，仍在继续启动）"
+        if kind == ro.ERR_BUSY:
+            return "该实例已有一次远程操作在进行，等它结束再试"
+        if kind == ro.ERR_NO_CHANNEL:
+            return ("这个实例还没配好远程启动方式。到「ComfyUI → 🛠 远程运维」"
+                    "填 SSH 或云平台开关机接口")
+        if kind == ro.ERR_CMD:
+            return ("命令执行失败（退出码 "
+                    f"{payload.get('code')}）。\n"
+                    f"多半是启动命令里的路径不对：{detail[:200]}\n"
+                    "到「远程运维」页签核对 ComfyUI 目录与 python 解释器路径，"
+                    "改完再点「远程启动」。")
+        if kind == ro.ERR_SUDO:
+            return ("远端命令需要交互式 sudo 密码，ComfyHub 不做交互式提权。\n"
+                    "把命令改成不需要 sudo 的形式（例如用有权限的目录与端口）。")
+        if kind == ro.ERR_NOT_READY:
+            tail = "\n".join(str(x) for x in lines[-20:]) or "（没有输出）"
+            label = ("平台已受理开机" if str(payload.get("channel")) == "cloud"
+                     else "命令已执行")
+            return (f"{label}，但等满 5 分钟仍没响应。\n"
+                    "常见原因：ComfyUI 还在加载模型（首次启动更久）；"
+                    "远端监听的地址/端口和这里填的不一致；"
+                    "云平台安全组没放行该端口。\n"
+                    f"远端输出最后 20 行：\n{tail}")
+        if kind == ro.ERR_STILL_REACHABLE:
+            return ("命令返回成功，但实例仍然可以访问，停止命令可能没匹配到进程。\n"
+                    "把停止命令改成能匹配到远端真实命令行"
+                    "（例如 pkill -f \"ComfyUI/main.py\"），或到那台机器上手动停。")
+        if kind in cloud_hooks.KINDS:
+            # 云钩子失败：用 HookError 装一次，交给 cloud_hooks.describe 出逐字文案
+            err = cloud_hooks.HookError(
+                kind, detail, status=int(payload.get("code") or 0), body=detail)
+            return cloud_hooks.describe(err)
+        if kind:
+            # SSH 认证/网络类：与「测试 SSH」用同一份逐字文案
+            return self.remote_ops.ssh_failure_text(kind, detail)
+        return "远程操作失败（原因未知）。可以到「控制台」页看详细日志。"
 
     def open_browser(self):
         """打开当前实例网页：未启动不打开；启动时按实际监听端口

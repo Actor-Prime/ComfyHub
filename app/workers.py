@@ -11,8 +11,9 @@ QThread 生命周期三原则：
     3. 换新前：断信号 + 墓碑持引用 + 后台自然死亡
 """
 import os
+import threading
 
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import QObject, QThread, Signal
 
 
 def swap_worker(obj, attr, worker, max_grave=20):
@@ -223,3 +224,215 @@ class RmWorker(QThread):
             self.sig_done.emit(True, "")
         except Exception as e:
             self.sig_done.emit(False, str(e))
+
+
+# ================================================================ 远程运维
+class SshTestWorker(QThread):
+    """「测试 SSH」：真实建一次连接并认证（网络 IO 绝不能在 UI 线程）
+
+    `sig_done(ok, kind)`：kind 是 `remote_ssh.SshError.kind`（成功时空串），
+    失败详情放在 `self.detail` 里（文案由 UI 按 kind 查，worker 不认识文案）。
+    """
+
+    sig_done = Signal(bool, str)
+
+    def __init__(self, inst, parent=None):
+        super().__init__(parent)
+        self.inst = dict(inst or {})
+        self.kind = ""
+        self.detail = ""
+
+    def run(self):
+        from app import remote_ssh
+        try:
+            sess = remote_ssh.manager.session(self.inst)
+            if not sess.ensure_alive():
+                raise remote_ssh.SshError("unreachable", "SSH 会话建不起来")
+            self.kind = ""
+            self.detail = ""
+            self.sig_done.emit(True, "")
+        except Exception as e:              # noqa: BLE001 - 任何异常都要变成可展示结果
+            self.kind = str(getattr(e, "kind", "") or "unknown")
+            self.detail = str(getattr(e, "detail", "") or e)[:300]
+            self.sig_done.emit(False, self.kind)
+
+
+class RemoteOpsWorker(QThread):
+    """包装 `remote_ops.start/stop`（耗时轮询、SSH IO 全在这条线程里）
+
+    · `cancel()` 置 `threading.Event`：启动等待中被打断 → `cancelled`
+    · `sig_done` 的 payload 是纯 dict（UI 只按 `err_kind` 查文案，绝不匹配字符串）
+    · 独立实例锁在 remote_ops 里；「启动等待中点停止」由 UI 先 cancel 再起 stop worker，
+      这里对 `busy` 做短暂重试（最多 5 秒），避免用户点了没反应
+    """
+
+    sig_log = Signal(str)
+    sig_state = Signal(str)
+    sig_done = Signal(dict)
+
+    def __init__(self, inst, action: str = "start", channel: str = "ssh",
+                 parent=None):
+        super().__init__(parent)
+        self.inst = dict(inst or {})
+        self.action = "stop" if str(action).lower() == "stop" else "start"
+        self.channel = str(channel or "ssh")
+        self._cancel = threading.Event()
+        self.kind = ""
+        self.detail = ""
+
+    # ---------- 控制 ----------
+    def cancel(self):
+        self._cancel.set()
+
+    def is_cancelled(self) -> bool:
+        return self._cancel.is_set()
+
+    # ---------- 线程体 ----------
+    def _on_state(self, text: str):
+        self.sig_state.emit(str(text))
+
+    def _on_log(self, text: str):
+        self.sig_log.emit(str(text))
+
+    def run(self):
+        from app import remote_ops
+        payload = {
+            "ok": False, "err_kind": "", "detail": "", "action": self.action,
+            "channel": self.channel, "state": remote_ops.ST_IDLE,
+            "pre_ready": False, "elapsed": 0.0, "last_lines": [],
+            "code": None, "detached": False, "cancelled": False,
+            "iid": str(self.inst.get("id") or ""),
+        }
+        try:
+            r = self._run_ops(remote_ops)
+            payload.update({
+                "ok": bool(r.ok), "err_kind": r.err_kind, "detail": r.detail,
+                "state": r.state, "pre_ready": bool(r.pre_ready),
+                "elapsed": float(r.elapsed), "last_lines": list(r.last_lines),
+                "code": r.code, "detached": bool(r.detached),
+                "cancelled": bool(r.cancelled),
+            })
+        except Exception as e:              # noqa: BLE001 - OpsError / 注入桩异常
+            self.kind = str(getattr(e, "kind", "") or "unknown")
+            self.detail = str(getattr(e, "detail", "") or e)[:300]
+            payload.update({"ok": False, "err_kind": self.kind,
+                            "detail": self.detail,
+                            "state": remote_ops.ST_FAILED})
+        self.sig_done.emit(payload)
+
+    def _run_ops(self, remote_ops):
+        """跑一次 ops；`busy` 短暂重试（等上一个动作放锁）"""
+        deadline = 5.0
+        waited = 0.0
+        while True:
+            try:
+                if self.action == "stop":
+                    return remote_ops.ops.stop(
+                        self.inst, self.channel, on_state=self._on_state,
+                        on_log=self._on_log, cancel=self.is_cancelled)
+                return remote_ops.ops.start(
+                    self.inst, self.channel, on_state=self._on_state,
+                    on_log=self._on_log, cancel=self.is_cancelled)
+            except remote_ops.OpsError as e:
+                if e.kind != remote_ops.ERR_BUSY or waited >= deadline:
+                    raise
+                # 上一个动作（多半是「启动等待」）正在收尾：小步等它放锁
+                self._sleep(0.2)
+                waited += 0.2
+
+    def _sleep(self, seconds: float):
+        step = 0.02
+        left = float(seconds)
+        while left > 0 and not self._cancel.is_set():
+            self.msleep(int(step * 1000))
+            left -= step
+
+
+class TunnelBridge(QObject):
+    """把 `TunnelJob` 的线程内回调转成 **Qt 排队信号**
+
+    为什么必须过信号：`TunnelJob` 在后台线程跑，回调里如果直接 `setText` 就是
+    跨线程碰控件（Qt 在 Windows 上会随机崩，且抓不到栈）。这里回调只 `emit`，
+    主线程收到的是排队连接，天然安全。
+
+    `sig_state(iid, state, text)` / `sig_log(iid, text)` 都带实例 id：一个 bridge
+    服务所有实例，主窗据此分辨「哪个实例的隧道变了」。
+    """
+
+    sig_state = Signal(str, str, str)
+    sig_log = Signal(str, str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._iid = ""
+
+    def state_cb(self, iid: str):
+        """返回可直接传给 `TunnelManager.start(on_state=...)` 的回调
+
+        `TunnelJob._emit_state` 的调用约定是 `cb(state, text)`（见 tunnel.py）。
+        """
+        iid = str(iid or "")
+
+        def _cb(state: str, text: str):
+            self.sig_state.emit(iid, str(state or ""), str(text))
+        return _cb
+
+    def log_cb(self, iid: str):
+        iid = str(iid or "")
+
+        def _cb(text: str):
+            self.sig_log.emit(iid, str(text))
+        return _cb
+
+
+# ================================================================ 远程产物清理
+class CleanupStatsWorker(QThread):
+    """后台统计远程产物占用（几十 GB 的 os.walk 绝不能在 UI 线程）
+
+    `force=True` 强制重扫（「重新统计」按钮）；结果 dict 直接来自
+    `remote_cleanup.stats_rows()`，UI 只负责画表。
+    """
+
+    sig_done = Signal(dict)
+
+    def __init__(self, insts, cfg=None, force: bool = False, parent=None):
+        super().__init__(parent)
+        self.insts = list(insts or [])
+        self.cfg = cfg
+        self.force = bool(force)
+
+    def run(self):
+        from app import remote_cleanup
+        try:
+            res = remote_cleanup.stats_rows(self.insts, self.cfg, force=self.force)
+        except Exception as e:          # noqa: BLE001 - 后台线程不能死
+            res = {"rows": [], "total": {"files": 0, "bytes": 0},
+                   "root": "", "error": str(e)[:200]}
+        self.sig_done.emit(res)
+
+
+class CleanupWorker(QThread):
+    """后台清理：`path` 非空 = 清一个实例；为空 = 全部清空"""
+
+    sig_done = Signal(dict)
+
+    def __init__(self, path: str = "", insts=None, cfg=None,
+                 min_age_s: float = 0.0, parent=None):
+        super().__init__(parent)
+        self.path = str(path or "")
+        self.insts = list(insts or [])
+        self.cfg = cfg
+        self.min_age_s = float(min_age_s)
+
+    def run(self):
+        from app import remote_cleanup
+        try:
+            if self.path:
+                res = remote_cleanup.clean_dir(self.path, self.min_age_s)
+            else:
+                res = remote_cleanup.clean_all(self.insts, self.cfg)
+        except Exception as e:          # noqa: BLE001
+            res = {"deleted": 0, "skipped": 0, "freed": 0,
+                   "errors": [str(e)[:200]], "dir": self.path}
+        self.sig_done.emit(res)
+

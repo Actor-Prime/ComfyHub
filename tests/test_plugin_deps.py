@@ -19,6 +19,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+# D-09：sys.exit 走解释器收尾，QApplication 还活着 → 偶发以 0xC0000005 退出
+from _qa_exit import clean_exit      # noqa: E402
+
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
@@ -319,4 +322,4 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    clean_exit(main())

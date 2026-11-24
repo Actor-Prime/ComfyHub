@@ -46,14 +46,25 @@ class TaskWatcher(QThread):
         self.inst_name = inst_name
         # 0.8.39：远程实例按 base_url 轮询（含认证头），本地仍走 127.0.0.1
         self.inst = dict(inst) if inst else None
-        if self.inst is not None:
-            from app import api_base as apib
-            self.base = apib.api_base(self.inst) or f"http://127.0.0.1:{int(port)}"
-        else:
-            self.base = f"http://127.0.0.1:{int(port)}"
+        self._fallback = f"http://127.0.0.1:{int(port)}"
         self._had_task = False
         self._seen_ids = set()
         self._stop = threading.Event()
+
+    @property
+    def base(self) -> str:
+        """当前生效基址（**现算**，每 2 秒一拍都重新取）
+
+        0.8.40：原来是 __init__ 里算好缓存。隧道上线/断开会改变生效基址，
+        缓存的话监听会一直打旧地址（隧道断了还在打已关闭的本地端口）。
+        """
+        if self.inst is None:
+            return self._fallback
+        try:
+            from app import api_base as apib
+            return apib.api_base(self.inst) or self._fallback
+        except Exception:                 # noqa: BLE001 - 取基址失败不能把监听线程搞挂
+            return self._fallback
 
     # ---------------- 生命周期 ----------------
     def stop(self):

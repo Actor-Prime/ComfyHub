@@ -1,2 +1,5 @@
 PySide6>=6.6
 psutil>=5.9
+# SSH 传输（0.8.40 远程运维）：密码认证必须用 paramiko——ssh.exe 不接受 stdin 密码。
+# 传递依赖（cryptography / bcrypt / pynacl）由 pip 解析，不写在这里。
+paramiko>=5.1.0

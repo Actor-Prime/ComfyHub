@@ -51,7 +51,6 @@ class ToolCtx:
         # 后工具里压根不检查，界面上的「新建对话」又因为 worker 还在而静默返回
         # —— 用户看到的就是「整个软件卡死」。
         self.cancel = cancel
-        self.api = apib.api_base(self.inst) or f"http://127.0.0.1:{int(self.inst.get('port') or 8188)}"
         self.comfyui_path = self.inst.get("comfyui_path") or ""
         # 实例解释器：官方模板库（comfyui_workflow_templates*）在它的
         # site-packages 里，扫模板时要靠它定位
@@ -72,6 +71,19 @@ class ToolCtx:
         # 挂在 ctx 上而不是模块级，跨会话/跨提问天然隔离，不会串数据。
         self._cache = {}                  # key -> (ts, result)
         self.cache_hits = 0               # 供日志/统计
+
+    @property
+    def api(self) -> str:
+        """当前生效的实例地址（**现算**，不缓存）
+
+        0.8.40：原来是 `__init__` 里算好存成实例属性。隧道上下线会改变生效基址
+        （`api_base` 查运行期覆盖表），缓存下来的话 AI 助手会一直打旧地址 ——
+        用户看到的就是「隧道明明连着，助手却说实例未运行」。
+        读取点只有 :477 / :815 两处（`fetch_obj_info(ctx.api, inst=ctx.inst)`，
+        一旦给了 inst 就忽略 URL 参数），所以改成 property 语义等价、风险低。
+        """
+        return (apib.api_base(self.inst)
+                or f"http://127.0.0.1:{int(self.inst.get('port') or 8188)}")
 
     def ok(self, **kw):
         kw.setdefault("ok", True)

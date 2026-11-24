@@ -9,13 +9,15 @@ from PySide6.QtWidgets import (
 )
 
 from app.config import VRAM_MODES
+from app.i18n import T
 from app.instance import is_valid_comfyui, read_comfyui_version
 
 
 class InstanceDialog(QDialog):
     """新建或编辑一个 ComfyUI 实例配置"""
 
-    def __init__(self, parent=None, data: dict | None = None):
+    def __init__(self, parent=None, data: dict | None = None,
+                 default_kind: str = "local"):
         super().__init__(parent)
         self.setWindowTitle("编辑实例" if data else "添加 ComfyUI 实例")
         self.setMinimumWidth(520)
@@ -39,7 +41,12 @@ class InstanceDialog(QDialog):
         # 只需要一个访问地址；认证等细节留到「实例设置」里填
         self.cb_kind = QComboBox()
         self.cb_kind.addItems(["本机实例", "远程实例"])
-        self.cb_kind.setCurrentIndex(1 if (data.get("kind") == "remote") else 0)
+        # 连接方式有两种来源：编辑既有实例看 data["kind"]；新建时看调用方传的
+        # default_kind（顶栏菜单的「添加远程实例…」传 remote）。
+        _kind = str(data.get("kind") or default_kind or "local")
+        self.cb_kind.setCurrentIndex(1 if _kind == "remote" else 0)
+        # 取值只看 currentIndex()，显示文本可以安全英译（见 app/i18n.py docstring）
+        self.cb_kind.setProperty("i18n_items", True)
         self.ed_url = QLineEdit(data.get("base_url", ""))
         self.ed_url.setPlaceholderText(
             "http://192.168.1.20:8188 或 https://xxx.platform.com")
@@ -143,8 +150,8 @@ class InstanceDialog(QDialog):
             # 远程实例只校验地址（0.8.39）
             url = self.ed_url.text().strip()
             if not url:
-                self.lb_hint.setText(
-                    "请填写对方 ComfyUI 的访问地址，例：http://192.168.1.20:8188")
+                self.lb_hint.setText(T(
+                    "请填写对方 ComfyUI 的访问地址，例：http://192.168.1.20:8188"))
                 return
             if "://" not in url:
                 url = "http://" + url
@@ -155,10 +162,10 @@ class InstanceDialog(QDialog):
             return
         path = self.ed_path.text().strip()
         if not is_valid_comfyui(path):
-            self.lb_hint.setText("该目录下没有 main.py，不是有效的 ComfyUI 根目录。")
+            self.lb_hint.setText(T("该目录下没有 main.py，不是有效的 ComfyUI 根目录。"))
             return
         if not self.ed_python.text().strip():
-            self.lb_hint.setText("请填写 Python 解释器路径。")
+            self.lb_hint.setText(T("请填写 Python 解释器路径。"))
             return
         if not self.ed_name.text().strip():
             self.ed_name.setText(os.path.basename(path))

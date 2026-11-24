@@ -27,6 +27,17 @@ temp/
 !tests/test_ai_assistant.py
 !tests/test_ai_chat_store.py
 !tests/test_secret_store.py
+# 0.8.40 远程运维（第一批）自测用例
+!tests/test_remote_config_v084.py
+!tests/test_remote_ssh.py
+!tests/test_remote_ops.py
+!tests/test_tunnel.py
+# 0.8.40 远程运维（第二批）——之前漏了例外，53 条断言一直没入库
+!tests/test_cloud_hooks.py
+!tests/test_remote_cleanup.py
+!tests/test_remote_ui.py
+# QA 独立验证（v0.8.40：V1-V8）
+!tests/test_qa_v0840_*.py
 tests/_i18n_left.txt
 
 # 竞品黑盒分析产物（截图不入库，结论记 docs/COMPETITORS.md）

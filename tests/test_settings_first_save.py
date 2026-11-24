@@ -18,6 +18,9 @@ os.environ["APPDATA"] = _TMP
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# D-09：os._exit 不会销毁 QApplication，进程结束时会以 0xC0000005 崩掉（本用例 10/10 必现）
+from _qa_exit import clean_exit      # noqa: E402
+
 FAILS = []
 
 
@@ -96,10 +99,10 @@ def main():
         for f in FAILS:
             print("  - " + f)
         sys.stdout.flush()
-        os._exit(1)
+        clean_exit(1)
     print("ALL PASS")
     sys.stdout.flush()
-    os._exit(0)
+    clean_exit(0)
 
 
 if __name__ == "__main__":

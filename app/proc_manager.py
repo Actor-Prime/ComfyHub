@@ -136,6 +136,15 @@ class ProcManager:
         else:
             self._ext_cache.pop((str(inst.get("id") or ""), self._ext_key(inst)), None)
 
+    def invalidate_all(self):
+        """清掉所有实例的探活缓存（2026-12-01，0.8.40）
+
+        隧道批量上下线时用：`_ext_key()` 是 `api_base(inst)`，隧道激活后键会变，
+        旧键的缓存留在 dict 里没用也不会被淘汰，批量清一次最省事。
+        """
+        self._ext_cache.clear()
+        self._ext_pending.clear()
+
     def actual_port(self, inst: dict) -> "int | None":
         """实例进程实际监听的 HTTP 端口；未运行/探测失败返回 None
 

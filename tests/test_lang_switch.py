@@ -17,9 +17,22 @@
 """
 import os
 import sys
+import tempfile
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+# ★ 隔离性（2026-11-25 QA 补）：本用例会 save_config()，原先没重定向 APPDATA，
+#   跑一次就把**用户真实 config.json** 改掉（语言被写成 en 再写回 zh）。
+#   必须在 import app.* 之前重定向数据目录。
+_TMP = tempfile.mkdtemp(prefix="comfyhub_lang_")
+os.environ["APPDATA"] = _TMP
+os.environ["LOCALAPPDATA"] = _TMP
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))), "tests"))
+
+from _qa_exit import clean_exit           # noqa: E402  D-09
 
 from PySide6.QtWidgets import QApplication, QComboBox, QMessageBox
 
@@ -28,8 +41,15 @@ QMessageBox.information = staticmethod(lambda *a, **k: None)
 
 from app import i18n                      # noqa: E402
 from app.config import load_config        # noqa: E402
+from app.ui import changes_dialog         # noqa: E402
 from app.ui.main_window import MainWindow  # noqa: E402
 from app.ui.theme import apply_theme      # noqa: E402
+
+# ★ 0.8.40 之后 settings_page._save() 会先弹「本次将保存 N 处修改」确认框。
+#   本用例写于 2026-11-02（确认框 2026-11-06 才加），于是切语言=一处改动→弹真模态→
+#   无头环境没人点→进程永久挂死（在 0.8.39 上同样挂，D-09 同批修的）。
+#   这里按「用户点确认」处理，只看切语言本身的行为。
+changes_dialog.confirm_changes = lambda *a, **k: True
 
 OS_CFG = load_config()
 apply_theme(app, OS_CFG)
@@ -112,4 +132,4 @@ print(f"语言切换回归：{len(RESULTS) - len(fails)}/{len(RESULTS)} 通过")
 for n, _, d in fails:
     print(f"  FAIL {n}  [{d}]")
 sys.stdout.flush()
-os._exit(1 if fails else 0)
+clean_exit(1 if fails else 0)

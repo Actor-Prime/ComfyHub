@@ -17,6 +17,9 @@ import time
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# D-09：sys.exit 走解释器收尾，QApplication 还活着 → 约 4/10 以 0xC0000005 退出
+from _qa_exit import clean_exit      # noqa: E402
+
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton, QDialog
 
@@ -287,4 +290,4 @@ print(f"关闭行为回归：{len(RESULTS) - len(fails)}/{len(RESULTS)} 通过")
 if fails:
     for n, _, d in fails:
         print(f"  FAIL {n}  [{d}]")
-sys.exit(1 if fails else 0)
+clean_exit(1 if fails else 0)
