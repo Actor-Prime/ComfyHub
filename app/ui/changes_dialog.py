@@ -5,7 +5,8 @@
 做法：点保存后先弹出一个小窗，逐行列出「字段：旧值 → 新值」，用户确认才落盘，
 取消则恢复改动前的值。
 
-纯函数 diff_changes 不依赖 Qt，可单独测试；ChangeDialog 只负责展示。
+纯函数 diff_changes / _restart_required_keys 不依赖 Qt，可单独测试；
+ChangeDialog 只负责展示。
 """
 import copy
 
@@ -95,3 +96,71 @@ def confirm_changes(parent, title: str, changes: list, save_label: str = "保存
     for w in (tip, lst, note, b_cancel, b_ok):
         w.setFocusPolicy(Qt.StrongFocus)
     return dlg.exec() == QDialog.Accepted
+
+
+# ==================== 启动时才生效的字段（保存后需重启实例） ====================
+# 判定依据全部来自 app/process.py：下列字段只在 ComfyProcess.start() 构造
+# 启动命令 / 进程环境时被读取一次，ComfyUI 进程运行中不会再读 —— 保存后
+# 正在跑的实例不会自动应用，必须停止再启动（build_command 由 start() 在
+# process.py:638 调用）：
+#   · lan_access / port        → build_command L386-390（--listen/--port，
+#                                ComfyUI 只在启动时绑定监听地址）
+#   · python_path              → build_command L359（启动用的解释器路径）
+#   · vram_mode                → build_command L362-365（VRAM_MODES 标志位）
+#   · engine（backend/index）  → build_command L366-384（--cpu/--directml/
+#                                --cuda-device）
+#   · cross_attn               → build_command L391-405（注意力后端参数）
+#   · preview_method           → build_command L406-411（--preview-method）
+#   · precision                → build_command L412-419（--force-fp16/fp32）
+#   · fast_mode                → build_command L420-421（--fast）
+#   · no_smart_memory          → build_command L422-423（--disable-smart-memory）
+#   · cpu_vae                  → build_command L425-426（--cpu-vae）
+#   · deterministic            → build_command L427-428（--deterministic）
+#   · channels_last            → build_command L429-430（--force-channels-last）
+#   · multi_user               → build_command L431-432（--multi-user）
+#   · cuda_malloc              → build_command L433-438（--cuda-malloc 等）
+#   · auto_open_browser        → build_command L441-442（--disable-auto-launch）
+#                                + start() L636（就绪后是否弹浏览器）
+#   · models_dir               → build_command L454-461（--models-directory）
+#   · mount_enabled / mount_dir→ build_command L462-467（--extra-model-paths-config；
+#                                yaml 只在启动时传给 ComfyUI）
+#   · extra_args               → build_command L474-477（原样拼进命令行）
+#   · hf_offline               → start() L652-655（QProcess 环境变量，启动时
+#                                注入 HF_HUB_OFFLINE）
+# 反例（不在此列）：
+#   · name —— 只是 ComfyHub 侧的显示名，不进启动命令；
+#   · kind / base_url / auth_* / tls_verify / ssh_* / tunnel_* / cloud_* /
+#     insecure_warn_muted / last_ops_channel —— ComfyHub 侧的连接与远程运维
+#     配置，跟 ComfyUI 进程怎么启动无关。
+_RESTART_AT_START_KEYS = frozenset({
+    "lan_access", "port", "python_path", "vram_mode", "engine",
+    "cross_attn", "preview_method", "precision", "fast_mode",
+    "no_smart_memory", "cpu_vae", "deterministic", "channels_last",
+    "cuda_malloc", "multi_user", "auto_open_browser", "models_dir",
+    "mount_enabled", "mount_dir", "extra_args", "hf_offline",
+})
+
+
+def _restart_required_keys(old: dict, new: dict) -> list:
+    """返回本次改动里「启动时才生效」的字段 key（顺序跟随 new 的字段序）。
+
+    纯函数、无 Qt 依赖，可直接单测：
+      改 lan_access → ["lan_access"]；只改 name → []；只改 base_url → []。
+
+    改动判定与 diff_changes 完全同口径（只看 new 里的键；新增空值不算改动；
+    None 与 "" 互相顶替不算改动），保证与保存确认框里用户看到的改动清单一致，
+    不会多报用户没动过的字段。
+    """
+    out = []
+    for key in new:
+        if key not in _RESTART_AT_START_KEYS:
+            continue
+        if key not in old and new[key] in ("", None, 0, False):
+            continue                      # 新增的空值不算改动（同 diff_changes）
+        o, n = old.get(key), new.get(key)
+        if o == n:
+            continue
+        if o in ("", None) and n in ("", None):
+            continue                      # None 与 "" 互相顶替不算改动
+        out.append(key)
+    return out

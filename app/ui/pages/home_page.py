@@ -499,16 +499,23 @@ class HomePage(QWidget):
         if gpu.vendor == "nvidia":
             v = sysinfo.gpu_vram_usage()
             if v:
+                # 2026-11-22 用户要求：进度条/百分比改 GPU 使用率（utilization.gpu）；
+                # 显存 GB 数仍留卡面（2026-11-10），显存占比挪到 tooltip
                 self._set_card(self.card_gpu, "显卡", gpu.name,
                                f"{T('显存')} {v['used_mb'] / 1024:.1f} / "
-                               f"{v['total_mb'] / 1024:.0f} GB · {T('占用')} {v['percent']:.0f}%",
-                               icon="gpu", pct=v['percent'])
+                               f"{v['total_mb'] / 1024:.0f} GB · "
+                               f"{T('使用率')} {v['gpu_percent']:.0f}%",
+                               icon="gpu", pct=v['gpu_percent'])
+                self.card_gpu.setToolTip(
+                    f"{T('驱动')} {gpu.driver} → {T('推荐')} torch {gpu.torch_variant}\n"
+                    f"{T('显存')} {v['used_mb'] / 1024:.1f} / "
+                    f"{v['total_mb'] / 1024:.0f} GB · {T('占用')} {v['percent']:.0f}%")
             else:
                 gb = f"{gpu.vram_mb / 1024:.0f} GB" if gpu.vram_mb else T("显存未知")
                 self._set_card(self.card_gpu, "显卡", gpu.name,
                                f"{T('显存')} {gb}", icon="gpu")
-            self.card_gpu.setToolTip(
-                f"{T('驱动')} {gpu.driver} → {T('推荐')} torch {gpu.torch_variant}")
+                self.card_gpu.setToolTip(
+                    f"{T('驱动')} {gpu.driver} → {T('推荐')} torch {gpu.torch_variant}")
         else:
             self._set_card(self.card_gpu, "显卡", gpu.name or T("未检测到"),
                            fallback_label, icon="gpu")

@@ -542,6 +542,15 @@ class ComfyuiPage(QWidget):
         t1v.addWidget(_Row("多用户模式", "允许多个用户同时使用一个实例（每人独立存储空间）", self.ck_multi_user))
 
         self.ck_lan = QCheckBox("开启")
+        # 用户报障（2026-12）：这个开关没有「改完要重启」的提示，点「保存设置」
+        # 看到「✅ 设置已保存」就以为局域网立刻可访问——实际 --listen 只在启动时
+        # 绑定一次（app/process.py build_command L386-390）。
+        # 文案必须**两种运行状态下都不为假**（需求修正）：静态写成「启动时生效 +
+        # 运行中改需重启」两态都成立的说法，不按运行态动态切换 tooltip——动态版
+        # 要在每次启停/周期刷新都同步，多一处漏改就出错话；静态版永远成立。
+        self.ck_lan.setToolTip(
+            "允许同一局域网其他设备（手机/平板）打开 ComfyUI；"
+            "该选项在实例启动时生效，实例运行中修改后需重启实例才能生效。")
         t1v.addWidget(_Row("局域网访问", "允许同一局域网其他设备（手机/平板）打开 ComfyUI", self.ck_lan))
 
         self.ck_hf_offline = QCheckBox("开启")
@@ -1487,7 +1496,8 @@ class ComfyuiPage(QWidget):
         return d
 
     def _save(self):
-        from app.ui.changes_dialog import diff_changes, confirm_changes
+        from app.ui.changes_dialog import (diff_changes, confirm_changes,
+                                           _restart_required_keys)
         inst = self._current_inst()
         if not inst:
             return
@@ -1565,6 +1575,18 @@ class ComfyuiPage(QWidget):
         # PRD D2：改动确认之后、写盘之前弹一次 http 明文告警（可永久忽略）
         if self._insecure_modal(inst, new) == "abort":
             return
+        # 保存那一刻实例是否正在运行（在写回前取：写回会改 inst 字段，且语义
+        # 就是「保存瞬间」）。没在运行 → 下次启动即按新配置生效，弹「需重启」
+        # 是错误/骚扰提示，保存弹窗保持原样（需求修正 2026-12）。
+        # is_running 走 _ext_alive 远程探活链（proc_manager），页面/实例状态
+        # 不一致时可能抛异常——这行取在写回循环之前，一旦抛出会中断 _save()，
+        # 用户点了确认却一个字段都没落盘。提示类逻辑一律不许阻断保存主流程
+        # （同 _insecure_modal 里 `except Exception: base = ""` 的口径）：
+        # 判不出来 = 当没在运行，宁可少提示，不可错提示。
+        try:
+            _was_running = bool(self.mainwin.procs.is_running(inst))
+        except Exception:                   # noqa: BLE001 - 提示不能反过来阻断保存
+            _was_running = False
         for k in self._TRACK:
             if k in new:
                 inst[k] = new[k]
@@ -1581,7 +1603,20 @@ class ComfyuiPage(QWidget):
         save_config(self.cfg)
         self.mainwin._sync_instances()
         self._loaded = dict(new)      # 基准跟着更新，连点保存不会再刷一堆假改动
-        QMessageBox.information(self, "ComfyHub", "✅ 设置已保存")
+        # 保存成功提示（2026-12 用户报障，需求修正：仅运行中保存才提示重启）：
+        # 改动含「启动时才生效」的字段**且实例正在运行**时，说清「当前运行的
+        # 实例不会自动生效、要停止再启动」并列出具体项——否则用户看到「已保存」
+        # 会以为局域网访问之类改完立刻生效（实际 --listen 只在启动时绑定，见
+        # app/process.py build_command）。实例没在运行时不追加任何字样（下次
+        # 启动即生效，提示是骚扰）。判定走纯函数 _restart_required_keys
+        # （changes_dialog），与保存确认框同口径。
+        msg = "✅ 设置已保存"
+        _rk = _restart_required_keys(old, new)
+        if _rk and _was_running:
+            msg += ("\n\n⚠️ 以下改动需重启实例才生效，当前运行的实例不会自动应用：\n"
+                    + "\n".join("· " + self._SAVE_LABELS.get(k, k) for k in _rk)
+                    + "\n请停止并重新启动该实例。")
+        QMessageBox.information(self, "ComfyHub", msg)
 
     def _insecure_modal(self, inst: dict, new: dict) -> str:
         """保存时的 http 明文告警（PRD D2 / D1）

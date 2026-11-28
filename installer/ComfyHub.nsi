@@ -14,7 +14,7 @@ Unicode true
 ; ---------- 基本信息 ----------
 !define APP_NAME       "ComfyHub"
 !define APP_NAME_CN    "ComfyHub 多实例管理器"
-!define APP_VERSION    "0.8.40"
+!define APP_VERSION    "0.8.41"
 !define APP_PUBLISHER  "LeiMengStudio"
 !define APP_URL        "https://gitee.com/ActorPrime/ComfyHub"
 !define APP_URL_GH     "https://github.com/Actor-Prime/ComfyHub"
@@ -36,7 +36,7 @@ ShowUninstDetails show
 ; 静默更新时是否在装完后自动启动程序（由 /LAUNCH 置 1，见 .onInit / .onInstSuccess）
 Var LAUNCH_AFTER
 
-VIProductVersion "0.8.40.0"
+VIProductVersion "0.8.41.0"
 VIAddVersionKey "ProductName"     "${APP_NAME_CN}"
 VIAddVersionKey "FileDescription" "${APP_NAME_CN} 安装程序"
 VIAddVersionKey "FileVersion"     "${APP_VERSION}"

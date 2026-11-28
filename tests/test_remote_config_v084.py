@@ -195,7 +195,7 @@ check("instance_ops_defaults 也深拷贝",
 check("默认实例已预填启动命令", "nohup" in config.default_instance()["ssh_start_cmd"])
 
 print("=== 7. 打包基线 ===")
-check("APP_VERSION == 0.8.40", config.APP_VERSION == "0.8.40", config.APP_VERSION)
+check("APP_VERSION == 0.8.41", config.APP_VERSION == "0.8.41", config.APP_VERSION)
 with io.open(os.path.join(ROOT, "requirements.txt"), encoding="utf-8") as f:
     _req = f.read()
 check("requirements 有 paramiko", "paramiko" in _req, _req)
@@ -232,12 +232,12 @@ check("build_exe.bat: 续行块里没有 rem 注释",
       f"start={_start} end={_end}")
 with io.open(os.path.join(ROOT, "installer", "ComfyHub.nsi"), encoding="utf-8") as f:
     _nsi = f.read()
-check("nsi: APP_VERSION 0.8.40", '!define APP_VERSION    "0.8.40"' in _nsi)
-check("nsi: VIProductVersion 0.8.40.0", '"0.8.40.0"' in _nsi)
+check("nsi: APP_VERSION 0.8.41", '!define APP_VERSION    "0.8.41"' in _nsi)
+check("nsi: VIProductVersion 0.8.41.0", '"0.8.41.0"' in _nsi)
 check("nsi: 不再有 0.8.39", "0.8.39" not in _nsi)
 with io.open(os.path.join(ROOT, "packaging", "installer.iss"), encoding="utf-8") as f:
     _iss = f.read()
-check("iss: MyAppVersion 0.8.40", '#define MyAppVersion "0.8.40"' in _iss, _iss[:220])
+check("iss: MyAppVersion 0.8.41", '#define MyAppVersion "0.8.41"' in _iss, _iss[:220])
 check("iss: 不再有 0.5.84", "0.5.84" not in _iss)
 
 print("=== 8. UI 三处一致性（_TRACK / _SAVE_LABELS / _snapshot）===")

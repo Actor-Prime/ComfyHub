@@ -2,13 +2,16 @@
 """QA 独立验证 V8：全量回归 + 编译检查 + 测试隔离性实测
 
 三件事：
-  ① 跑 LEAD 指定的 15 个回归用例（逐个起子进程，各自独立环境，互不污染）
+  ① 跑 LEAD 指定的 22 个回归用例（逐个起子进程，各自独立环境，互不污染）
   ② `python -m compileall -q app`
   ③ ★测试隔离性：跑完 `test_remote_ui.py` 之后，**真实的**
      `%LOCALAPPDATA%\\ComfyHub\\remote` 是否仍为空
      （工程师说曾漏掉 `os.environ["LOCALAPPDATA"]` 重定向，补过一次；这里实测复核）
 
 另外附一份「已知基线失败」的复核结果，不算新缺陷，但要能对上账。
+
+> 用例数沿革：15（首轮）→ 19（并入入口/配置安全/语言切换）→ 21（并入静态词表 + 单实例）
+> → **22（补 `test_nav_shared_ui`）**。每次增加都写清「为什么必须进来」，见 SUITE 内注释。
 
 用法：.venv_build/Scripts/python.exe -u tests/test_qa_v0840_regress.py
 """
@@ -46,6 +49,11 @@ SUITE = [
     ("test_settings_first_save", 180),
     ("test_theme_i18n", 180),
     ("test_single_instance", 150),
+    # 2026-11-25 补洞：本版 T05 给 ComfyUI 页加了第 4 个页签「🛠 远程运维」，
+    # 这条用例的 2b 断言 `tabs.count() == 3` 因此过期、从 `61b58fc` 起一直红，
+    # 而它当时**不在任何回归清单里**，工程师自测和我的 V8 都没兜住 —— 正是「回归有洞」的实证。
+    # 补进 V8 后它同时守住两件事：侧栏不可拖 + 共享外挂库在 ComfyUI 页第 3 个 Tab。
+    ("test_nav_shared_ui", 180),
 ]
 
 # 已知基线失败（复核用；失败属预期，不算本版新缺陷）

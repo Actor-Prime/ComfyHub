@@ -44,23 +44,33 @@ _VRAM_CACHE = {"ts": 0.0, "data": {}}
 
 
 def gpu_vram_usage(max_age: float = 3.0) -> dict:
-    """N 卡显存实时占用。返回 {used_mb, total_mb, percent}，无 N 卡/查询失败返回 {}。
+    """N 卡显存实时占用 + GPU 利用率。返回 {used_mb, total_mb, percent, gpu_percent}，
+    无 N 卡/查询失败返回 {}。
+    - percent：显存占用率（used/total），保留兼容（tooltip 等处仍展示）
+    - gpu_percent：GPU 利用率 utilization.gpu（0-100），工作台显卡卡进度条/副标题用
     结果缓存 max_age 秒：工作台每秒刷新不能带起 nvidia-smi 进程风暴。"""
     now = time.time()
     if now - _VRAM_CACHE["ts"] < max_age:
         return _VRAM_CACHE["data"]
     data = {}
     try:
-        r = run(["nvidia-smi", "--query-gpu=memory.used,memory.total",
+        r = run(["nvidia-smi",
+                 "--query-gpu=memory.used,memory.total,utilization.gpu",
                  "--format=csv,noheader,nounits"],
                 capture_output=True, text=True, timeout=5)
-        # 多卡取第一行（主显示卡）；输出形如 "2148, 12288"
+        # 多卡取第一行（主显示卡）；输出形如 "2148, 12288, 37"
         line = (r.stdout or "").strip().splitlines()[0]
         parts = [p.strip() for p in line.split(",")]
         used_mb, total_mb = float(parts[0]), float(parts[1])
+        # utilization.gpu 偶发 "[N/A]"（休眠/驱动异常）→ 记 0，不整段判失败
+        try:
+            gpu_percent = float(parts[2])
+        except (IndexError, ValueError):
+            gpu_percent = 0.0
         if total_mb > 0:
             data = {"used_mb": used_mb, "total_mb": total_mb,
-                    "percent": used_mb / total_mb * 100}
+                    "percent": used_mb / total_mb * 100,
+                    "gpu_percent": max(0.0, min(100.0, gpu_percent))}
     except Exception:
         pass
     _VRAM_CACHE["ts"] = now

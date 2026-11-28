@@ -607,6 +607,10 @@ EN_DICT = {
     "局域网访问": "LAN access",
     "允许同一局域网其他设备（手机/平板）打开 ComfyUI":
         "Let other devices on the LAN (phone/tablet) open ComfyUI",
+    "允许同一局域网其他设备（手机/平板）打开 ComfyUI；该选项在实例启动时生效，实例运行中修改后需重启实例才能生效。":
+        "Let other devices on the LAN (phone/tablet) open ComfyUI; this option "
+        "takes effect when the instance starts — changes made while it runs "
+        "require a restart",
     "Huggingface 离线模式": "Hugging Face offline mode",
     "关闭从 Huggingface 联网加载模型，启用后无法在线下载本地缺失的模型":
         "Disables online model loading from Hugging Face; missing models can't be downloaded while on",
@@ -735,6 +739,7 @@ EN_DICT = {
     "盘空间": "disk",          # 2026-11-10 磁盘卡动态盘符：f"{drive} {T('盘空间')}"
     "显存": "VRAM",            # 2026-11-10 显卡卡副标题拆词：f"{T('显存')} x / y GB · ..."
     "占用": "Used",
+    "使用率": "Usage",         # 2026-11-22 显卡卡百分比改 GPU 使用率：f"... · {T('使用率')} x%"
     "核": "c",
     "线程": "t",
     "驱动": "Driver",

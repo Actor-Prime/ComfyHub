@@ -6,7 +6,7 @@
 ; ============================================================
 
 #define MyAppName "ComfyHub"
-#define MyAppVersion "0.8.40"   ; 与 app/config.py 的 APP_VERSION 保持一致
+#define MyAppVersion "0.8.41"   ; 与 app/config.py 的 APP_VERSION 保持一致
 #define MyAppPublisher "Starmore"
 #define MyAppExeName "ComfyHub.exe"
 
